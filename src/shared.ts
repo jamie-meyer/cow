@@ -7,6 +7,7 @@ export const NOTES_CHANGED = "notes-changed";
 /** The keys of cow's notes in a thread's plugin metadata. */
 export const PARK_KEY = "park";
 export const ARCHIVE_KEY = "archive";
+export const DISMISS_KEY = "refusals-dismissed";
 
 const pickUpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("date"), at: z.number() }),
@@ -32,3 +33,14 @@ export const archiveNoteSchema = z.object({
   at: z.number(),
 });
 export type ArchiveNote = z.infer<typeof archiveNoteSchema>;
+
+/**
+ * cow's note that the user dismissed a thread's refused permissions: every
+ * refusal up to this place in the thread's event log is no longer shown.
+ */
+export const dismissalSchema = z.object({
+  throughSeq: z.number(),
+  /** When it was dismissed. */
+  at: z.number(),
+});
+export type Dismissal = z.infer<typeof dismissalSchema>;

@@ -238,7 +238,8 @@
   display: inline-block;
   vertical-align: -1px;
 }
-.cow-s-wants {
+.cow-s-wants,
+.cow-s-blocked {
   color: var(--cow-needs);
 }
 .cow-s-running {
@@ -302,7 +303,9 @@
   color: var(--cow-fail);
 }
 .cow-ag.cow-a2.cow-s-wants,
-.cow-ag.cow-a3.cow-s-wants {
+.cow-ag.cow-a3.cow-s-wants,
+.cow-ag.cow-a2.cow-s-blocked,
+.cow-ag.cow-a3.cow-s-blocked {
   color: var(--cow-needs);
 }
 .cow-nm {
@@ -330,12 +333,15 @@
   color: var(--cow-faint);
 }
 .cow-ln.cow-d-wants .cow-wh,
+.cow-ln.cow-d-blocked .cow-wh,
 .cow-ln.cow-d-failed .cow-wh,
 .cow-ln.cow-d-stuck .cow-wh {
   color: var(--cow-ink);
 }
 .cow-ln.cow-d-wants .cow-nx,
-.cow-ln.cow-d-wants .cow-nx2 {
+.cow-ln.cow-d-wants .cow-nx2,
+.cow-ln.cow-d-blocked .cow-nx,
+.cow-ln.cow-d-blocked .cow-nx2 {
   color: var(--cow-needs);
   font-weight: 700;
 }
@@ -972,4 +978,35 @@
   .cow-ln.cow-flash {
     animation: none;
   }
+}
+
+/* a refused permission, opened the same way */
+.cow-blk .cow-blk-one + .cow-blk-one {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--cow-rule);
+}
+.cow-blk .cow-blk-msg {
+  display: block;
+  margin: 6px 0 2px 26px;
+}
+.cow-blk .cow-blk-msg > span {
+  display: block;
+  font: 11px/16px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow .cow-blk-msg textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  background: var(--cow-paper);
+  color: var(--cow-ink);
+  border: 1px solid var(--cow-rule);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font: 12.5px/18px var(--cow-mono);
+  outline: 0;
+}
+.cow .cow-blk-msg textarea:focus {
+  border-color: var(--cow-needs);
 }

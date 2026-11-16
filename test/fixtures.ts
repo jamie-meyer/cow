@@ -26,5 +26,5 @@ export function thread(overrides: Partial<ThreadFacts> & { id: string }): Thread
 }
 
 export function activity(overrides: Partial<Activity> = {}): Activity {
-  return { lastEventAt: null, turn: null, latestStep: "", output: "", ask: null, ...overrides };
+  return { lastEventAt: null, turn: null, latestStep: "", output: "", ask: null, refusals: [], ...overrides };
 }

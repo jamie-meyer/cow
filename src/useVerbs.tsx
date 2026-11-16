@@ -10,6 +10,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { AnswerCard, type AnswerState } from "./AnswerCard.tsx";
 import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
+import { BlockedCard, type BlockedState } from "./BlockedCard.tsx";
 import { clockNow } from "./clock.ts";
 import { parkNow, reparkNow } from "./park.ts";
 import type { Parks } from "./parks.ts";
@@ -22,6 +23,7 @@ import {
 } from "./permission.ts";
 import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
+import { chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, type Overview, afterLeaving, listed } from "./tree.ts";
@@ -40,7 +42,8 @@ type Modal =
   /** Why it is archived, or dropped: one optional line, then it happens. */
   | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
-  | ({ kind: "answer" } & AnswerState);
+  | ({ kind: "answer" } & AnswerState)
+  | ({ kind: "blocked" } & BlockedState);
 
 export interface VerbHost {
   sdk: Sdk;
@@ -48,6 +51,7 @@ export interface VerbHost {
   main: Line;
   selected: Line | null;
   parks: Parks;
+  now: number;
   /** The unarchived threads under a thread, which bb archives along with it. */
   under: (id: string) => string[];
   setCursor: (id: string | null) => void;
@@ -79,6 +83,7 @@ export function useVerbs(host: VerbHost): Verbs {
   const [undo, setUndo] = useState<readonly UndoEntry[]>([]);
   const promptRef = useRef<HTMLInputElement | null>(null);
   const answerRef = useRef<HTMLInputElement | null>(null);
+  const blockedRef = useRef<HTMLTextAreaElement | null>(null);
 
   const lineOf = (id: string): Line | null =>
     [main, ...listed(overview)].find((line) => line.thread.id === id) ?? null;
@@ -116,9 +121,17 @@ export function useVerbs(host: VerbHost): Verbs {
   const stale =
     modal !== null &&
     (target === null ||
-      (modal.kind === "answer" && !modal.sending && !target.thread.hasPendingInteraction));
+      (modal.kind === "answer" && !modal.sending && !target.thread.hasPendingInteraction) ||
+      (modal.kind === "blocked" && !modal.sending && !target.derived.blocked));
   useEffect(() => {
-    if (stale) close(modal?.kind === "answer" ? "that question is no longer waiting" : "");
+    if (!stale) return;
+    close(
+      modal?.kind === "answer"
+        ? "that question is no longer waiting"
+        : modal?.kind === "blocked"
+          ? "it is no longer blocked on that"
+          : "",
+    );
   }, [stale, close, modal?.kind]);
 
   // ---- what the verbs do ------------------------------------------------
@@ -183,13 +196,8 @@ export function useVerbs(host: VerbHost): Verbs {
     const next = afterLeaving(overview, id);
     const under = host.under(id);
     try {
-      // The reason is cow's note on the thread; archiving without one forgets an earlier reason.
-      if (reason !== null) await parks.setArchive(id, { reason, at: clockNow() });
-      else if (parks.archives.has(id)) await parks.setArchive(id, null);
-      // Dropping ends whatever the thread still runs; a thread at rest has
-      // nothing to stop, which is not a reason to keep it.
-      if (dropped) await sdk.threads.stop({ threadId: id }).catch(() => undefined);
-      await sdk.threads.archive({ threadId: id });
+      // The backend records the reason, stops a dropped thread, and archives it.
+      await parks.archive(id, reason, dropped, clockNow());
       remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under, reason });
       setCursor(next);
       close(`${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`);
@@ -202,6 +210,7 @@ export function useVerbs(host: VerbHost): Verbs {
     try {
       if (entry.kind === "park") await parks.set(entry.threadId, entry.before);
       else if (entry.kind === "resume") await parks.set(entry.threadId, entry.record);
+      else if (entry.kind === "dismiss") await parks.setDismissal(entry.threadId, entry.before);
       else {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
@@ -315,6 +324,38 @@ export function useVerbs(host: VerbHost): Verbs {
       );
   };
 
+  const confirmBlockedChoice = () => {
+    if (modal?.kind !== "blocked" || modal.sending) return;
+    const { threadId, refusals } = modal;
+    const result = confirmBlocked(modal.draft);
+    if (result.kind === "incomplete") return setModal({ ...modal, note: result.why });
+    const failed = (what: string) => (cause: unknown) =>
+      setModal((current) =>
+        current?.kind === "blocked" ? { ...current, sending: false, note: `${what}: ${errorText(cause)}` } : current,
+      );
+    setModal({ ...modal, sending: true, note: "" });
+    if (result.kind === "dismiss") {
+      const before = parks.dismissals.get(threadId) ?? null;
+      const throughSeq = Math.max(...refusals.map((refusal) => refusal.seq));
+      return void parks.setDismissal(threadId, { throughSeq, at: clockNow() }).then(() => {
+        remember({ kind: "dismiss", threadId, title: lineOf(threadId)?.thread.title ?? "", before });
+        close("dismissed: the thread was told nothing");
+      }, failed("not dismissed"));
+    }
+    // Sent as the user, so the turn it starts is one a person started.
+    sdk.threads
+      .send({ threadId, mode: "auto", input: [{ type: "text", text: result.text, mentions: [] }] })
+      .then(
+        () =>
+          close(
+            result.action === "ask_again"
+              ? "asked again as you: bb will ask you for permission when it tries"
+              : "told it to carry on without that permission",
+          ),
+        failed("not sent"),
+      );
+  };
+
   // ---- starting a verb --------------------------------------------------
 
   const start = (verb: Verb) => {
@@ -325,8 +366,19 @@ export function useVerbs(host: VerbHost): Verbs {
     const returned = line.derived.park?.due != null;
     say("");
     switch (verb) {
-      case "answer":
-        return openAnswer(line);
+      case "answer": {
+        // A real request comes first; a refusal has no request to answer.
+        const refusals = line.derived.blocked?.refusals;
+        if (line.thread.hasPendingInteraction || !refusals) return openAnswer(line);
+        return setModal({
+          kind: "blocked",
+          threadId,
+          refusals,
+          draft: emptyBlockedDraft(refusals),
+          sending: false,
+          note: "",
+        });
+      }
       case "park":
         return setModal(
           returned
@@ -362,7 +414,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume or archive can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive or dismissal can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -459,6 +511,50 @@ export function useVerbs(host: VerbHost): Verbs {
             onCancel={() =>
               close(modal.ask?.kind === "permission" ? "not decided: it is still waiting" : "not answered")
             }
+          />
+        ),
+      },
+    };
+  }
+
+  if (modal.kind === "blocked") {
+    const leaveText = () => focusOverview();
+    return {
+      mode: "BLOCKED",
+      start,
+      startUndo,
+      undoable,
+      onKey: (key) => {
+        if (key === "Escape") return close("nothing sent: it is still blocked");
+        if (key === "Enter") return confirmBlockedChoice();
+        if (modal.sending) return;
+        if (key === "e") {
+          const field = blockedRef.current;
+          if (!field) return;
+          field.focus();
+          // The caret goes to the end: an edit usually adds to the message.
+          return field.setSelectionRange(field.value.length, field.value.length);
+        }
+        if (/^[1-9]$/.test(key)) setModal({ ...modal, draft: chooseBlocked(modal.draft, Number(key)), note: "" });
+      },
+      footer: (
+        <>
+          <span className="cow-mode cow-m-prompt">BLOCKED</span>
+          <span className="cow-noun">{title}</span>
+          <span className="cow-sep">▸</span>
+          <span>what bb refused it is open under its line</span>
+        </>
+      ),
+      card: {
+        threadId: modal.threadId,
+        node: (
+          <BlockedCard
+            state={modal}
+            now={host.now}
+            textRef={blockedRef}
+            onText={(value) => setModal({ ...modal, draft: writeBlocked(modal.draft, value), note: "" })}
+            onConfirm={confirmBlockedChoice}
+            onLeaveText={leaveText}
           />
         ),
       },

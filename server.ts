@@ -1,22 +1,15 @@
-// cow's backend: remembers which thread is Main for each bb project, and
-// keeps cow's notes on a thread (why it is parked, why it was archived) in
-// that thread's plugin metadata.
+// cow's backend: remembers which thread is Main for each bb project, keeps
+// cow's notes on a thread (why it is parked, why it was archived, which
+// refused permissions were dismissed) in that thread's plugin metadata, and
+// registers the `bb cow` CLI.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import {
-  ARCHIVE_KEY,
-  type ArchiveNote,
-  NOTES_CHANGED,
-  PARK_KEY,
-  type ParkRecord,
-  archiveNoteSchema,
-  parkRecordSchema,
-} from "./src/shared.ts";
+import { createActions } from "./src/actions.ts";
+import { cowCli } from "./src/cli.ts";
+import { archiveNoteSchema, dismissalSchema, parkRecordSchema } from "./src/shared.ts";
 
 const id = z.string().min(1).max(200);
 const MAX_NOTE_LIST = 5000;
-/** bb reads plugin metadata for at most this many threads per request. */
-const METADATA_PAGE = 200;
 
 const mainStateSchema = z.object({
   /** Project id to that project's Main thread id. */
@@ -39,6 +32,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       parks: z.record(z.string(), parkRecordSchema),
       archives: z.record(z.string(), archiveNoteSchema),
+      dismissals: z.record(z.string(), dismissalSchema),
     }),
   },
   /** Park a thread, or with a null note, resume it. */
@@ -51,6 +45,19 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: id, note: archiveNoteSchema.nullable() }),
     output: z.null(),
   },
+  /** Dismiss a thread's refused permissions up to a place in its event log, or with null, show them again. */
+  dismissal_set: {
+    input: z.object({ threadId: id, dismissal: dismissalSchema.nullable() }),
+    output: z.null(),
+  },
+  /**
+   * Archive a thread in bb with cow's reason for it; a null reason forgets an
+   * earlier one. `dropped` stops its turn first.
+   */
+  thread_archive: {
+    input: z.object({ threadId: id, reason: z.string().min(1).max(300).nullable(), dropped: z.boolean(), at: z.number() }),
+    output: z.null(),
+  },
 });
 
 const STATE_KEY = "main-state";
@@ -60,6 +67,8 @@ export default async function plugin(bb: BbPluginApi) {
     const stored = mainStateSchema.safeParse(await bb.storage.kv.get(STATE_KEY));
     return stored.success ? stored.data : { mains: {}, currentProjectId: null };
   }
+
+  const actions = createActions(bb, readState);
 
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
@@ -77,35 +86,24 @@ export default async function plugin(bb: BbPluginApi) {
       await bb.storage.kv.set(STATE_KEY, next);
       return next;
     },
-    notes_list: async ({ threadIds }) => {
-      const parks: Record<string, ParkRecord> = {};
-      const archives: Record<string, ArchiveNote> = {};
-      for (let offset = 0; offset < threadIds.length; offset += METADATA_PAGE) {
-        const page = await bb.sdk.threads.experimental_listPluginMetadata({
-          threadIds: threadIds.slice(offset, offset + METADATA_PAGE),
-        });
-        for (const { threadId, metadata } of page.threads) {
-          const park = parkRecordSchema.safeParse(metadata[PARK_KEY]);
-          if (park.success) parks[threadId] = park.data;
-          const archive = archiveNoteSchema.safeParse(metadata[ARCHIVE_KEY]);
-          if (archive.success) archives[threadId] = archive.data;
-        }
-      }
-      return { parks, archives };
-    },
+    notes_list: ({ threadIds }) => actions.notes(threadIds),
     park_set: async ({ threadId, park }) => {
-      await bb.sdk.threads.updatePluginMetadata(
-        park === null ? { threadId, remove: [PARK_KEY] } : { threadId, set: { [PARK_KEY]: park } },
-      );
-      bb.realtime.publish(NOTES_CHANGED, {});
+      await actions.setPark(threadId, park);
       return null;
     },
     archive_note_set: async ({ threadId, note }) => {
-      await bb.sdk.threads.updatePluginMetadata(
-        note === null ? { threadId, remove: [ARCHIVE_KEY] } : { threadId, set: { [ARCHIVE_KEY]: note } },
-      );
-      bb.realtime.publish(NOTES_CHANGED, {});
+      await actions.setArchiveNote(threadId, note);
+      return null;
+    },
+    dismissal_set: async ({ threadId, dismissal }) => {
+      await actions.setDismissal(threadId, dismissal);
+      return null;
+    },
+    thread_archive: async (args) => {
+      await actions.archive(args);
       return null;
     },
   });
+
+  bb.cli.register(cowCli(actions));
 }

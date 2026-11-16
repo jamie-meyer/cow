@@ -43,7 +43,7 @@ export interface Overview {
 }
 
 function emptyCounts(): Record<LineState, number> {
-  return { wants: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 0, done: 0 };
+  return { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 0, done: 0 };
 }
 
 /**
@@ -153,6 +153,27 @@ export function buildOverview(
     overview.counts[line.derived.state] += 1;
   }
   return overview;
+}
+
+/**
+ * One thread as a line, whatever it is under: its state, how many lines are
+ * still open under it, and how many threads would go with it. This is what
+ * the verbs' rules read, for a thread named outside the page. Null when the
+ * thread is not among `threads`.
+ */
+export function lineOf(
+  threads: readonly ThreadFacts[],
+  id: string,
+  deriveThread: (thread: ThreadFacts) => Derived,
+  now: number,
+): Line | null {
+  const under = buildOverview(threads, id, deriveThread, now);
+  if (!under.main) return null;
+  return {
+    ...under.main,
+    openUnder: under.lines.length,
+    under: under.main.derived.state === "parked" ? under.unarchived.length : 0,
+  };
 }
 
 /**

@@ -74,6 +74,12 @@ export const pageSignal = {
 
 const GLYPH_PATH: Record<LineState, ReactNode> = {
   wants: <circle cx="6" cy="6" r="4.3" fill="currentColor" />,
+  blocked: (
+    <>
+      <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M2.9 9.1 9.1 2.9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </>
+  ),
   running: <path d="M2.8 1.6 10.6 6 2.8 10.4z" fill="currentColor" />,
   waiting: (
     <>
@@ -99,11 +105,18 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
 };
 
 /** The states this version can produce, in legend order, with what each means. */
-const LEGEND: readonly { state: LineState; short: string; long: string }[] = [
+const LEGEND: readonly { state: LineState; name?: string; short: string; long: string }[] = [
   {
     state: "wants",
     short: "it asked; or Main replied",
     long: "It asked you a question or for permission, or Main finished with a reply you have not read. Listed in the queue.",
+  },
+  {
+    state: "blocked",
+    // The side legend's column fits one word.
+    name: "blocked",
+    short: "bb refused it a permission",
+    long: "Detected: bb refused it a command or a file change without asking you, because another thread started its turn. Press a to ask again as you (bb then asks you), tell it to carry on, or dismiss. Listed in the queue.",
   },
   {
     state: "running",
@@ -805,6 +818,7 @@ function OverviewScreen({
     main,
     selected: selectedLine,
     parks,
+    now,
     under: (id) => descendantIds(threads, id),
     setCursor,
     say: setMessage,
@@ -1022,8 +1036,8 @@ function OverviewScreen({
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
               <p className="cow-sub">
-                Questions, permission requests, failures, Main's unread replies and parked work that came
-                back, oldest first.
+                Questions, permission requests, refused permissions, failures, Main's unread replies and
+                parked work that came back, oldest first.
               </p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
@@ -1055,7 +1069,7 @@ function OverviewScreen({
                 {LEGEND.map((entry) => (
                   <div className="cow-lg" key={entry.state}>
                     <Glyph state={entry.state} />
-                    <b>{STATE_LABEL[entry.state]}</b>
+                    <b>{entry.name ?? STATE_LABEL[entry.state]}</b>
                     <span className="cow-n">{overview.counts[entry.state]}</span>
                     <span>{entry.short}</span>
                   </div>
@@ -1210,10 +1224,11 @@ export function CowPage() {
                 now,
                 thread.id === mainId ? null : notes.get(thread.id),
                 parks.archives.get(thread.id)?.reason,
+                parks.dismissals.get(thread.id)?.throughSeq,
               ),
             now,
           ),
-    [snapshot, mainId, notes, parks.archives, now],
+    [snapshot, mainId, notes, parks.archives, parks.dismissals, now],
   );
 
   useEffect(() => {

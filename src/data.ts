@@ -2,15 +2,12 @@
 // events, and loads each watched thread's recent activity.
 
 import type { useSdk } from "@get-bb/plugin-sdk/app";
+import { type ThreadReader, listThreads, readActivity, toFacts } from "./activity.ts";
 import type { Activity, ThreadFacts } from "./state.ts";
-import { permissionSummary } from "./permission.ts";
-import { describeItem, firstLine } from "./text.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
 const PAGE_SIZE = 200;
-/** Stop paging here; a truncated list is reported, not hidden. */
-const MAX_THREADS = 5000;
 /** Realtime bursts are folded into one request per this window. */
 const BATCH_MS = 150;
 /** One thread's activity is refreshed at most this often. */
@@ -24,78 +21,6 @@ export interface Snapshot {
   activity: ReadonlyMap<string, Activity>;
   /** True when bb has more threads than this page reads. */
   truncated: boolean;
-}
-
-const num = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-
-/** Read one thread from bb's response, trusting nothing about its shape. */
-export function toFacts(raw: unknown): ThreadFacts | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  if (typeof r.id !== "string" || typeof r.projectId !== "string") return null;
-  if (num(r.deletedAt) !== null) return null;
-  const createdAt = num(r.createdAt) ?? 0;
-  const title =
-    (typeof r.title === "string" && r.title.trim()) ||
-    (typeof r.titleFallback === "string" && r.titleFallback.trim()) ||
-    r.id;
-  return {
-    id: r.id,
-    projectId: r.projectId,
-    title,
-    parentThreadId: typeof r.parentThreadId === "string" ? r.parentThreadId : null,
-    status: typeof r.status === "string" ? r.status : "idle",
-    hasPendingInteraction: r.hasPendingInteraction === true,
-    archivedAt: num(r.archivedAt),
-    lastReadAt: num(r.lastReadAt),
-    latestAttentionAt: num(r.latestAttentionAt) ?? createdAt,
-    createdAt,
-  };
-}
-
-interface EventRow {
-  createdAt: number;
-  type: string;
-  data: Record<string, unknown>;
-}
-
-function toEvent(raw: unknown): EventRow | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  const createdAt = num(r.createdAt);
-  if (createdAt === null || typeof r.type !== "string") return null;
-  const data = typeof r.data === "object" && r.data !== null ? r.data : {};
-  return { createdAt, type: r.type, data: data as Record<string, unknown> };
-}
-
-/** The oldest pending question or permission request among a thread's interactions. */
-export function toAsk(interactions: readonly unknown[]): Activity["ask"] {
-  let oldest: Activity["ask"] = null;
-  for (const raw of interactions) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const r = raw as Record<string, unknown>;
-    if (r.status !== "pending") continue;
-    const at = num(r.createdAt) ?? 0;
-    if (oldest && oldest.at <= at) continue;
-    const payload = (typeof r.payload === "object" && r.payload !== null ? r.payload : {}) as Record<
-      string,
-      unknown
-    >;
-    const question = Array.isArray(payload.questions) ? payload.questions[0] : null;
-    const prompt =
-      typeof question === "object" && question !== null
-        ? (question as Record<string, unknown>).prompt
-        : null;
-    const text = [prompt, payload.title, r.title].find(
-      (candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "",
-    );
-    oldest =
-      payload.kind === "approval"
-        ? { kind: "permission", text: permissionSummary(payload), at }
-        : { kind: "question", text: firstLine(text) || "it is waiting for your input", at };
-  }
-  return oldest;
 }
 
 const errorText = (cause: unknown): string =>
@@ -132,6 +57,10 @@ export class ThreadStore {
 
   constructor(sdk: Sdk) {
     this.sdk = sdk;
+  }
+
+  private get reader(): ThreadReader {
+    return this.sdk.threads;
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -186,20 +115,7 @@ export class ThreadStore {
       this.publish();
     }
     try {
-      const all: ThreadFacts[] = [];
-      let truncated = false;
-      for (let offset = 0; ; offset += PAGE_SIZE) {
-        const page = await this.sdk.threads.list({ limit: PAGE_SIZE, offset });
-        for (const raw of page) {
-          const facts = toFacts(raw);
-          if (facts) all.push(facts);
-        }
-        if (page.length < PAGE_SIZE) break;
-        if (offset + PAGE_SIZE >= MAX_THREADS) {
-          truncated = true;
-          break;
-        }
-      }
+      const { threads: all, truncated } = await listThreads(this.reader);
       if (this.stopped || seq !== this.loadSeq) return;
       this.threads.clear();
       for (const facts of all) this.threads.set(facts.id, facts);
@@ -300,37 +216,11 @@ export class ThreadStore {
     }
   }
 
-  private async fetchActivity(threadId: string): Promise<Activity> {
-    const latest = { threadId, limit: "1", order: "desc" } as const;
-    const asking = this.threads.get(threadId)?.hasPendingInteraction === true;
-    const [turns, items, output, interactions] = await Promise.all([
-      this.sdk.threads.events.list({ ...latest, types: ["turn/started", "turn/completed"] }),
-      this.sdk.threads.events.list({ ...latest, types: ["item/started", "item/completed"] }),
-      this.sdk.threads.output({ threadId }),
-      asking ? this.sdk.threads.interactions.list({ threadId }) : [],
-    ]);
-    const turn = toEvent(turns[0]);
-    const item = toEvent(items[0]);
-    const lastEventAt = Math.max(
-      turn?.createdAt ?? 0,
-      item?.createdAt ?? 0,
-      this.seenEventAt.get(threadId) ?? 0,
-    );
-    return {
-      lastEventAt: lastEventAt || null,
-      turn: turn
-        ? {
-            phase: turn.type === "turn/started" ? "started" : "completed",
-            at: turn.createdAt,
-            failed: turn.type === "turn/completed" && turn.data.status === "failed",
-          }
-        : null,
-      latestStep: describeItem(item?.data.item as Parameters<typeof describeItem>[0]),
-      // bb reports no output while a turn runs; keep what it last said.
-      output:
-        (typeof output.output === "string" && output.output) ||
-        (this.activity.get(threadId)?.output ?? ""),
-      ask: toAsk(interactions),
-    };
+  private fetchActivity(threadId: string): Promise<Activity> {
+    return readActivity(this.reader, threadId, {
+      asking: this.threads.get(threadId)?.hasPendingInteraction === true,
+      seenEventAt: this.seenEventAt.get(threadId),
+      previousOutput: this.activity.get(threadId)?.output,
+    });
   }
 }

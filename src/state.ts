@@ -2,6 +2,7 @@
 // cow's own note on it when the user has parked it.
 
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
+import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
 import { firstLine, formatAge } from "./text.ts";
 
@@ -23,10 +24,12 @@ export const LIMITS = {
 
 /**
  * The states a line can show. Nothing produces `waiting` yet: it needs the
- * agent to say what it waits on.
+ * agent to say what it waits on. `blocked` is detected: bb refused the agent
+ * a permission without asking the user.
  */
 export type LineState =
   | "wants"
+  | "blocked"
   | "running"
   | "waiting"
   | "stuck"
@@ -36,6 +39,7 @@ export type LineState =
 
 export const STATE_LABEL: Record<LineState, string> = {
   wants: "wants you",
+  blocked: "blocked on a permission",
   running: "running",
   waiting: "waiting",
   stuck: "stuck",
@@ -71,6 +75,8 @@ export interface Activity {
   output: string;
   /** The question or permission request it is waiting on the user for, if any. */
   ask: { kind: "question" | "permission"; text: string; at: number } | null;
+  /** What bb refused without asking, and nothing has resolved since. */
+  refusals: readonly Refusal[];
 }
 
 export interface Derived {
@@ -92,6 +98,8 @@ export interface Derived {
   archivedWhy?: string;
   /** Set when the user parked it: the note, and why it is back if it is. */
   park?: { record: ParkRecord; due: Due | null };
+  /** Set when bb refused it a permission without asking: what was refused, oldest first. */
+  blocked?: { refusals: readonly Refusal[] };
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -136,6 +144,8 @@ export function derive(
   park?: ParkRecord | null,
   /** Why the user archived it; shown only while it is archived. */
   archivedWhy?: string | null,
+  /** The user dismissed its refused permissions up to this place in its event log. */
+  dismissedThroughSeq?: number | null,
 ): Derived {
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
@@ -195,6 +205,20 @@ export function derive(
       doing,
       next: !asked ? "read its reply" : ask?.kind === "permission" ? "grant or deny: press a" : "answer it: press a",
       waitingOnYou: true,
+    };
+  }
+
+  // A refused permission outranks running and done: the work may go on, but
+  // not the way the agent meant, and only the user can change that.
+  const refusals = undismissed(activity?.refusals ?? [], dismissedThroughSeq);
+  if (refusals.length > 0) {
+    return {
+      state: "blocked",
+      since: refusals[0]!.at,
+      doing: refusalSummary(refusals),
+      next: "ask again: press a",
+      waitingOnYou: true,
+      blocked: { refusals },
     };
   }
 

@@ -1,0 +1,220 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { CowError } from "../src/actions.ts";
+import { type CliActions, cowCli } from "../src/cli.ts";
+import { derive } from "../src/state.ts";
+import { type StatusReport, statusReport, statusText } from "../src/status.ts";
+import { buildOverview, lineOf } from "../src/tree.ts";
+import { verbBlocked } from "../src/verbs.ts";
+import { DAY, HOUR, NOW, activity, thread } from "./fixtures.ts";
+
+const EMPTY_REPORT: StatusReport = {
+  main: { id: "main", title: "Main", state: "done", label: "done", inStateMs: 0, inState: "1m", doing: "", next: "", depth: 0, queue: null },
+  queue: [],
+  threads: [],
+  parked: [],
+  done: [],
+  omitted: { threads: 0, parked: 0, done: 0, queue: 0, olderDone: 0 },
+  truncated: false,
+};
+
+/** Actions that record what they were asked to do. */
+function recorder(overrides: Partial<CliActions> = {}) {
+  const calls: unknown[][] = [];
+  const actions: CliActions = {
+    archiveChecked: async (...args) => (calls.push(["archive", ...args]), { title: "T", under: 0 }),
+    parkChecked: async (args) => (
+      calls.push(["park", args]),
+      { title: "T", kept: false, record: { at: NOW, reason: args.reason, pickUp: { kind: "none" }, checkedAt: NOW } }
+    ),
+    resumeChecked: async (...args) => (calls.push(["resume", ...args]), { title: "T" }),
+    status: async (...args) => (calls.push(["status", ...args]), EMPTY_REPORT),
+    ...overrides,
+  };
+  const cli = cowCli(actions);
+  const run = (...argv: string[]) => cli.run(argv, { projectId: "proj_1", signal: new AbortController().signal });
+  return { calls, run, cli };
+}
+
+test("archive takes a thread and an optional reason", async () => {
+  const { calls, run } = recorder();
+  const plain = await run("archive", "thr_a");
+  assert.equal(plain.exitCode, 0);
+  assert.equal(plain.stdout, "archived “T” (thr_a)\n");
+  const reasoned = await run("archive", "thr_a", "--reason", "merged  and done");
+  assert.equal(reasoned.stdout, "archived “T” (thr_a): merged and done\n");
+  assert.deepEqual(calls, [
+    ["archive", "thr_a", null],
+    ["archive", "thr_a", "merged and done"],
+  ]);
+});
+
+test("archive says how many threads went with it", async () => {
+  const { run } = recorder({ archiveChecked: async () => ({ title: "T", under: 2 }) });
+  assert.equal((await run("archive", "thr_a")).stdout, "archived “T” (thr_a) with the 2 threads under it\n");
+});
+
+test("park needs a reason, and passes the pick-up through as typed", async () => {
+  const { calls, run } = recorder();
+  const missing = await run("park", "thr_a");
+  assert.equal(missing.exitCode, 1);
+  assert.match(missing.stderr ?? "", /--reason/);
+  const blank = await run("park", "thr_a", "--reason", "  ");
+  assert.equal(blank.exitCode, 1);
+  assert.match(blank.stderr ?? "", /a reason is needed/);
+  assert.deepEqual(calls, []);
+
+  const parked = await run("park", "thr_a", "--reason", "waiting on review", "--pickup", "+3d");
+  assert.equal(parked.exitCode, 0);
+  assert.match(parked.stdout ?? "", /^parked “T” \(thr_a\): waiting on review · /);
+  await run("park", "thr_a", "--reason", "r", "--stop");
+  assert.deepEqual(calls, [
+    ["park", { threadId: "thr_a", reason: "waiting on review", pickUp: "+3d", stop: false }],
+    ["park", { threadId: "thr_a", reason: "r", pickUp: "", stop: true }],
+  ]);
+});
+
+test("a reason that is too long is refused before anything happens", async () => {
+  const { calls, run } = recorder();
+  const result = await run("park", "thr_a", "--reason", "x".repeat(301));
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr ?? "", /under 300 characters/);
+  assert.deepEqual(calls, []);
+});
+
+test("resume takes a thread", async () => {
+  const { calls, run } = recorder();
+  assert.equal((await run("resume", "thr_a")).stdout, "resumed “T” (thr_a): it is back in the tree\n");
+  assert.deepEqual(calls, [["resume", "thr_a"]]);
+});
+
+test("a thread is required, and has to look like an id", async () => {
+  const { calls, run } = recorder();
+  for (const verb of ["archive", "resume"]) {
+    const missing = await run(verb);
+    assert.equal(missing.exitCode, 1, verb);
+  }
+  const bad = await run("resume", "not a thread");
+  assert.equal(bad.exitCode, 1);
+  assert.match(bad.stderr ?? "", /is not a thread id/);
+  assert.deepEqual(calls, []);
+  await run("resume", "thread:thr_b");
+  assert.deepEqual(calls, [["resume", "thr_b"]]);
+});
+
+test("status uses the caller's project unless a Main is named", async () => {
+  const { calls, run } = recorder();
+  const text = await run("status");
+  assert.equal(text.exitCode, 0);
+  assert.match(text.stdout ?? "", /^Main: Main \(main\)/);
+  const json = await run("status", "--main", "thr_m", "--json");
+  assert.equal(JSON.parse(json.stdout ?? "").main.id, "main");
+  assert.deepEqual(calls, [
+    ["status", null, "proj_1"],
+    ["status", "thr_m", "proj_1"],
+  ]);
+});
+
+test("a rule's refusal exits non-zero with what is wrong, and as JSON when asked", async () => {
+  const refuse = async () => {
+    throw new CowError("cannot_archive", "cannot archive “T” (thr_a): threads under it are still open", "Archive those first.");
+  };
+  const { run } = recorder({ archiveChecked: refuse });
+  const text = await run("archive", "thr_a");
+  assert.equal(text.exitCode, 1);
+  assert.match(text.stderr ?? "", /threads under it are still open/);
+  const json = await run("archive", "thr_a", "--json");
+  assert.equal(json.exitCode, 1);
+  const body = JSON.parse(json.stdout ?? "");
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, "cannot_archive");
+});
+
+test("help lists every command; an unknown command or option fails", async () => {
+  const { run, cli } = recorder();
+  const help = await run("help");
+  assert.equal(help.exitCode, 0);
+  for (const name of ["status", "archive", "park", "resume"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
+  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "park", "resume", "status"]);
+  assert.equal((await run("park", "--help")).exitCode, 0);
+  assert.equal((await run("moo")).exitCode, 1);
+  assert.equal((await run("resume", "thr_a", "--nope")).exitCode, 1);
+});
+
+// ---- what the commands print, and the rules they check --------------------
+
+const park = { at: NOW - 15 * DAY, reason: "waiting on a review", pickUp: { kind: "none" as const }, checkedAt: NOW - 15 * DAY };
+const THREADS = [
+  thread({ id: "main" }),
+  thread({ id: "a", parentThreadId: "main", status: "active", title: "build the thing" }),
+  thread({ id: "a1", parentThreadId: "a", hasPendingInteraction: true }),
+  thread({ id: "b", parentThreadId: "main" }),
+  thread({ id: "c", parentThreadId: "main" }),
+  thread({ id: "old", parentThreadId: "main", latestAttentionAt: NOW - 9 * DAY }),
+];
+const ACTIVITY = new Map([
+  ["a", activity({ turn: { phase: "started", at: NOW - HOUR, failed: false }, lastEventAt: NOW, latestStep: "$ npm test" })],
+  ["a1", activity({ ask: { kind: "question", text: "Which colour?", at: NOW - 5 * 60_000 } })],
+  ["b", activity({ output: "all done" })],
+]);
+const deriveThread = (t: (typeof THREADS)[number]) => derive(t, ACTIVITY.get(t.id), NOW, t.id === "c" ? park : null);
+
+test("status gives one line per thread, the queue, and the shelf", () => {
+  const report = statusReport(buildOverview(THREADS, "main", deriveThread, NOW), NOW, false);
+  assert.deepEqual(report.threads.map((line) => [line.id, line.state, line.depth]), [
+    ["a", "running", 0],
+    ["a1", "wants", 1],
+  ]);
+  assert.deepEqual(report.queue.map((line) => [line.id, line.doing, line.waiting]), [["a1", "Which colour?", "5m"]]);
+  assert.deepEqual(report.parked.map((line) => [line.id, line.doing, line.inState]), [["c", "waiting on a review", "15d"]]);
+  assert.deepEqual(report.done.map((line) => line.id), ["b"]);
+  assert.equal(report.omitted.olderDone, 1);
+
+  const text = statusText(report);
+  assert.match(text, /^Main: main \(main\) · /);
+  assert.match(text, /Waiting on the user \(1\)\n 1  a1 \(a1\)  Which colour\? · waiting 5m/);
+  assert.match(text, /running\s+1h  build the thing \(a\)  \$ npm test → finishes its turn/);
+  assert.match(text, / 1  wants\s+5m    a1 \(a1\)  Which colour\?/);
+  assert.match(text, /Parked \(1\)\n    parked\s+15d  c \(c\)  waiting on a review/);
+  assert.match(text, /Done in the last 2 days \(1; 1 older, not listed\)/);
+});
+
+test("status is bounded: long lists are cut and counted, long text is shortened", () => {
+  const many = [
+    thread({ id: "main" }),
+    ...Array.from({ length: 120 }, (_, index) =>
+      thread({ id: `t${index}`, parentThreadId: "main", status: "active", title: "x".repeat(300) }),
+    ),
+  ];
+  const report = statusReport(buildOverview(many, "main", (t) => derive(t, undefined, NOW), NOW), NOW, true);
+  assert.equal(report.threads.length, 80);
+  assert.equal(report.omitted.threads, 40);
+  assert.ok(report.threads.every((line) => line.title.length <= 80));
+  const text = statusText(report);
+  assert.match(text, /Threads \(120\)/);
+  assert.match(text, /… and 40 more, not listed/);
+  assert.match(text, /bb has more threads than cow reads/);
+  assert.ok(text.length < 40_000);
+});
+
+test("a thread named to a verb is judged by the page's rules", () => {
+  const line = (id: string) => lineOf(THREADS, id, deriveThread, NOW);
+  assert.equal(lineOf(THREADS, "missing", deriveThread, NOW), null);
+  // Open threads under it: the page refuses to archive, and so does the CLI.
+  assert.equal(line("a")!.openUnder, 1);
+  assert.equal(verbBlocked("archive", line("a"), false), "threads under it are still open");
+  assert.equal(verbBlocked("archive", line("b"), false), null);
+  // Done long enough ago not to be listed on the page, it can still be archived.
+  assert.equal(verbBlocked("archive", line("old"), false), null);
+  assert.equal(verbBlocked("resume", line("b"), false), "it is not parked");
+  assert.equal(verbBlocked("park", line("b"), false), null);
+});
+
+test("a parked thread named to a verb counts what is under it", () => {
+  const threads = [...THREADS, thread({ id: "c1", parentThreadId: "c" })];
+  const line = lineOf(threads, "c", (t) => derive(t, undefined, NOW, t.id === "c" ? park : null), NOW)!;
+  assert.equal(line.derived.state, "parked");
+  assert.equal(line.under, 1);
+  assert.equal(verbBlocked("resume", line, false), null);
+  assert.equal(verbBlocked("park", line, false), "it is already parked");
+});

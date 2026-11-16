@@ -5,10 +5,12 @@
 // only to those threads, and it answers, stops and archives only those. It
 // archives them all when it finishes. The permission requests it grants are
 // for `echo` and for writing one small file under /tmp, which it removes.
+// It also runs `bb cow` against the same fixtures.
 //
 // Choosing a Main records it on the server as where a new cow window starts.
-// The check puts that record back at once, each time, and no window that is
-// already open is moved by it.
+// The check puts that record back at once, each time, for the fixtures'
+// project only, and no window that is already open is moved by it. A Main
+// you choose in another project while it runs is left alone.
 //
 //   1. Start Chrome with a throwaway profile:
 //        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -71,6 +73,23 @@ async function rpc(method, input) {
 async function bb(...argv) {
   const { stdout } = await run("bb", [...argv, "--json"]);
   return JSON.parse(stdout);
+}
+/** Tell a fixture something as another thread would (Main, say), or as the user. */
+async function tellAs(sender, id, text) {
+  const env = { ...process.env };
+  if (sender === null) delete env.BB_THREAD_ID;
+  else env.BB_THREAD_ID = sender;
+  await run("bb", ["thread", "tell", id, text, "--json"], { env });
+}
+/** Run `bb cow …`; a refusal is an answer here, not an error. */
+async function cow(...argv) {
+  try {
+    const { stdout, stderr } = await run("bb", ["cow", ...argv]);
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    if (typeof error.code !== "number") throw error;
+    return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+  }
 }
 async function waitForThread(id, predicate, label, timeout = 120_000) {
   const deadline = Date.now() + timeout;
@@ -153,6 +172,7 @@ async function reset(ids) {
     if (thread.archivedAt) await bb("thread", "unarchive", id);
     await rpc("park_set", { threadId: id, park: null });
     await rpc("archive_note_set", { threadId: id, note: null });
+    await rpc("dismissal_set", { threadId: id, dismissal: null });
   }
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
@@ -160,6 +180,10 @@ async function reset(ids) {
   // A fixture that has just been made is still on its way to its first question.
   const asks = await waitForThread(ids.asks, (t) => t.hasPendingInteraction || t.status === "idle", "settled");
   if (!asks.hasPendingInteraction) await bb("thread", "tell", ids.asks, "again");
+  // A message from the user clears whatever bb refused this fixture in an earlier run.
+  await waitForThread(ids.perms, (t) => t.status === "idle" && !t.hasPendingInteraction, "idle");
+  await tellAs(null, ids.perms, "reset");
+  await sleep(2000);
 }
 
 /** The project of each fixture, by name: where its Main is stored. */
@@ -192,16 +216,23 @@ async function main() {
   await reset(ids);
   const before = await rpc("main_state", null);
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
+  // Only what this run can have changed is put back or compared: the Main of
+  // the fixtures' project, and which project was chosen last. Any other
+  // project's Main is somebody's own choice, perhaps made during the run.
+  const ourProjects = [...new Set(Object.values(PROJECT_OF))];
+  const ours = (state) =>
+    JSON.stringify([ourProjects.map((project) => state.mains[project] ?? null), state.currentProjectId]);
   restoreStored = async () => {
-    const now = await rpc("main_state", null);
-    for (const project of Object.keys(now.mains)) {
+    let now = await rpc("main_state", null);
+    for (const project of ourProjects) {
       if (now.mains[project] !== before.mains[project]) {
-        await rpc("main_choose", { projectId: project, threadId: before.mains[project] ?? null });
+        now = await rpc("main_choose", { projectId: project, threadId: before.mains[project] ?? null });
       }
     }
     const current = before.currentProjectId;
-    if (current && before.mains[current] && (await rpc("main_state", null)).currentProjectId !== current) {
-      await rpc("main_choose", { projectId: current, threadId: before.mains[current] });
+    const movedByUs = now.currentProjectId === null || ourProjects.includes(now.currentProjectId);
+    if (current && now.currentProjectId !== current && movedByUs && now.mains[current]) {
+      await rpc("main_choose", { projectId: current, threadId: now.mains[current] });
     }
   };
 
@@ -299,8 +330,8 @@ async function main() {
   );
   const restored = await rpc("main_state", null);
   check(
-    "the stored Mains are as they were before the run",
-    JSON.stringify(restored) === JSON.stringify(before),
+    "what the run changed in the stored Mains is back as it was",
+    ours(restored) === ours(before),
     JSON.stringify(restored),
   );
   check("the second window has no console errors", other.consoleErrors.length === 0, other.consoleErrors.join(" | "));
@@ -729,6 +760,201 @@ async function main() {
     const events = await api(`/threads/${id}/events?types=system/interaction/lifecycle&limit=20&order=desc`);
     return events.map((event) => event.data?.interaction).find((interaction) => interaction?.resolution)?.resolution ?? null;
   };
+
+  // -- blocked on a permission: bb refused without asking --
+  // Told by Main, as under cow, so no person started the turn and bb refuses by itself.
+  const blockedCard = `document.querySelector('[data-cow-blocked="${ids.perms}"]')`;
+  const blockedMessage = `(document.querySelector('[data-cow-input="blocked-message"]')?.value ?? null)`;
+  const blockedChosen = `JSON.stringify([...document.querySelectorAll("[data-cow-blocked-action]")].map((o) => o.dataset.cowChosen === "true"))`;
+  const dismissal = async (id) => (await rpc("notes_list", { threadIds: [id] })).dismissals[id] ?? null;
+  const userRows = async (id) =>
+    (await api(`/threads/${id}/timeline`)).rows.filter((row) => row.kind === "conversation" && row.role === "user");
+  const blockedPath = `/tmp/cow-test-blocked-${Date.now()}/cow.txt`;
+
+  await tellAs(ids.main, ids.perms, `write: ${blockedPath}`);
+  await page.waitFor(`${lineState(ids.perms)} === "blocked"`, { label: "the blocked line", timeout: 120_000 });
+  await waitForThread(ids.perms, (t) => t.status === "idle", "at rest after the refusal", 60_000);
+  check(
+    "a file change bb refused on a turn Main started: no request was raised, and the file was not written",
+    !(await facts(ids.perms)).hasPendingInteraction && !existsSync(blockedPath),
+  );
+  check(
+    "the line is blocked on a permission and says what was refused and what to do",
+    (await page.eval(lineText(ids.perms))).startsWith(`bb refused to change ${blockedPath}`) &&
+      (await page.eval(lineNext(ids.perms))) === "ask again: press a",
+    `${await page.eval(lineText(ids.perms))} / ${await page.eval(lineNext(ids.perms))}`,
+  );
+  check(
+    "it is in the queue, with what was refused",
+    (await page.eval(`document.querySelector('[data-cow-queue="${ids.perms}"] p')?.textContent ?? ""`)) ===
+      `bb refused to change ${blockedPath}`,
+  );
+  await shot("blocked-line");
+  await select(ids.perms);
+  check("verb bar: a blocked line can be answered", (await page.eval(verbOff("answer"))) === false);
+  await page.key("a");
+  await page.waitFor(`!!${blockedCard}`, { label: "the blocked card" });
+  const fileRefusal = JSON.parse(
+    await page.eval(`JSON.stringify((() => {
+      const el = ${blockedCard};
+      const line = document.querySelector('.cow-main [data-cow-line="${ids.perms}"]');
+      return {
+        underLine: line.nextElementSibling === el,
+        count: el.dataset.cowBlockedCount,
+        path: el.querySelector("[data-cow-refusal-path]")?.textContent,
+        added: el.querySelector(".cow-diff-add")?.textContent.trim(),
+        actions: [...el.querySelectorAll("[data-cow-blocked-action]")].map((o) => o.dataset.cowBlockedAction),
+        numbers: [...el.querySelectorAll("[data-cow-answer-option] kbd")].map((k) => k.textContent).join(""),
+        text: el.textContent,
+      };
+    })())`),
+  );
+  check(
+    "a opens the refusal under the line: the file, its diff, and why bb did not ask",
+    fileRefusal.underLine &&
+      fileRefusal.count === "1" &&
+      fileRefusal.path === blockedPath &&
+      fileRefusal.added === "+cow" &&
+      fileRefusal.text.includes("only on a turn that a person started"),
+    JSON.stringify(fileRefusal),
+  );
+  check(
+    "it offers three choices, numbered: ask again as me, carry on without it, dismiss",
+    JSON.stringify(fileRefusal.actions) === JSON.stringify(["ask_again", "carry_on", "dismiss"]) && fileRefusal.numbers === "123",
+    JSON.stringify(fileRefusal.actions),
+  );
+  await shot("blocked-card");
+  await page.key("Enter");
+  check("Enter with nothing chosen does nothing and says why", (await page.eval(answerNote)).includes("choose an option"));
+  const rowsBefore = (await userRows(ids.perms)).length;
+  await page.key("2");
+  await sleep(1500);
+  check(
+    "a digit only marks the choice and shows the message cow would send; nothing is sent",
+    (await page.eval(blockedChosen)) === "[false,true,false]" &&
+      (await page.eval(blockedMessage))?.includes("I will not grant it") &&
+      (await page.eval(blockedMessage))?.endsWith(`change the file ${blockedPath}`) &&
+      (await userRows(ids.perms)).length === rowsBefore,
+    await page.eval(blockedMessage),
+  );
+  await shot("blocked-carry-on");
+  await page.key("Escape");
+  check(
+    "Escape closes the card and sends nothing: the line stays blocked",
+    !(await page.eval(`!!${blockedCard}`)) && (await page.eval(lineState(ids.perms))) === "blocked",
+  );
+  await page.key("a");
+  await page.waitFor(`!!${blockedCard}`, { label: "the blocked card again" });
+  await page.key("2");
+  await page.key("Enter");
+  await page.waitFor(`${lineState(ids.perms)} !== "blocked"`, { label: "the line no longer blocked", timeout: 60_000 });
+  const carryOn = (await userRows(ids.perms)).at(-1);
+  check(
+    "carry on without it: the message goes to the thread as the user, and the line is no longer blocked",
+    carryOn?.initiator === "user" && carryOn.text.includes("I will not grant it") && carryOn.text.endsWith(`change the file ${blockedPath}`),
+    JSON.stringify(carryOn?.text),
+  );
+  check("nothing was granted: the file was not written", !existsSync(blockedPath));
+  await waitForThread(ids.perms, (t) => t.status === "idle", "at rest after carrying on", 60_000);
+
+  // A refused command: dismiss it, take that back, then ask again as the user.
+  await tellAs(ids.main, ids.perms, "ask: echo blocked cow");
+  await page.waitFor(`${lineText(ids.perms)}.startsWith("bb refused to run: echo blocked cow")`, {
+    label: "the refused command on its line",
+    timeout: 120_000,
+  });
+  await waitForThread(ids.perms, (t) => t.status === "idle", "at rest after the second refusal", 60_000);
+  check(
+    "a command bb refused the same way blocks the line again",
+    (await page.eval(lineState(ids.perms))) === "blocked" && !(await facts(ids.perms)).hasPendingInteraction,
+  );
+  await select(ids.perms);
+  await page.key("a");
+  await page.waitFor(`!!${blockedCard}`, { label: "the card for the command" });
+  check(
+    "the card shows the exact command",
+    (await page.eval(`${blockedCard}.querySelector("[data-cow-refusal-command]")?.textContent.trim()`)) === "echo blocked cow",
+  );
+  const rowsBeforeDismiss = (await userRows(ids.perms)).length;
+  await page.key("3");
+  await page.key("Enter");
+  await page.waitFor(`${lineState(ids.perms)} === "done"`, { label: "the dismissed line" });
+  check(
+    "dismiss clears the blocked state and tells the thread nothing",
+    (await dismissal(ids.perms)) !== null &&
+      !(await page.eval(inQueue(ids.perms))) &&
+      (await userRows(ids.perms)).length === rowsBeforeDismiss,
+  );
+  check("verb bar: the dismissal can be undone", (await page.eval(verbText("undo"))).includes("undo dismiss"));
+  await page.key("u");
+  check("u says what it will undo", (await page.eval(confirmLabel)).includes("undo dismissing"), await page.eval(confirmLabel));
+  await page.key("y");
+  await page.waitFor(`${lineState(ids.perms)} === "blocked"`, { label: "the dismissal undone" });
+  check("undone, the line is blocked again", (await dismissal(ids.perms)) === null && (await page.eval(inQueue(ids.perms))));
+
+  await select(ids.perms);
+  await page.key("a");
+  await page.waitFor(`!!${blockedCard}`, { label: "the card, to ask again" });
+  await page.key("1");
+  await sleep(500);
+  const askAgain = await page.eval(blockedMessage);
+  check(
+    "ask again as me shows its message first: it names the command and says why",
+    askAgain?.endsWith("echo blocked cow") && askAgain.includes("was not started by a person"),
+    askAgain,
+  );
+  await page.key("e");
+  await page.type(" ");
+  check(
+    "e puts the caret in the message, where keys type and choose nothing",
+    (await page.eval(blockedMessage)) === `${askAgain} ` && (await page.eval(blockedChosen)) === "[true,false,false]",
+  );
+  await page.key("Backspace");
+  await page.key("Escape");
+  check(
+    "Escape there goes back to the choices and keeps the card",
+    (await page.eval(`!!${blockedCard}`)) && (await page.eval(`document.activeElement?.tagName`)) !== "TEXTAREA",
+  );
+  await shot("blocked-ask-again");
+  await page.key("Enter");
+  await waitForThread(ids.perms, (t) => t.hasPendingInteraction, "asking for permission after ask again", 120_000);
+  const asked = (await userRows(ids.perms)).at(-1);
+  check(
+    "ask again as me: the message went as the user, and bb now raises a real permission request",
+    asked?.initiator === "user" && asked.text === askAgain,
+    JSON.stringify(asked?.text),
+  );
+  await page.waitFor(`${lineText(ids.perms)}.startsWith("permission to run: echo blocked cow")`, {
+    label: "the request on its line",
+  });
+  check(
+    "the line now wants you, with the request, and the blocked card has closed",
+    (await page.eval(lineState(ids.perms))) === "wants" && !(await page.eval(`!!${blockedCard}`)),
+  );
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector('[data-cow-answer="${ids.perms}"] [data-cow-permission="command"]')`, {
+    label: "the permission card for the retried command",
+  });
+  check(
+    "a opens the ordinary permission card for exactly that command",
+    (await page.eval(`document.querySelector("[data-cow-permission-command]")?.textContent.trim()`)) === "echo blocked cow",
+  );
+  await shot("blocked-request");
+  await page.key("1");
+  await page.key("Enter");
+  await waitForThread(ids.perms, (t) => !t.hasPendingInteraction, "allowed after ask again", 30_000);
+  await page.waitFor(`${lineText(ids.perms)} === "blocked cow"`, { label: "the retried command running", timeout: 120_000 });
+  const ranRow = (await api(`/threads/${ids.perms}/timeline`)).rows.findLast((row) => row.command === "echo blocked cow");
+  check(
+    "granted, the command that bb had refused runs",
+    ranRow?.status === "completed" && ranRow.output.trim() === "blocked cow" && (await lastDecision(ids.perms))?.decision === "allow_once",
+    JSON.stringify({ status: ranRow?.status, output: ranRow?.output }),
+  );
+  check(
+    "the line is done and out of the queue",
+    (await page.eval(lineState(ids.perms))) === "done" && !(await page.eval(inQueue(ids.perms))),
+  );
+  await waitForThread(ids.perms, (t) => t.status === "idle", "at rest", 60_000);
 
   await sayTo(ids.perms, "ask: echo cow");
   await waitForThread(ids.perms, (t) => t.hasPendingInteraction, "asking for permission", 60_000);
@@ -1241,6 +1467,111 @@ async function main() {
   await waitForThread(ids.runs, (t) => !busy(t), "stopped by parking", 30_000);
   check("y stops it and parks it", (await parkNote(ids.runs))?.reason === "long job");
 
+  // -- the CLI: the same verbs for an agent, and the page following along --
+  const help = await cow("help");
+  check(
+    "bb cow help lists the commands",
+    help.code === 0 && ["status", "archive", "park", "resume"].every((name) => help.stdout.includes(`bb cow ${name}`)),
+    help.stdout,
+  );
+  const status = await cow("status", "--main", ids.main);
+  // A thread's own line starts with its place in the queue, or a gap, and then its state.
+  const statusLine = (id) =>
+    status.stdout.split("\n").find((line) => line.includes(`(${id})`) && /^[ \d]{4}(wants|blocked|running|stuck|parked|failed|done) /.test(line)) ?? "";
+  check(
+    "bb cow status gives one line per thread with its state, and the parked shelf",
+    status.code === 0 &&
+      status.stdout.startsWith(`Main: ${TITLE} (${ids.main})`) &&
+      /^ *\d+  failed /.test(statusLine(ids.fails)) &&
+      /^ +parked .*long job/.test(statusLine(ids.runs)) &&
+      status.stdout.includes("Parked (1)"),
+    status.stdout,
+  );
+  const statusJson = JSON.parse((await cow("status", "--main", ids.main, "--json")).stdout);
+  check(
+    "with --json it is the same overview as data: lines, queue and shelf",
+    statusJson.ok === true &&
+      statusJson.main.id === ids.main &&
+      statusJson.parked.map((line) => line.id).join() === ids.runs &&
+      statusJson.queue.some((line) => line.id === ids.fails) &&
+      statusJson.threads.find((line) => line.id === ids.fails)?.depth === 1,
+    JSON.stringify(statusJson).slice(0, 400),
+  );
+  check("status output is bounded", status.stdout.length < 20_000, String(status.stdout.length));
+
+  const resumed = await cow("resume", ids.runs);
+  await page.waitFor(`${lineState(ids.runs)} !== "parked"`, { label: "the page following a CLI resume" });
+  check(
+    "bb cow resume removes the note, and the page shows it without a reload",
+    resumed.code === 0 && (await parkNote(ids.runs)) === null,
+    resumed.stderr,
+  );
+  const noReason = await cow("park", ids.runs);
+  const badDate = await cow("park", ids.runs, "--reason", "set aside by the cli", "--pickup", "31 Feb");
+  check(
+    "bb cow park needs a reason, and rejects a date that does not exist, as the page does",
+    noReason.code !== 0 && /--reason/.test(noReason.stderr) && badDate.code !== 0 && /there is no 31 Feb/.test(badDate.stderr) &&
+      (await parkNote(ids.runs)) === null,
+    `${noReason.stderr} / ${badDate.stderr}`,
+  );
+  const cliParkedAt = Date.now();
+  const cliParked = await cow("park", ids.runs, "--reason", "set aside by the cli", "--pickup", "+3d");
+  await page.waitFor(
+    `${lineState(ids.runs)} === "parked" && ${lineText(ids.runs)}.includes("set aside by the cli")`,
+    { label: "the page following a CLI park" },
+  );
+  const cliNote = await parkNote(ids.runs);
+  check(
+    "bb cow park records the reason and pick-up, and the line moves to the shelf without a reload",
+    cliParked.code === 0 &&
+      cliNote?.reason === "set aside by the cli" &&
+      cliNote.pickUp.kind === "date" &&
+      Math.abs(cliNote.pickUp.at - (cliParkedAt + 3 * DAY)) < 60_000,
+    `${cliParked.stderr} ${JSON.stringify(cliNote)}`,
+  );
+  await shot("cli-parked");
+  const again = await cow("park", ids.runs, "--reason", "twice");
+  const notParked = await cow("resume", ids.quiet);
+  const missing = await cow("resume", "thr_cow_test_no_such_thread");
+  check(
+    "the page's rules hold: no parking twice, no resuming what is not parked, no unknown thread",
+    again.code !== 0 && /already parked/.test(again.stderr) &&
+      notParked.code !== 0 && /it is not parked/.test(notParked.stderr) &&
+      missing.code !== 0 && /there is no thread/.test(missing.stderr),
+    `${again.stderr} / ${notParked.stderr} / ${missing.stderr}`,
+  );
+  const openUnder = await cow("archive", ids.quiet, "--reason", "should be refused");
+  check(
+    "bb cow archive refuses a line with open threads under it, and exits non-zero",
+    openUnder.code !== 0 && /threads under it are still open/.test(openUnder.stderr) && !(await facts(ids.quiet)).archivedAt,
+    openUnder.stderr,
+  );
+  const asJson = await cow("archive", ids.quiet, "--json");
+  check(
+    "with --json a refusal is an error object",
+    asJson.code !== 0 && JSON.parse(asJson.stdout).error?.code === "cannot_archive",
+    asJson.stdout,
+  );
+  const archived = await cow("archive", ids.fails, "--reason", "cleaned up by the cli");
+  await waitForThread(ids.fails, (t) => t.archivedAt, "archived by the CLI", 15_000);
+  await page.waitFor(`${archiveReason(ids.fails)}.includes("cleaned up by the cli")`, {
+    label: "the page following a CLI archive",
+  });
+  check(
+    "bb cow archive archives with the reason, and the line shows it under Done without a reload",
+    archived.code === 0 &&
+      (await archiveNote(ids.fails))?.reason === "cleaned up by the cli" &&
+      (await page.eval(lineState(ids.fails))) === "done",
+    archived.stderr,
+  );
+  await shot("cli-archived");
+  const twice = await cow("archive", ids.fails);
+  check("archiving it twice is refused", twice.code !== 0 && /already archived/.test(twice.stderr), twice.stderr);
+  // Back to where the page's own checks left things.
+  await bb("thread", "unarchive", ids.fails);
+  await rpc("archive_note_set", { threadId: ids.fails, note: null });
+  await page.waitFor(`${lineState(ids.fails)} === "failed"`, { label: "the line back after the CLI checks" });
+
   // -- one theme for the page and the chat beside it --
   // What the page and the chat each draw with, read where they are drawn.
   const look = `JSON.stringify((() => {
@@ -1305,7 +1636,9 @@ async function main() {
       matches(cow.light) &&
         matches(cow.dark) &&
         cow.light.chatFont.includes("Iowan Old Style") &&
-        cow.light.pageBackground !== active.light.pageBackground &&
+        // It differs from the theme bb had, unless bb was already running the cow theme.
+        (active.light.chatFont.includes("Iowan Old Style") ||
+          cow.light.pageBackground !== active.light.pageBackground) &&
         cow.light.pageBackground !== cow.dark.pageBackground,
       JSON.stringify(cow),
     );
@@ -1371,11 +1704,12 @@ async function main() {
   // -- put things back --
   await restoreStored();
   const after = await rpc("main_state", null);
-  check("the stored Mains are still as they were", JSON.stringify(after) === JSON.stringify(before), JSON.stringify(after));
+  check("what the run changed in the stored Mains is still as it was", ours(after) === ours(before), JSON.stringify(after));
   if (!flag("keep")) {
     for (const id of Object.values(ids)) {
       await rpc("park_set", { threadId: id, park: null });
       await rpc("archive_note_set", { threadId: id, note: null });
+      await rpc("dismissal_set", { threadId: id, dismissal: null });
       await bb("thread", "archive", id);
       // Archiving leaves a thread that is waiting on its question running.
       await fetch(`${BB}/api/v1/threads/${id}/stop`, {

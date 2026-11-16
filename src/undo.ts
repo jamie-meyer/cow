@@ -1,12 +1,15 @@
-// What the page can take back: the last park, resume or archive. Stopping a
-// turn and answering a question reach the agent, so they are never recorded.
+// What the page can take back: the last park, resume, archive or dismissal.
+// Stopping a turn, answering a question and sending a message reach the
+// agent, so they are never recorded.
 
-import type { ParkRecord } from "./shared.ts";
+import type { Dismissal, ParkRecord } from "./shared.ts";
 
 export type UndoEntry =
   /** Parked, or kept parked with a new pick-up; `before` is the note it replaced. */
   | { kind: "park"; threadId: string; title: string; before: ParkRecord | null }
   | { kind: "resume"; threadId: string; title: string; record: ParkRecord }
+  /** Dismissed its refused permissions; `before` is the dismissal it replaced. */
+  | { kind: "dismiss"; threadId: string; title: string; before: Dismissal | null }
   /**
    * Archived; `dropped` when it was parked work, stopped and archived
    * together. bb archives a thread's descendants with it but brings back
@@ -37,6 +40,8 @@ export function undoText(entry: UndoEntry): string {
         : `undo keeping ${name} parked: it asks again`;
     case "resume":
       return `undo resuming ${name}: it goes back on the shelf`;
+    case "dismiss":
+      return `undo dismissing what bb refused ${name}: it reads as blocked again`;
     case "archive": {
       const kept = entry.reason === null ? "" : "; its reason is kept";
       return entry.dropped
@@ -50,5 +55,6 @@ export function undoText(entry: UndoEntry): string {
 export function undoShort(entry: UndoEntry): string {
   if (entry.kind === "park") return entry.before === null ? "undo park" : "undo keep";
   if (entry.kind === "resume") return "undo resume";
+  if (entry.kind === "dismiss") return "undo dismiss";
   return entry.dropped ? "undo drop" : "undo archive";
 }

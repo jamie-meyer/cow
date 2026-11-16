@@ -27,7 +27,9 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
   switch (verb) {
     case "answer":
       if (parked) return "it is parked: resume it first";
-      return thread.hasPendingInteraction && !archived ? null : "it has not asked anything";
+      if (archived) return "it is archived";
+      // A refused permission is answered too: ask again, carry on, or dismiss.
+      return thread.hasPendingInteraction || derived.blocked ? null : "it has not asked anything";
     case "park":
       if (isMain) return "Main cannot be parked";
       if (archived) return "it is archived";
@@ -42,6 +44,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       if (archived) return "it is already archived";
       // bb archives a thread's descendants with it.
       if (line.openUnder > 0) return "threads under it are still open";
+      // A blocked line whose turn has ended is at rest, like a done one.
+      if (derived.state === "blocked" && !isBusy(thread)) return null;
       return derived.state === "done" || derived.state === "failed" ? null : "only done or failed lines can be archived";
   }
 }

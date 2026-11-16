@@ -90,4 +90,6 @@ test("undo says what it will take back", () => {
   assert.match(undoText({ kind: "archive", ...base, dropped: true, under: ["a"], reason: null }), /the thread under it.*stays stopped/);
   assert.equal(undoShort({ kind: "archive", ...base, dropped: true, under: [], reason: null }), "undo drop");
   assert.equal(undoShort({ kind: "park", ...base, before: null }), "undo park");
+  assert.match(undoText({ kind: "dismiss", ...base, before: null }), /undo dismissing what bb refused “Billing”.*blocked again/);
+  assert.equal(undoShort({ kind: "dismiss", ...base, before: null }), "undo dismiss");
 });

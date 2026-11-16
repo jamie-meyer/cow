@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toAsk, toFacts } from "../src/data.ts";
+import { toAsk, toFacts } from "../src/activity.ts";
 
 test("toFacts reads a thread and falls back where bb left fields empty", () => {
   const facts = toFacts({

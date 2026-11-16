@@ -9,16 +9,17 @@ the manner of vim.
 ## Status
 
 Early. The page shows every thread's state and acts on it: you can answer a
-question, grant or deny a permission request, park work and get it back, stop
-a turn, archive with a reason, and undo. A state comes from what bb knows
-about a thread plus cow's own notes on it. Nothing tells cow yet that a
-thread is waiting on something other than you.
+question, grant or deny a permission request, deal with a permission bb
+refused without asking, park work and get it back, stop a turn, archive with
+a reason, and undo. An agent can leave the same notes with the `bb cow` CLI.
+A state comes from what bb knows about a thread plus cow's own notes on it.
+Nothing tells cow yet that a thread is waiting on something other than you.
 
 A thread that finishes reports to the thread that started it, so it is that
 thread's to deal with: its line turns done and still shows the first line of
 what it reported. The queue holds only what is yours: questions, permission
-requests, failures, replies from Main that you have not read, and parked work
-that has come back.
+requests, permissions bb refused without asking, failures, replies from Main
+that you have not read, and parked work that has come back.
 
 ## Install for development
 
@@ -69,13 +70,14 @@ verb takes no hint, and its key says why it does not apply.
 | --- | --- | --- |
 | `a` | a line with a pending question | opens the question under the line: digits choose, `Enter` sends, `Esc` cancels |
 | `a` | a line with a permission request | opens the request under the line: digits choose, `Enter` confirms, `Esc` cancels |
+| `a` | a line blocked on a permission | opens what bb refused: ask again as you, tell it to carry on, or dismiss |
 | `p` | any line that is not parked | parks it: a reason, then a pick-up |
 | `p` | parked work that came back | keeps it parked with a new pick-up; the reason stays |
 | `r` | a parked line | resumes it: back into the tree |
 | `x` | a line whose turn is running | stops the turn, after `y` |
 | `x` | parked work that came back | drops it: asks for a reason, then stops and archives it |
 | `e` | a done or failed line | asks for a reason, then archives the thread in bb |
-| `u` | anywhere | undoes the last park, resume or archive, after showing what and `y` |
+| `u` | anywhere | undoes the last park, resume, archive or dismissal, after showing what and `y` |
 
 A confirmation takes `y`; any other key cancels it and does nothing else.
 
@@ -137,13 +139,70 @@ Two limits come from bb, not from cow:
 - bb asks only when the turn was started by a person. When another agent
   started the turn (Main telling a thread to do something, for example), bb
   refuses what would need permission and tells the agent so; no request is
-  raised, and there is nothing for cow to show.
+  raised. cow finds those refusals itself: see "Blocked on a permission".
 - bb's denial carries no text. "Deny, and tell it why" is a denial followed
   by a normal message to the thread.
 
 cow answers requests to run a command and to change a file. A plan to
 approve, or a request to use some other tool, is described on the card, and
 `Enter` opens the thread's chat to answer it there.
+
+## Blocked on a permission
+
+Under cow most turns are started by Main, not by you. bb raises a permission
+request only on a turn a person started; on any other turn it refuses the
+action by itself, tells the agent no, and shows you nothing. The work is then
+blocked on a permission you were never asked for.
+
+cow reads each thread's event log for those refusals. A thread that has one
+gets a state of its own, **blocked on a permission** (⊘). Its line and its
+queue entry say what was refused, "bb refused to run: …" or "bb refused to
+change /path", with "(and 2 more)" when there are several.
+
+`a` opens the refusal under the line: each refused command or file change in
+full (the command, or the file and its diff), what bb told the agent, and
+three choices, numbered. A digit marks one and `Enter` carries it out.
+
+| Choice | Does |
+| --- | --- |
+| Ask again as me | sends the thread a message, as you, telling it to do exactly that again |
+| Tell it to carry on without it | sends a message, as you, saying the permission will not be granted and to go another way or report back |
+| Dismiss | clears the blocked state and tells the thread nothing; `u` undoes it |
+
+**Ask again as me** is the way to grant what bb refused. cow cannot approve a
+refusal after the fact, because bb raised no request to approve. But a
+message sent as you starts a turn that a person started, so when the agent
+tries the same action again bb does ask. That request appears on the line
+like any other ("permission to run: …"), and `a` opens the ordinary
+permission card to allow or deny it. So it is two steps on purpose: ask
+again, then grant.
+
+Both messages are shown on the card before anything is sent. `e` puts the
+caret in the message to edit it (`Shift+Enter` for a new line, `Esc` back to
+the choices); `Enter` sends it. A sent message cannot be undone.
+
+A refusal stops counting, and the line leaves this state, when any of these
+happens:
+
+- you send the thread a message (either choice above, or `I`);
+- the same command runs, or the same file is changed, successfully later in
+  that turn;
+- the thread starts a new turn, whoever started it: whoever runs the thread
+  has moved it on;
+- you dismiss it, or the thread is archived.
+
+So a refusal the agent worked around stays on the page only until that
+thread's next turn, and never longer than you let it: dismiss it. The cost of
+this rule is that a thread nudged by Main while still blocked stops reading
+as blocked unless bb refuses it again.
+
+What cow recognises is what bb does today with the Claude Code provider: a
+command or file change that failed without an approval, on a prompt not sent
+by you, with one of the messages bb refuses with. bb marks a refusal in no
+other way. A denial you made yourself is never shown as a refusal. cow reads
+the latest hundred or so events of a thread, so a refusal further back than
+that in a very long turn is not seen. Refused tools other than the shell and
+file edits are not detected.
 
 ## Parking
 
@@ -194,10 +253,10 @@ without one.
 
 ## Undo
 
-`u` takes back the last park, resume, or archive (it unarchives), then the
-one before, for as long as the page stays open. Three things cannot be
-undone, and they say so: stopping a turn, answering a question, and deciding
-a permission request.
+`u` takes back the last park, resume, archive (it unarchives), or dismissal
+of a refused permission, then the one before, for as long as the page stays
+open. Four things cannot be undone, and they say so: stopping a turn,
+answering a question, deciding a permission request, and sending a message.
 Undoing a park that stopped a turn, or a drop, restores the line but the turn
 stays stopped. bb archives the threads under a thread along with it; undo
 brings those back too.
@@ -226,6 +285,7 @@ colours and font alone.
 | Mark | State | Means |
 | --- | --- | --- |
 | ● | wants you | it asked you a question or for permission, or Main finished with a reply you have not read |
+| ⊘ | blocked on a permission | bb refused it a command or a file change without asking you; `a` asks again as you |
 | ▶ | running | a turn is in progress |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
 | ‖ | parked | you set it aside with `p`; it is on the shelf until it comes back |
@@ -234,17 +294,54 @@ colours and font alone.
 
 The limits live in one place, `LIMITS` in `src/state.ts`.
 
+## The CLI, for agents
+
+Main is an agent, and it cleans up after the threads it started. `bb cow`
+gives it the page's verbs, so its clean-up carries a reason the way yours
+does. The commands follow the page's rules and act through the same backend
+code, and the page shows what they change at once.
+
+```sh
+bb cow status [--main <thread>] [--json]
+bb cow archive <thread> [--reason <text>]
+bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
+bb cow resume <thread>
+bb cow help
+```
+
+| Command | Does |
+| --- | --- |
+| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf and what finished in the last 2 days |
+| `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open |
+| `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
+| `resume` | takes a parked thread off the shelf |
+
+`status` uses the Main last chosen on the page for the project the command
+runs in, unless `--main` names one. Its output is bounded: at most 80 open
+threads, 30 parked, 20 done and 20 queue entries are listed, and the rest are
+counted. `park` refuses a thread whose turn is running unless `--stop` is
+given, which stops the turn first, as the page does after asking. A refused
+command exits non-zero and says why; every command takes `--json`.
+
+The CLI has no undo: `bb cow resume` reverses a park, and
+`bb thread unarchive` reverses an archive. Answering questions, granting
+permissions and dealing with refused ones stay with you, on the page.
+
+The plugin ships a skill, `skills/cow/SKILL.md`, that tells agents about
+these commands.
+
 ## Develop
 
 ```sh
-npm test            # unit tests: states, parking, pick-up dates, verbs, answers, permission requests, hints
+npm test            # unit tests: states, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints
 npm run typecheck
 ```
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
 six cheap fixture threads titled "cow test", acts only on those (it answers,
-stops and archives them for real, and grants them permission to run `echo`
-and to write one file under `/tmp`), and archives them afterwards. See the top of `scripts/e2e.mjs` for how to run it.
+stops and archives them for real, grants them permission to run `echo` and to
+write one file under `/tmp`, and runs `bb cow` on them), and archives them
+afterwards. See the top of `scripts/e2e.mjs` for how to run it.
 
 ## Turn it off
 
@@ -254,9 +351,9 @@ bb plugin remove cow    # uninstall it and delete what it stored
 ```
 
 cow stores three things: which thread was last chosen as Main for each
-project; its notes on a thread (why it is parked, why it was archived), kept
-in that thread's plugin metadata; and, in each window's session storage, the
-Main that window shows.
+project; its notes on a thread (why it is parked, why it was archived, which
+refused permissions you dismissed), kept in that thread's plugin metadata;
+and, in each window's session storage, the Main that window shows.
 
 ## License
 
