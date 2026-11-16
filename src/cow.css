@@ -76,6 +76,19 @@
   border-bottom: 1px solid var(--cow-rule);
   min-width: 0;
 }
+.cow-mainline {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  min-width: 0;
+  flex: 1 1 0;
+  padding: 0 6px 0 0;
+  border-radius: 0 4px 4px 0;
+  cursor: default;
+}
+.cow-mainline.cow-cur {
+  padding-left: 8px;
+}
 .cow-crumbs {
   font: 600 19px/22px var(--cow-serif);
   margin: 0;

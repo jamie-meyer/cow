@@ -90,8 +90,8 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
 const LEGEND: readonly { state: LineState; short: string; long: string }[] = [
   {
     state: "wants",
-    short: "it asked, or replied unread",
-    long: "It asked you something, or finished with a reply you have not read. Also listed in the queue.",
+    short: "it asked; or Main replied",
+    long: "It asked you something, or Main finished with a reply you have not read. Listed in the queue.",
   },
   {
     state: "running",
@@ -106,12 +106,12 @@ const LEGEND: readonly { state: LineState; short: string; long: string }[] = [
   {
     state: "failed",
     short: "its last turn failed",
-    long: "Its last turn ended in an error. Open it to retry or stop.",
+    long: "Its last turn ended in an error. Open it to retry or stop. Listed in the queue.",
   },
   {
     state: "done",
     short: "ended in the last 2 days",
-    long: "Finished and read, or archived, in the last 2 days. Older ones are counted, not listed.",
+    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. Older ones are counted, not listed.",
   },
 ];
 
@@ -590,12 +590,16 @@ function OverviewScreen({
   // leaves the page, it lands on the line that took its place.
   const [cursor, setCursor] = useState<string | null>(null);
   const lastIndex = useRef(0);
+  // The heading is not in the line order, but the queue can put the cursor on it.
+  const onMain = cursor === main.thread.id;
   const cursorIndex = cursor === null ? -1 : order.indexOf(cursor);
   const selected =
-    cursorIndex >= 0 ? cursor : (order[Math.min(lastIndex.current, order.length - 1)] ?? null);
+    onMain || cursorIndex >= 0
+      ? cursor
+      : (order[Math.min(lastIndex.current, order.length - 1)] ?? null);
   useEffect(() => {
-    if (selected !== null) lastIndex.current = order.indexOf(selected);
-  }, [selected, order]);
+    if (selected !== null && !onMain) lastIndex.current = order.indexOf(selected);
+  }, [selected, onMain, order]);
 
   const [pane, setPane] = useState<string | null>(null);
   const [focusRequest, setFocusRequest] = useState(0);
@@ -656,10 +660,6 @@ function OverviewScreen({
   const openChat = useCallback(
     (id: string | null) => {
       if (id === null) return;
-      // Opening a chat is reading it. bb records that itself only for threads
-      // without a parent, so say it for every thread. If it fails the line
-      // simply keeps wanting you.
-      sdk.threads.markRead({ threadId: id }).catch(() => undefined);
       if (pane === id) {
         chatMayFocus.current = true;
         rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]")?.focus({ preventScroll: true });
@@ -669,7 +669,7 @@ function OverviewScreen({
       setPane(id);
       setMessage("");
     },
-    [pane, sdk],
+    [pane],
   );
 
   const closePane = useCallback(() => {
@@ -716,6 +716,8 @@ function OverviewScreen({
   };
 
   const run = (command: Command) => {
+    // Nothing is above the heading.
+    if (onMain && command.kind === "move" && command.by < 0) return;
     if (moveInList({ order, cursor: selected, setCursor }, command)) return;
     switch (command.kind) {
       case "open":
@@ -764,7 +766,7 @@ function OverviewScreen({
   }, [selected]);
 
   const selectedLine =
-    [...overview.lines, ...overview.done].find((line) => line.thread.id === selected) ?? null;
+    [main, ...overview.lines, ...overview.done].find((line) => line.thread.id === selected) ?? null;
   const listed = overview.lines.length + overview.done.length;
   const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
   const row = (line: Line, flat: boolean) => (
@@ -796,18 +798,27 @@ function OverviewScreen({
     >
       <div className="cow-app">
         <header className="cow-head">
-          <h1 className="cow-crumbs">
-            <span className="cow-emoji">🐄</span>
-            <b>{main.thread.title}</b>
-          </h1>
-          <span
-            className={`cow-mainstate cow-s-${main.derived.state}`}
-            data-cow-main-state={main.derived.state}
+          <div
+            className={onMain ? "cow-mainline cow-cur" : "cow-mainline"}
+            data-cow-line={main.thread.id}
+            data-cow-hint=""
+            onClick={() => setCursor(main.thread.id)}
+            onDoubleClick={() => openChat(main.thread.id)}
           >
-            <Glyph state={main.derived.state} />
-            {STATE_LABEL[main.derived.state]} <Age derived={main.derived} now={now} />
-          </span>
-          <span className="cow-maindoing">{main.derived.doing}</span>
+            {main.queueNumber === null ? null : <span className="cow-qn">{main.queueNumber}</span>}
+            <h1 className="cow-crumbs">
+              <span className="cow-emoji">🐄</span>
+              <b>{main.thread.title}</b>
+            </h1>
+            <span
+              className={`cow-mainstate cow-s-${main.derived.state}`}
+              data-cow-main-state={main.derived.state}
+            >
+              <Glyph state={main.derived.state} />
+              {STATE_LABEL[main.derived.state]} <Age derived={main.derived} now={now} />
+            </span>
+            <span className="cow-maindoing">{main.derived.doing}</span>
+          </div>
           {message ? (
             <span className="cow-msg" data-cow-message="">
               {message}
@@ -858,7 +869,7 @@ function OverviewScreen({
               <h2>
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
-              <p className="cow-sub">An index, oldest first. Each entry jumps to its line.</p>
+              <p className="cow-sub">Questions, failures and Main's unread replies, oldest first.</p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
                   <li className="cow-q-empty">Nothing is waiting on you.</li>
@@ -1021,8 +1032,8 @@ export function CowPage() {
 
   useEffect(() => {
     if (!overview?.main) return store.watch([]);
-    // Whether a finished thread's reply is unread shows only in its event log,
-    // so every thread that is not archived is watched, listed or not.
+    // When a thread with a parent finished shows only in its event log, so
+    // every thread that is not archived is watched, listed or not.
     store.watch([overview.main.thread.id, ...overview.unarchived, ...cursorOrder(overview)]);
   }, [store, overview]);
 

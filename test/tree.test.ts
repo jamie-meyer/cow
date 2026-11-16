@@ -68,21 +68,33 @@ test("a finished thread stays in the tree while work under it is open", () => {
   assert.equal(overview.olderDone, 0);
 });
 
-test("the queue is the lines waiting on you, oldest first, numbered from 1", () => {
+test("the queue holds questions, failures and Main's unread reply, oldest first", () => {
   const overview = build([
-    thread({ id: "main" }),
+    thread({ id: "main", lastReadAt: NOW - 3 * HOUR, latestAttentionAt: NOW - 2 * HOUR }),
     thread({ id: "newer", parentThreadId: "main", hasPendingInteraction: true, latestAttentionAt: NOW - HOUR, createdAt: 2 }),
     thread({ id: "running", parentThreadId: "main", status: "active", createdAt: 3 }),
-    thread({ id: "older", parentThreadId: "main", lastReadAt: null, latestAttentionAt: NOW - 5 * HOUR, createdAt: 4 }),
-    thread({ id: "failed", parentThreadId: "main", status: "error", createdAt: 5 }),
+    thread({ id: "finished", parentThreadId: "main", lastReadAt: null, createdAt: 4 }),
+    thread({ id: "failed", parentThreadId: "main", status: "error", latestAttentionAt: NOW - 5 * HOUR, createdAt: 5 }),
     thread({ id: "ancient", parentThreadId: "main", hasPendingInteraction: true, latestAttentionAt: NOW - 30 * DAY, createdAt: 6 }),
   ]);
-  assert.deepEqual(ids(overview.queue), ["ancient", "older", "newer"]);
+  assert.deepEqual(ids(overview.queue), ["ancient", "failed", "main", "newer"]);
   const numbers = Object.fromEntries(overview.lines.map((l) => [l.thread.id, l.queueNumber]));
-  assert.deepEqual(numbers, { newer: 3, running: null, older: 2, failed: null, ancient: 1 });
+  assert.deepEqual(numbers, { newer: 4, running: null, failed: 2, ancient: 1 });
+  assert.equal(overview.main?.queueNumber, 3);
+  assert.deepEqual(ids(overview.done), ["finished"]);
   assert.equal(overview.counts.stuck, 1);
-  assert.equal(overview.counts.wants, 2);
+  assert.equal(overview.counts.wants, 1);
   assert.equal(overview.counts.failed, 1);
+});
+
+test("a finished, never-opened child goes to Done and stays out of the queue", () => {
+  const overview = build([
+    thread({ id: "main" }),
+    thread({ id: "child", parentThreadId: "main", lastReadAt: null, latestAttentionAt: NOW - HOUR }),
+  ]);
+  assert.deepEqual(ids(overview.lines), []);
+  assert.deepEqual(ids(overview.done), ["child"]);
+  assert.deepEqual(overview.queue, []);
 });
 
 test("a Main that is missing gives an empty overview", () => {

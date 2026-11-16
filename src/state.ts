@@ -10,7 +10,7 @@ const DAY = 24 * HOUR;
 export const LIMITS = {
   /** A running thread with no event for this long reads as stuck. */
   runningQuietMs: 2 * HOUR,
-  /** Something waiting on the user for this long reads as stuck. */
+  /** A question or unread reply waiting on the user this long reads as stuck. */
   waitingOnUserMs: 7 * DAY,
   /** Done lines are listed for this long, then only counted. */
   doneListedMs: 2 * DAY,
@@ -77,9 +77,10 @@ export interface Derived {
   /** What moves it next. */
   next: string;
   /**
-   * It asked something, or finished with a reply the user has not read.
-   * Decides queue membership, and stays true when the wait has gone on long
-   * enough for the state to read as stuck.
+   * The user is the one who has to move it: it asked something, it failed, or
+   * it is a thread of the user's own with a reply they have not read. Decides
+   * queue membership, and stays true when a wait has gone on long enough for
+   * the state to read as stuck.
    */
   waitingOnYou: boolean;
 }
@@ -98,6 +99,16 @@ function isBusy(thread: ThreadFacts): boolean {
 function settledAt(thread: ThreadFacts, activity: Activity | undefined): number {
   const finished = activity?.turn?.phase === "completed" ? activity.turn.at : 0;
   return Math.max(thread.latestAttentionAt, finished);
+}
+
+/**
+ * A finished reply is the user's to read only on a thread with no parent,
+ * such as Main. A thread that has a parent reported to that parent, and is
+ * the parent's to deal with.
+ */
+function hasUnreadReply(thread: ThreadFacts): boolean {
+  if (thread.parentThreadId !== null || isBusy(thread)) return false;
+  return thread.lastReadAt === null || thread.lastReadAt < thread.latestAttentionAt;
 }
 
 export function derive(
@@ -124,13 +135,12 @@ export function derive(
       since: settled,
       doing: said || "its last turn failed",
       next: "open it: retry or stop",
-      waitingOnYou: false,
+      waitingOnYou: true,
     };
   }
 
   const asked = thread.hasPendingInteraction;
-  const unread = thread.lastReadAt === null || thread.lastReadAt < settled;
-  if (asked || (!isBusy(thread) && unread)) {
+  if (asked || hasUnreadReply(thread)) {
     const ask = asked ? (activity?.ask ?? null) : null;
     const since = ask?.at ?? settled;
     const doing = asked ? ask?.text || said || "it asked you something" : said || "finished";

@@ -193,14 +193,26 @@ async function main() {
     `["${ids.quiet}", "${ids.fails}"].map((id) => parseFloat(getComputedStyle(document.querySelector('[data-cow-line="' + id + '"] .cow-nm')).paddingLeft))`,
   );
   check("a grandchild is indented under its parent", indent[1] > indent[0], indent.join(" < "));
-  const queued = await page.eval(
-    `JSON.stringify([...document.querySelectorAll(".cow-main [data-cow-state='wants'] .cow-qn")].map((el) => el.textContent).sort())`,
+  check("a finished child is done, though nobody opened it", (await page.eval(lineState(ids.quiet))) === "done");
+  await page.waitFor(
+    `document.querySelector('[data-cow-line="${ids.quiet}"] .cow-wh')?.textContent === "ok"`,
+    { label: "what the finished child reported" },
+  );
+  check("its line still says what it reported", true);
+  const numbered = JSON.parse(
+    await page.eval(`JSON.stringify(Object.fromEntries([...${ROOT}.querySelectorAll("[data-cow-line]")]
+      .map((el) => [el.dataset.cowLine, el.querySelector(".cow-qn")?.textContent ?? ""])))`),
   );
   const queueSize = await page.eval(`document.querySelectorAll("[data-cow-queue]").length`);
   check(
-    "the queue numbers the lines that want you",
-    queueSize >= 1 && queued === JSON.stringify(Array.from({ length: queueSize }, (_, i) => String(i + 1))),
-    queued,
+    "the queue numbers the question and the failure, not the finished child",
+    numbered[ids.asks] !== "" && numbered[ids.fails] !== "" && numbered[ids.quiet] === "",
+    JSON.stringify(numbered),
+  );
+  check(
+    "every queue entry has a number on the page",
+    Object.values(numbered).filter(Boolean).sort().join() ===
+      Array.from({ length: queueSize }, (_, i) => String(i + 1)).join(),
   );
   await page.waitFor(
     `document.querySelector('[data-cow-line="${ids.fails}"] .cow-wh')?.textContent.includes("cow-test-no-such-model")`,
@@ -231,9 +243,9 @@ async function main() {
       `JSON.stringify([...document.querySelectorAll("[data-cow-queue]")].map((el) => el.dataset.cowQueue))`,
     ),
   );
+  // Start on the finished child, which is not in the queue.
   await page.key("g");
   await page.key("g");
-  await page.key("j");
   await page.key("Tab");
   check("Tab jumps to the first ask", await page.eval(isCursor(queue[0])));
   await page.key("Tab");
@@ -355,13 +367,13 @@ async function main() {
   await page.key("Enter");
   await page.waitFor(`${lineState(ids.quiet)} === "running"`, { label: "the line running", timeout: 30_000 });
   check("a state change shows live: a line starts running", true);
-  await page.waitFor(`${lineState(ids.quiet)} === "wants"`, { label: "the line wanting you", timeout: 120_000 });
-  check("a state change shows live: its unread reply wants you", true);
+  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the line finishing", timeout: 120_000 });
+  check("a state change shows live: it finishes and is done, not waiting on you", true);
   check("the line kept its place and the cursor", await page.eval(isCursor(ids.quiet)));
-  await page.key("Enter");
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the read line", timeout: 30_000 });
-  check("opening its chat reads the reply, and the line turns done", true);
-  await page.key("Escape");
+  check(
+    "a finished child stays out of the queue",
+    await page.eval(`!document.querySelector('[data-cow-queue="${ids.quiet}"]')`),
+  );
 
   const cursorBefore = await page.eval(cursorId);
   const note = `cow e2e jk12 ${Date.now()}`;
@@ -383,14 +395,34 @@ async function main() {
     timeout: 30_000,
   });
   check("a state change shows live: Main starts running", true);
-  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState !== "running"`, {
-    label: "Main finishing",
+  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "wants"`, {
+    label: "Main's unread reply",
     timeout: 120_000,
   });
-  check("a state change shows live: Main finishes", true);
+  check("a state change shows live: Main's unread reply wants you", true);
   check("live updates keep the cursor", (await page.eval(cursorId)) === cursorBefore);
   const timeline = JSON.stringify(await api(`/threads/${ids.main}/timeline`));
   check("the say message arrived in Main", timeline.includes(note));
+
+  // -- Main's unread reply is in the queue, and reading it clears it --
+  const mainNumber = await page.eval(
+    `document.querySelector('[data-cow-queue="${ids.main}"] .cow-qn')?.textContent ?? ""`,
+  );
+  check("Main's unread reply is in the queue", mainNumber !== "", mainNumber);
+  await page.key(mainNumber);
+  check("its queue number puts the cursor on the heading", await page.eval(isCursor(ids.main)));
+  await page.key("Enter");
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.main}"`, {
+    label: "Main's chat from the heading",
+  });
+  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "done"`, {
+    label: "Main read",
+    timeout: 30_000,
+  });
+  check("opening Main's chat reads the reply, and it leaves the queue", await page.eval(`!document.querySelector('[data-cow-queue="${ids.main}"]')`));
+  await page.key("Escape");
+  await page.key("j");
+  check("j leaves the heading for the first line", await page.eval(isCursor(ids.quiet)));
 
   // -- themes and a narrow window --
   const paper = `getComputedStyle(${ROOT}).backgroundColor`;

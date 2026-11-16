@@ -12,8 +12,10 @@ Early. The page is read-only apart from talking to threads: it shows states,
 opens chats and sends messages. It cannot park, stop or answer from the page
 yet, and the states come only from what bb already knows about a thread.
 
-One thing to know: opening a thread's chat from cow marks that thread read.
-That is how a finished thread stops asking for you.
+A thread that finishes reports to the thread that started it, so it is that
+thread's to deal with: its line turns done and still shows the first line of
+what it reported. The queue holds only what is yours: questions, failures,
+and replies from Main that you have not read.
 
 ## Install for development
 
@@ -43,7 +45,7 @@ The page starts in normal mode. Typing in any input works as usual.
 | `m` | open Main's chat the same way |
 | `i` | say something to Main |
 | `I` | say something to the selected thread |
-| `Tab`, `Shift+Tab` | next, previous line that is waiting on you |
+| `Tab`, `Shift+Tab` | next, previous entry in the queue |
 | `1` to `9` | jump to that place in the queue |
 | `M` | choose a different Main |
 | `?` | the legend and this key map |
@@ -57,11 +59,11 @@ while the page is open.
 
 | Mark | State | Means |
 | --- | --- | --- |
-| ● | wants you | it asked something, or finished with a reply you have not read |
+| ● | wants you | it asked you something, or Main finished with a reply you have not read |
 | ▶ | running | a turn is in progress |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
-| ✕ | failed | its last turn ended in an error |
-| ✓ | done | finished and read, or archived, in the last 2 days; older ones are only counted |
+| ✕ | failed | its last turn ended in an error; stays in the queue |
+| ✓ | done | finished, or archived, in the last 2 days; older ones are only counted |
 
 The limits live in one place, `LIMITS` in `src/state.ts`.
 

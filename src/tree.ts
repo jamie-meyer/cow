@@ -1,5 +1,5 @@
 // The overview's shape: Main's descendants as indented lines, the recently
-// done ones apart, and the queue of lines waiting on the user.
+// done ones apart, and the queue of what is waiting on the user.
 
 import {
   type Derived,
@@ -28,7 +28,7 @@ export interface Overview {
   unarchived: string[];
   /** Finished longer ago: counted, not listed. */
   olderDone: number;
-  /** Lines waiting on the user, oldest first. */
+  /** Main and the lines that are waiting on the user, oldest first. */
   queue: Line[];
   /** How many listed lines are in each state. */
   counts: Record<LineState, number>;
@@ -74,12 +74,13 @@ export function buildOverview(
     counts: emptyCounts(),
   };
   if (!mainThread) return overview;
-  overview.main = {
+  const mainLine: Line = {
     thread: mainThread,
     derived: deriveThread(mainThread),
     depth: 0,
     queueNumber: null,
   };
+  overview.main = mainLine;
 
   const seen = new Set<string>([mainId]);
   /** Adds the subtree's lines; returns whether any of it is still open. */
@@ -107,7 +108,9 @@ export function buildOverview(
   }
 
   overview.done.sort((a, b) => b.derived.since - a.derived.since);
-  overview.queue = overview.lines
+  // Main has no line of its own, but its unread reply or question is still
+  // the user's to deal with, so it takes a place in the queue.
+  overview.queue = [mainLine, ...overview.lines]
     .filter((line) => line.derived.waitingOnYou)
     .sort((a, b) => a.derived.since - b.derived.since || a.thread.id.localeCompare(b.thread.id));
   overview.queue.forEach((line, index) => {

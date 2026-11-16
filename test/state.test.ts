@@ -59,32 +59,44 @@ test("a pending question shows its own words and when it was asked", () => {
   assert.equal(answered.state, "done");
 });
 
-test("a finished thread with an unread reply wants you", () => {
-  const t = thread({ id: "a", lastReadAt: NOW - 3 * HOUR, latestAttentionAt: NOW - HOUR });
+test("Main, a thread with no parent, wants you when its reply is unread", () => {
+  const t = thread({ id: "main", lastReadAt: NOW - 3 * HOUR, latestAttentionAt: NOW - HOUR });
   const d = derive(t, activity({ output: "## Report\n\nAll done." }), NOW);
   assert.equal(d.state, "wants");
+  assert.equal(d.since, NOW - HOUR);
   assert.equal(d.doing, "Report");
   assert.equal(d.next, "read its reply");
+  assert.equal(d.waitingOnYou, true);
   assert.equal(derive(thread({ id: "b", lastReadAt: null }), undefined, NOW).state, "wants");
 });
 
-test("a child thread's unread reply shows only in its event log", () => {
-  // bb never moves a child's attention time, so its facts alone look read.
+test("a finished child is done whether or not anyone opened it, and says what it reported", () => {
+  // It reported to its parent, so it is the parent's to deal with.
   const child = thread({
     id: "a",
     parentThreadId: "main",
-    lastReadAt: NOW - DAY + 5,
+    lastReadAt: null,
     latestAttentionAt: NOW - DAY,
   });
-  assert.equal(derive(child, undefined, NOW).state, "done");
-  const finished = activity({ turn: { phase: "completed", at: NOW - HOUR, failed: false } });
-  const d = derive(child, finished, NOW);
+  const finished = activity({
+    turn: { phase: "completed", at: NOW - HOUR, failed: false },
+    output: "Outcome: the page is built.\nDetails follow.",
+  });
+  assert.deepEqual(derive(child, finished, NOW), {
+    state: "done",
+    since: NOW - HOUR,
+    doing: "Outcome: the page is built.",
+    next: "",
+    waitingOnYou: false,
+  });
+  assert.equal(derive({ ...child, lastReadAt: NOW }, finished, NOW).state, "done");
+});
+
+test("a child with a pending question still wants you", () => {
+  const child = thread({ id: "a", parentThreadId: "main", hasPendingInteraction: true });
+  const d = derive(child, activity({ ask: { text: "Ship it?", at: NOW - MINUTE } }), NOW);
   assert.equal(d.state, "wants");
-  assert.equal(d.since, NOW - HOUR);
   assert.equal(d.waitingOnYou, true);
-  const read = derive({ ...child, lastReadAt: NOW - MINUTE }, finished, NOW);
-  assert.equal(read.state, "done");
-  assert.equal(read.since, NOW - HOUR);
 });
 
 test("a finished thread that has been read is done", () => {
@@ -107,13 +119,16 @@ test("an archived thread is done from the moment it was archived", () => {
   assert.equal(d.waitingOnYou, false);
 });
 
-test("an errored thread has failed, and is not an ask", () => {
+test("an errored thread has failed, and is the user's to deal with", () => {
   const t = thread({ id: "a", status: "error", lastReadAt: null, latestAttentionAt: NOW - HOUR });
   const d = derive(t, activity({ output: "API Error: overloaded" }), NOW);
   assert.equal(d.state, "failed");
   assert.equal(d.since, NOW - HOUR);
   assert.equal(d.doing, "API Error: overloaded");
-  assert.equal(d.waitingOnYou, false);
+  assert.equal(d.waitingOnYou, true);
+  const child = derive({ ...t, parentThreadId: "main" }, undefined, NOW);
+  assert.equal(child.state, "failed");
+  assert.equal(child.waitingOnYou, true);
 });
 
 test("an idle thread whose last turn failed has failed", () => {
