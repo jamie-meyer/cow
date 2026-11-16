@@ -3,6 +3,7 @@
 
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import type { Activity, ThreadFacts } from "./state.ts";
+import { permissionSummary } from "./permission.ts";
 import { describeItem, firstLine } from "./text.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
@@ -68,7 +69,7 @@ function toEvent(raw: unknown): EventRow | null {
   return { createdAt, type: r.type, data: data as Record<string, unknown> };
 }
 
-/** The oldest pending question or approval among a thread's interactions. */
+/** The oldest pending question or permission request among a thread's interactions. */
 export function toAsk(interactions: readonly unknown[]): Activity["ask"] {
   let oldest: Activity["ask"] = null;
   for (const raw of interactions) {
@@ -89,7 +90,10 @@ export function toAsk(interactions: readonly unknown[]): Activity["ask"] {
     const text = [prompt, payload.title, r.title].find(
       (candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "",
     );
-    oldest = { text: firstLine(text) || "it needs your approval", at };
+    oldest =
+      payload.kind === "approval"
+        ? { kind: "permission", text: permissionSummary(payload), at }
+        : { kind: "question", text: firstLine(text) || "it is waiting for your input", at };
   }
   return oldest;
 }

@@ -1,23 +1,29 @@
-// The page's copy of cow's park notes, kept current across windows.
+// The page's copy of cow's notes on threads (why one is parked, why one was
+// archived), kept current across windows.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
-import { PARKS_CHANGED, type ParkRecord } from "./shared.ts";
+import { type ArchiveNote, NOTES_CHANGED, type ParkRecord } from "./shared.ts";
 
 export interface Parks {
   /** Thread id to its note; null until the first load finishes. */
   notes: ReadonlyMap<string, ParkRecord> | null;
+  /** Thread id to why it was archived. */
+  archives: ReadonlyMap<string, ArchiveNote>;
   error: string | null;
   reload: () => void;
   /** Park a thread with this note, or resume it with null. */
   set: (threadId: string, park: ParkRecord | null) => Promise<void>;
+  /** Record why a thread is archived, or forget it with null. */
+  setArchive: (threadId: string, note: ArchiveNote | null) => Promise<void>;
 }
 
 /** Load the notes on `threadIds`, and again whenever that list or any note changes. */
 export function useParks(threadIds: readonly string[] | null): Parks {
   const rpc = useRpc<typeof rpcContract>();
   const [notes, setNotes] = useState<ReadonlyMap<string, ParkRecord> | null>(null);
+  const [archives, setArchives] = useState<ReadonlyMap<string, ArchiveNote>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const ids = useRef(threadIds);
   ids.current = threadIds;
@@ -27,10 +33,11 @@ export function useParks(threadIds: readonly string[] | null): Parks {
     const wanted = ids.current;
     if (wanted === null) return;
     const seq = ++request.current;
-    rpc.call("park_list", { threadIds: [...wanted] }).then(
-      ({ parks }) => {
+    rpc.call("notes_list", { threadIds: [...wanted] }).then(
+      ({ parks, archives: archived }) => {
         if (seq !== request.current) return;
         setNotes(new Map(Object.entries(parks)));
+        setArchives(new Map(Object.entries(archived)));
         setError(null);
       },
       (cause: unknown) => {
@@ -41,7 +48,7 @@ export function useParks(threadIds: readonly string[] | null): Parks {
 
   const key = threadIds === null ? null : threadIds.join(" ");
   useEffect(reload, [reload, key]);
-  useRealtime(PARKS_CHANGED, reload);
+  useRealtime(NOTES_CHANGED, reload);
 
   const set = useCallback(
     async (threadId: string, park: ParkRecord | null) => {
@@ -59,5 +66,20 @@ export function useParks(threadIds: readonly string[] | null): Parks {
     [rpc, reload],
   );
 
-  return { notes, error, reload, set };
+  const setArchive = useCallback(
+    async (threadId: string, note: ArchiveNote | null) => {
+      await rpc.call("archive_note_set", { threadId, note });
+      request.current += 1;
+      setArchives((current) => {
+        const next = new Map(current);
+        if (note === null) next.delete(threadId);
+        else next.set(threadId, note);
+        return next;
+      });
+      reload();
+    },
+    [rpc, reload],
+  );
+
+  return { notes, archives, error, reload, set, setArchive };
 }

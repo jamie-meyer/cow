@@ -49,13 +49,13 @@ test("a pending question shows its own words and when it was asked", () => {
   const t = thread({ id: "a", hasPendingInteraction: true, latestAttentionAt: NOW - DAY });
   const d = derive(
     t,
-    activity({ output: "Let me check with you.", ask: { text: "Which colour?", at: NOW - HOUR } }),
+    activity({ output: "Let me check with you.", ask: { kind: "question", text: "Which colour?", at: NOW - HOUR } }),
     NOW,
   );
   assert.equal(d.doing, "Which colour?");
   assert.equal(d.since, NOW - HOUR);
   // A stale ask is ignored once nothing is pending.
-  const answered = derive({ ...t, hasPendingInteraction: false, lastReadAt: NOW }, activity({ ask: { text: "Which colour?", at: NOW - HOUR } }), NOW);
+  const answered = derive({ ...t, hasPendingInteraction: false, lastReadAt: NOW }, activity({ ask: { kind: "question", text: "Which colour?", at: NOW - HOUR } }), NOW);
   assert.equal(answered.state, "done");
 });
 
@@ -94,7 +94,7 @@ test("a finished child is done whether or not anyone opened it, and says what it
 
 test("a child with a pending question still wants you", () => {
   const child = thread({ id: "a", parentThreadId: "main", hasPendingInteraction: true });
-  const d = derive(child, activity({ ask: { text: "Ship it?", at: NOW - MINUTE } }), NOW);
+  const d = derive(child, activity({ ask: { kind: "question", text: "Ship it?", at: NOW - MINUTE } }), NOW);
   assert.equal(d.state, "wants");
   assert.equal(d.waitingOnYou, true);
 });
@@ -190,4 +190,23 @@ test("done lines are listed for two days", () => {
   const old = derive(thread({ id: "b", archivedAt: NOW - 3 * DAY }), undefined, NOW);
   assert.equal(isRecentDone(recent, NOW), true);
   assert.equal(isRecentDone(old, NOW), false);
+});
+
+test("a permission request says what it is and how to decide it", () => {
+  const t = thread({ id: "t", parentThreadId: "main", status: "active", hasPendingInteraction: true });
+  const d = derive(t, activity({ ask: { kind: "permission", text: "permission to run: echo cow", at: NOW - MINUTE } }), NOW);
+  assert.equal(d.state, "wants");
+  assert.equal(d.doing, "permission to run: echo cow");
+  assert.equal(d.next, "grant or deny: press a");
+  assert.equal(d.waitingOnYou, true);
+});
+
+test("an archived thread carries the reason it was archived for, and only while archived", () => {
+  const archived = thread({ id: "t", parentThreadId: "main", archivedAt: NOW - HOUR });
+  assert.equal(derive(archived, activity({ output: "all done" }), NOW, null, "superseded").archivedWhy, "superseded");
+  assert.equal(derive(archived, undefined, NOW, null, null).archivedWhy, undefined);
+  // Unarchived by undo, the note stays on the thread but the line does not show it.
+  const back = derive({ ...archived, archivedAt: null }, undefined, NOW, null, "superseded");
+  assert.equal(back.state, "done");
+  assert.equal(back.archivedWhy, undefined);
 });

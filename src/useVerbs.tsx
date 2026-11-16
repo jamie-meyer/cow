@@ -13,6 +13,13 @@ import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
 import { clockNow } from "./clock.ts";
 import { parkNow, reparkNow } from "./park.ts";
 import type { Parks } from "./parks.ts";
+import {
+  type PermissionAsk,
+  choosePermission,
+  confirmPermission,
+  emptyPermissionDraft,
+  fileChanges,
+} from "./permission.ts";
 import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
 import type { ParkRecord } from "./shared.ts";
@@ -30,6 +37,8 @@ type Modal =
   | { kind: "park-reason"; threadId: string; value: string; error: string }
   /** `reason` is null when parked work is kept parked: its reason stays. */
   | { kind: "park-pickup"; threadId: string; reason: string | null; value: string; error: string }
+  /** Why it is archived, or dropped: one optional line, then it happens. */
+  | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
   | ({ kind: "answer" } & AnswerState);
 
@@ -86,7 +95,10 @@ export function useVerbs(host: VerbHost): Verbs {
   const remember = (entry: UndoEntry) => setUndo((entries) => [...entries.slice(1 - MAX_UNDO), entry]);
 
   // A text prompt holds the keyboard for as long as it is open.
-  const promptKey = modal?.kind === "park-reason" || modal?.kind === "park-pickup" ? modal.kind : null;
+  const promptKey =
+    modal?.kind === "park-reason" || modal?.kind === "park-pickup" || modal?.kind === "archive-reason"
+      ? modal.kind
+      : null;
   useEffect(() => {
     if (promptKey !== null) promptRef.current?.focus();
   }, [promptKey]);
@@ -166,18 +178,21 @@ export function useVerbs(host: VerbHost): Verbs {
     }
   };
 
-  const archive = async (line: Line, dropped: boolean) => {
+  const archive = async (line: Line, dropped: boolean, reason: string | null) => {
     const id = line.thread.id;
     const next = afterLeaving(overview, id);
     const under = host.under(id);
     try {
+      // The reason is cow's note on the thread; archiving without one forgets an earlier reason.
+      if (reason !== null) await parks.setArchive(id, { reason, at: clockNow() });
+      else if (parks.archives.has(id)) await parks.setArchive(id, null);
       // Dropping ends whatever the thread still runs; a thread at rest has
       // nothing to stop, which is not a reason to keep it.
       if (dropped) await sdk.threads.stop({ threadId: id }).catch(() => undefined);
       await sdk.threads.archive({ threadId: id });
-      remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under });
+      remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under, reason });
       setCursor(next);
-      close(dropped ? "dropped: stopped and archived" : "archived");
+      close(`${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`);
     } catch (cause) {
       close(`not archived: ${errorText(cause)}`);
     }
@@ -200,7 +215,16 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const openAnswer = (line: Line) => {
     const threadId = line.thread.id;
-    setModal({ kind: "answer", threadId, ask: null, draft: emptyDraft([]), sending: false, note: "" });
+    setModal({
+      kind: "answer",
+      threadId,
+      ask: null,
+      draft: emptyDraft([]),
+      permission: emptyPermissionDraft,
+      files: null,
+      sending: false,
+      note: "",
+    });
     sdk.threads.interactions.list({ threadId }).then(
       (interactions) => {
         const ask = oldestAsk(interactions);
@@ -210,9 +234,56 @@ export function useVerbs(host: VerbHost): Verbs {
             ? { ...current, ask, draft: emptyDraft(ask.kind === "questions" ? ask.questions : []) }
             : current,
         );
+        if (ask.kind === "permission") readChange(threadId, ask);
       },
       (cause: unknown) => close(`could not read the question: ${errorText(cause)}`),
     );
+  };
+
+  /** The file and diff a request is about are in the thread's timeline, not in the request. */
+  const readChange = (threadId: string, ask: PermissionAsk) => {
+    const show = (files: ReturnType<typeof fileChanges>) =>
+      setModal((current) =>
+        current?.kind === "answer" && current.threadId === threadId && current.ask?.id === ask.id
+          ? { ...current, files }
+          : current,
+      );
+    if (ask.subject.kind !== "file_change") return show([]);
+    sdk.threads.timeline({ threadId }).then(
+      (timeline) => show(fileChanges((timeline as { rows?: unknown[] }).rows ?? [], ask.itemId)),
+      // The card then says bb has not named the file.
+      () => show([]),
+    );
+  };
+
+  const confirmPermissionAnswer = (state: Extract<Modal, { kind: "answer" }>, ask: PermissionAsk) => {
+    const { threadId } = state;
+    const result = confirmPermission(state.permission, ask);
+    if (result.kind === "incomplete") return setModal({ ...state, note: result.why });
+    if (result.kind === "confirm") return setModal({ ...state, permission: result.draft, note: "" });
+    const { resolution, message } = result;
+    const failed = (what: string) => (cause: unknown) =>
+      setModal((current) =>
+        current?.kind === "answer" ? { ...current, sending: false, note: `${what}: ${errorText(cause)}` } : current,
+      );
+    setModal({ ...state, sending: true, note: "" });
+    sdk.threads.interactions.resolve({ threadId, interactionId: ask.id, resolution }).then(() => {
+      if (resolution.decision !== "deny") {
+        return close(
+          resolution.decision === "allow_once"
+            ? "allowed once: it carries on"
+            : "allowed for the rest of its session: it carries on",
+        );
+      }
+      if (message === null) return close("denied: it was told no");
+      // bb's denial carries no text, so the reason follows as a message.
+      sdk.threads
+        .send({ threadId, mode: "auto", input: [{ type: "text", text: message, mentions: [] }] })
+        .then(
+          () => close("denied, and told why"),
+          (cause: unknown) => close(`denied, but your message was not sent: ${errorText(cause)}`),
+        );
+    }, failed("not sent"));
   };
 
   const confirmAnswer = () => {
@@ -222,6 +293,7 @@ export function useVerbs(host: VerbHost): Verbs {
       close();
       return host.openChat(threadId);
     }
+    if (ask.kind === "permission") return confirmPermissionAnswer(modal, ask);
     const result = confirm(modal.draft, ask.questions);
     if (result.kind === "incomplete") return setModal({ ...modal, note: result.why });
     if (result.kind === "next") return setModal({ ...modal, draft: result.draft, note: "" });
@@ -251,8 +323,6 @@ export function useVerbs(host: VerbHost): Verbs {
     if (line === null || blocked !== null) return say(`cannot ${verb}: ${blocked}`);
     const threadId = line.thread.id;
     const returned = line.derived.park?.due != null;
-    const under = host.under(threadId).length;
-    const withUnder = under === 0 ? "" : ` and the ${under === 1 ? "thread" : `${under} threads`} under it`;
     say("");
     switch (verb) {
       case "answer":
@@ -268,14 +338,7 @@ export function useVerbs(host: VerbHost): Verbs {
       case "stop":
         return setModal(
           returned
-            ? {
-                kind: "confirm",
-                mode: "DROP",
-                threadId,
-                label: `drop it: stop it, and archive it${withUnder}? Stopping cannot be undone.`,
-                cancelled: "not dropped",
-                run: () => void archive(line, true),
-              }
+            ? { kind: "archive-reason", threadId, dropped: true, value: parks.archives.get(threadId)?.reason ?? "", error: "" }
             : {
                 kind: "confirm",
                 mode: "STOP",
@@ -286,13 +349,13 @@ export function useVerbs(host: VerbHost): Verbs {
               },
         );
       case "archive":
+        // A reason given before, and kept through an undo, is offered again.
         return setModal({
-          kind: "confirm",
-          mode: "ARCHIVE",
+          kind: "archive-reason",
           threadId,
-          label: `archive it${withUnder} in bb? u takes it back.`,
-          cancelled: "not archived",
-          run: () => void archive(line, false),
+          dropped: false,
+          value: parks.archives.get(threadId)?.reason ?? "",
+          error: "",
         });
     }
   };
@@ -345,8 +408,23 @@ export function useVerbs(host: VerbHost): Verbs {
       startUndo,
       undoable,
       onKey: (key) => {
-        if (key === "Escape") return close("not answered");
+        const request = modal.ask?.kind === "permission" ? modal.ask : null;
+        if (key === "Escape") {
+          // Escape first backs out of a wider grant that is waiting for its second Enter.
+          if (request && modal.permission.confirming && !modal.sending) {
+            return setModal({ ...modal, permission: { ...modal.permission, confirming: false }, note: "" });
+          }
+          return close(request ? "not decided: it is still waiting" : "not answered");
+        }
         if (key === "Enter") return confirmAnswer();
+        if (request) {
+          if (modal.sending || !/^[1-9]$/.test(key)) return;
+          const permission = choosePermission(modal.permission, request, Number(key));
+          setModal({ ...modal, permission, note: "" });
+          if (request.options[Number(key) - 1]?.text) answerRef.current?.focus();
+          else focusOverview();
+          return;
+        }
         if (!question || modal.sending || !/^[1-9]$/.test(key)) return;
         const number = Number(key);
         if (question.allowFreeText && number === question.options.length + 1) {
@@ -359,7 +437,9 @@ export function useVerbs(host: VerbHost): Verbs {
           <span className="cow-mode cow-m-prompt">ANSWER</span>
           <span className="cow-noun">{title}</span>
           <span className="cow-sep">▸</span>
-          <span>its question is open under its line</span>
+          <span>
+            {modal.ask?.kind === "permission" ? "its permission request" : "its question"} is open under its line
+          </span>
         </>
       ),
       card: {
@@ -369,13 +449,64 @@ export function useVerbs(host: VerbHost): Verbs {
             state={modal}
             textRef={answerRef}
             onText={(value) =>
-              setModal({ ...modal, draft: writeText(modal.draft, questions, value), note: "" })
+              setModal(
+                modal.ask?.kind === "permission"
+                  ? { ...modal, permission: { ...modal.permission, message: value }, note: "" }
+                  : { ...modal, draft: writeText(modal.draft, questions, value), note: "" },
+              )
             }
             onConfirm={confirmAnswer}
-            onCancel={() => close("not answered")}
+            onCancel={() =>
+              close(modal.ask?.kind === "permission" ? "not decided: it is still waiting" : "not answered")
+            }
           />
         ),
       },
+    };
+  }
+
+  if (modal.kind === "archive-reason") {
+    const { dropped } = modal;
+    const under = host.under(modal.threadId).length;
+    const withUnder = under === 0 ? "" : ` and the ${under === 1 ? "thread" : `${under} threads`} under it`;
+    const cancelled = dropped ? "not dropped" : "not archived";
+    const submitReason = () => {
+      if (target === null) return;
+      const value = modal.value.trim();
+      if (value.length > MAX_REASON) {
+        return setModal({ ...modal, error: `keep the reason under ${MAX_REASON} characters` });
+      }
+      // Closed before it runs, so a second Enter cannot run it twice.
+      close();
+      void archive(target, dropped, value === "" ? null : value);
+    };
+    return {
+      mode: dropped ? "DROP" : "ARCHIVE",
+      start,
+      startUndo,
+      undoable,
+      onKey: () => promptRef.current?.focus(),
+      footer: (
+        <TextPrompt
+          mode={dropped ? "DROP" : "ARCHIVE"}
+          name="archive-reason"
+          label={
+            <>
+              {dropped ? "drop" : "archive"} · <b>{title}</b>
+              {withUnder} · reason:
+            </>
+          }
+          placeholder="why, or nothing"
+          value={modal.value}
+          error={modal.error}
+          go={dropped ? "stop it for good and archive it; u brings it back, stopped" : "archive it in bb; u takes it back"}
+          inputRef={promptRef}
+          onChange={(value) => setModal({ ...modal, value, error: "" })}
+          onSubmit={submitReason}
+          onCancel={() => close(cancelled)}
+        />
+      ),
+      card: null,
     };
   }
 

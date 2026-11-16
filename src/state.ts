@@ -69,8 +69,8 @@ export interface Activity {
   latestStep: string;
   /** The agent's latest message. */
   output: string;
-  /** The question or approval it is waiting on the user for, if any. */
-  ask: { text: string; at: number } | null;
+  /** The question or permission request it is waiting on the user for, if any. */
+  ask: { kind: "question" | "permission"; text: string; at: number } | null;
 }
 
 export interface Derived {
@@ -88,6 +88,8 @@ export interface Derived {
    * the state to read as stuck.
    */
   waitingOnYou: boolean;
+  /** For an archived thread: the reason the user gave, if any. */
+  archivedWhy?: string;
   /** Set when the user parked it: the note, and why it is back if it is. */
   park?: { record: ParkRecord; due: Due | null };
 }
@@ -132,6 +134,8 @@ export function derive(
   activity: Activity | undefined,
   now: number,
   park?: ParkRecord | null,
+  /** Why the user archived it; shown only while it is archived. */
+  archivedWhy?: string | null,
 ): Derived {
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
@@ -143,6 +147,7 @@ export function derive(
       doing: said || "archived",
       next: "",
       waitingOnYou: false,
+      ...(archivedWhy ? { archivedWhy } : {}),
     };
   }
 
@@ -188,7 +193,7 @@ export function derive(
       state: "wants",
       since,
       doing,
-      next: asked ? "answer it: press a" : "read its reply",
+      next: !asked ? "read its reply" : ask?.kind === "permission" ? "grant or deny: press a" : "answer it: press a",
       waitingOnYou: true,
     };
   }

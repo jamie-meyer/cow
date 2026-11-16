@@ -9,15 +9,16 @@ the manner of vim.
 ## Status
 
 Early. The page shows every thread's state and acts on it: you can answer a
-question, park work and get it back, stop a turn, archive, and undo. A state
-comes from what bb knows about a thread plus cow's own note when you have
-parked it. Nothing tells cow yet that a thread is waiting on something other
-than you.
+question, grant or deny a permission request, park work and get it back, stop
+a turn, archive with a reason, and undo. A state comes from what bb knows
+about a thread plus cow's own notes on it. Nothing tells cow yet that a
+thread is waiting on something other than you.
 
 A thread that finishes reports to the thread that started it, so it is that
 thread's to deal with: its line turns done and still shows the first line of
-what it reported. The queue holds only what is yours: questions, failures,
-replies from Main that you have not read, and parked work that has come back.
+what it reported. The queue holds only what is yours: questions, permission
+requests, failures, replies from Main that you have not read, and parked work
+that has come back.
 
 ## Install for development
 
@@ -32,6 +33,11 @@ bb plugin dev         # optional: rebuild and reload on every save
 Open cow from the 🐄 entry in bb's navigation, or go to `/plugins/cow/main`.
 The first time, pick the thread that is your Main: `j` / `k` to move, `Enter`
 to choose.
+
+Each window keeps its own Main. Choosing a Main in one window does not move
+another window that is already open, and a window keeps its Main through a
+reload. A new window starts from the Main chosen most recently; `M` changes
+it for that window.
 
 ## Keys
 
@@ -52,7 +58,7 @@ Moving and looking:
 | `I` | say something to the selected thread |
 | `Tab`, `Shift+Tab` | next, previous entry in the queue |
 | `1` to `9` | jump to that place in the queue |
-| `M` | choose a different Main |
+| `M` | choose a different Main for this window |
 | `?` | the legend and this key map |
 
 Acting: select a line first, then press the verb. The bar at the bottom shows
@@ -62,12 +68,13 @@ verb takes no hint, and its key says why it does not apply.
 | Key | On | Does |
 | --- | --- | --- |
 | `a` | a line with a pending question | opens the question under the line: digits choose, `Enter` sends, `Esc` cancels |
+| `a` | a line with a permission request | opens the request under the line: digits choose, `Enter` confirms, `Esc` cancels |
 | `p` | any line that is not parked | parks it: a reason, then a pick-up |
 | `p` | parked work that came back | keeps it parked with a new pick-up; the reason stays |
 | `r` | a parked line | resumes it: back into the tree |
 | `x` | a line whose turn is running | stops the turn, after `y` |
-| `x` | parked work that came back | drops it: stops and archives it, after `y` |
-| `e` | a done or failed line | archives the thread in bb, after `y` |
+| `x` | parked work that came back | drops it: asks for a reason, then stops and archives it |
+| `e` | a done or failed line | asks for a reason, then archives the thread in bb |
 | `u` | anywhere | undoes the last park, resume or archive, after showing what and `y` |
 
 A confirmation takes `y`; any other key cancels it and does nothing else.
@@ -92,9 +99,51 @@ two steps: a digit only marks an option, and `Enter` sends. A question with
 several parts is answered one part at a time and sent at the end. The line
 leaves the queue when bb reports the question resolved.
 
-cow answers the agent's built-in questions. A permission request, or a form
-that belongs to another plugin, is shown with what it is about and `Enter`
-opens the thread's chat, where it can be answered.
+cow answers the agent's built-in questions. A form that belongs to another
+plugin is shown with what it is about, and `Enter` opens the thread's chat,
+where it can be answered.
+
+## Permission requests
+
+When an agent wants to do something bb did not approve by itself, the thread
+waits on a permission request. cow shows it as its own kind of ask: the line
+and the queue entry say "permission to run: …" or "permission to change a
+file in …", and the next move reads "grant or deny: press a".
+
+`a` opens the request under the line with everything bb provides: the exact
+command and its working directory, or the file and its diff, and bb's reason
+for asking. Under that are the decisions bb offers, numbered:
+
+| Decision | Does |
+| --- | --- |
+| Allow once | this command or this change, this time |
+| Allow for the rest of this session | offered when bb offers it; wider than the one request |
+| Deny | the agent is told no, and carries on with its turn |
+| Deny, and tell it why | a denial, then the text you type, sent to the thread as a message |
+
+Granting is deliberate. A digit only marks a decision and `Enter` confirms
+it, so no single key grants anything. "Allow for the rest of this session"
+needs a second `Enter`, after cow has named exactly what it grants (the
+directories it may read and write, the network, commands like this one);
+`Esc` there goes back to the choices. Denying with a message needs the
+message.
+
+No decision can be undone. Once allowed, the command runs or the file is
+written at once, and a session grant lasts until the thread's session ends.
+The card says so.
+
+Two limits come from bb, not from cow:
+
+- bb asks only when the turn was started by a person. When another agent
+  started the turn (Main telling a thread to do something, for example), bb
+  refuses what would need permission and tells the agent so; no request is
+  raised, and there is nothing for cow to show.
+- bb's denial carries no text. "Deny, and tell it why" is a denial followed
+  by a normal message to the thread.
+
+cow answers requests to run a command and to change a file. A plan to
+approve, or a request to use some other tool, is described on the card, and
+`Enter` opens the thread's chat to answer it there.
 
 ## Parking
 
@@ -132,20 +181,51 @@ pick-up, and `x` drops it. Resuming only removes the note: the line returns
 to the tree in whatever state bb gives it, and the agent is told nothing.
 `I` says something to it if you want it to carry on.
 
+## Archiving, with a reason
+
+`e` on a done or failed line asks why, on one line. `Enter` archives; on an
+empty line it archives without a reason. `Esc` cancels. Dropping parked work
+that came back (`x`) asks the same way before it stops and archives it.
+
+The reason is cow's note on the thread. It shows on the thread's line under
+Done ("archived: …"). If you undo the archive the note stays on the thread,
+so archiving it again offers the same reason; clear the line to archive
+without one.
+
 ## Undo
 
 `u` takes back the last park, resume, or archive (it unarchives), then the
-one before, for as long as the page stays open. Two things cannot be undone,
-and their confirmations say so: stopping a turn, and answering a question.
+one before, for as long as the page stays open. Three things cannot be
+undone, and they say so: stopping a turn, answering a question, and deciding
+a permission request.
 Undoing a park that stopped a turn, or a drop, restores the line but the turn
 stays stopped. bb archives the threads under a thread along with it; undo
 brings those back too.
+
+## Theme
+
+cow's page draws with bb's own theme: its background, ink, borders, accent
+and fonts are bb's theme tokens. So the page matches the chat beside it, and
+the rest of bb, in whichever theme you run, light or dark.
+
+cow's own look, warm paper and dark ink set in a serif, ships as a bb theme
+named **cow**. It is not turned on for you, because a bb theme applies to the
+whole app and every open window. Turn it on in Settings → Appearance, or:
+
+```sh
+bb theme set plugin:cow:cow   # paper and ink everywhere, light and dark
+bb theme reset                # back to bb's default
+```
+
+Light or dark follows bb's own setting. The theme also picks code colours
+for code blocks and diffs (Vitesse, light and dark). It leaves the terminal's
+colours and font alone.
 
 ## States
 
 | Mark | State | Means |
 | --- | --- | --- |
-| ● | wants you | it asked you something, or Main finished with a reply you have not read |
+| ● | wants you | it asked you a question or for permission, or Main finished with a reply you have not read |
 | ▶ | running | a turn is in progress |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
 | ‖ | parked | you set it aside with `p`; it is on the shelf until it comes back |
@@ -157,13 +237,14 @@ The limits live in one place, `LIMITS` in `src/state.ts`.
 ## Develop
 
 ```sh
-npm test            # unit tests: states, parking, pick-up dates, verbs, answers, hints
+npm test            # unit tests: states, parking, pick-up dates, verbs, answers, permission requests, hints
 npm run typecheck
 ```
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
-five cheap fixture threads titled "cow test", acts only on those (it answers,
-stops and archives them for real), and archives them afterwards. See the top of `scripts/e2e.mjs` for how to run it.
+six cheap fixture threads titled "cow test", acts only on those (it answers,
+stops and archives them for real, and grants them permission to run `echo`
+and to write one file under `/tmp`), and archives them afterwards. See the top of `scripts/e2e.mjs` for how to run it.
 
 ## Turn it off
 
@@ -172,8 +253,10 @@ bb plugin disable cow   # unload it; your choice of Main is kept
 bb plugin remove cow    # uninstall it and delete what it stored
 ```
 
-cow stores two things: which thread is Main for each project, and a note on
-each parked thread, kept in that thread's plugin metadata.
+cow stores three things: which thread was last chosen as Main for each
+project; its notes on a thread (why it is parked, why it was archived), kept
+in that thread's plugin metadata; and, in each window's session storage, the
+Main that window shows.
 
 ## License
 

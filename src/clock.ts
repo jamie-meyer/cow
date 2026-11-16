@@ -1,12 +1,11 @@
-// Test hooks, read from this tab's session storage. They exist so the
-// end-to-end check can move time forward and keep its own tab on its fixture
-// project. Neither is a feature: nothing on the page sets them.
+// The page's clock, with one test hook read from this tab's session storage:
+// the end-to-end check uses it to move time forward. It is not a feature:
+// nothing on the page sets it.
 
 import { useEffect, useState } from "react";
 
 const OFFSET_KEY = "cow:test-clock-offset-ms";
 const OFFSET_CHANGED = "cow:test-clock";
-const PROJECT_KEY = "cow:test-project";
 /** How often ages on the page are recomputed. */
 const TICK_MS = 20_000;
 
@@ -36,9 +35,4 @@ export function useNow(): number {
     };
   }, []);
   return now;
-}
-
-/** The project a test has pinned this tab to, whatever project is current elsewhere. */
-export function pinnedProjectId(): string | null {
-  return stored(PROJECT_KEY) || null;
 }

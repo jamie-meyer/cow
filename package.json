@@ -10,12 +10,24 @@
   },
   "bb": {
     "name": "cow",
-    "description": "🐄 One Main thread, and one keyboard-driven page that shows everything it has delegated.",
+    "description": "\ud83d\udc04 One Main thread, and one keyboard-driven page that shows everything it has delegated.",
     "branding": {
       "icon": "./assets/cow.svg"
     },
     "server": "./server.ts",
-    "app": "./app.tsx"
+    "app": "./app.tsx",
+    "themes": [
+      {
+        "id": "cow",
+        "name": "cow",
+        "description": "Paper and ink, light and dark: the look of cow's page for the whole app.",
+        "css": "./themes/cow.css",
+        "codeTheme": {
+          "light": "vitesse-light",
+          "dark": "vitesse-dark"
+        }
+      }
+    ]
   },
   "scripts": {
     "test": "node --test \"test/*.test.ts\"",

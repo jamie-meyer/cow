@@ -155,8 +155,16 @@ export function buildOverview(
   return overview;
 }
 
-/** Every unarchived thread under `mainId`: the ones a park note could be on. */
-export function descendantIds(threads: readonly ThreadFacts[], mainId: string): string[] {
+/**
+ * Every unarchived thread under `mainId`: the ones a park note could be on.
+ * With `archivedSince`, also the ones archived at or after that time, whose
+ * archive reason the page shows.
+ */
+export function descendantIds(
+  threads: readonly ThreadFacts[],
+  mainId: string,
+  archivedSince?: number,
+): string[] {
   const byParent = new Map<string, ThreadFacts[]>();
   for (const thread of threads) {
     if (thread.parentThreadId === null) continue;
@@ -172,7 +180,9 @@ export function descendantIds(threads: readonly ThreadFacts[], mainId: string): 
       if (seen.has(child.id)) continue;
       seen.add(child.id);
       pending.push(child.id);
-      if (child.archivedAt === null) ids.push(child.id);
+      if (child.archivedAt === null || (archivedSince !== undefined && child.archivedAt >= archivedSince)) {
+        ids.push(child.id);
+      }
     }
   }
   return ids.sort();

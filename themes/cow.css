@@ -1,0 +1,57 @@
+/* cow: paper and ink, for the whole of bb. Light is warm paper with dark
+   ink; dark is the same page by lamplight. bb derives its surfaces, borders
+   and hover states from the two anchors, so this file sets the anchors, the
+   accent, the text tiers, the colours that carry meaning, and the type.
+
+   The anchors are written in oklch on purpose. bb mixes them in oklch, and a
+   browser given the same colours as hex (#f5f1e8 paper, #22201c ink; #181714
+   and #ebe5d8 in the dark) treats such faint warmth as having no hue at all,
+   which turns every derived surface pink. */
+
+:root,
+.light {
+  --canvas: oklch(0.9588 0.0127 86.8);
+  --ink: oklch(0.2443 0.008 84.6);
+  --primary: #2f5fc4;
+  --primary-foreground: #f8f5ee;
+  --muted-foreground: color-mix(in oklch, var(--ink) 62%, var(--canvas));
+  --subtle-foreground: color-mix(in oklch, var(--ink) 46%, var(--canvas));
+  --readback-foreground: color-mix(in oklch, var(--ink) 54%, var(--canvas));
+  --destructive: #c23b2a;
+  --destructive-foreground: #f8f5ee;
+  --destructive-text: #b23322;
+  --warning: #c98300;
+  --warning-text: #a86200;
+  --attention: #c98300;
+  --success: #17786a;
+  --diff-added: #17786a;
+  --diff-removed: #c23b2a;
+  --pr-merged: #7a4fb5;
+  --file-accent: #2f5fc4;
+  --radius: 0.25rem;
+
+  /* One serif for reading, in the chat as on cow's page. */
+  --font-sans: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, Georgia, serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* cow's page sets its small labels and counts in this face. */
+  --cow-label-font: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+.dark {
+  --canvas: oklch(0.2046 0.006 91.6);
+  --ink: oklch(0.9231 0.0186 86.1);
+  --primary: #8fb2ff;
+  --primary-foreground: #181714;
+  --destructive: #e0604f;
+  --destructive-foreground: #181714;
+  --destructive-text: #ff7b6b;
+  --warning: #ffcf66;
+  --warning-text: #ffcf66;
+  --attention: #ffcf66;
+  --success: #5fd0bb;
+  --diff-added: #5fd0bb;
+  --diff-removed: #ff7b6b;
+  --pr-merged: #b79cf0;
+  --file-accent: #8fb2ff;
+}

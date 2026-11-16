@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { derive } from "../src/state.ts";
-import { buildOverview, cursorOrder } from "../src/tree.ts";
+import { buildOverview, cursorOrder, descendantIds } from "../src/tree.ts";
 import { DAY, HOUR, NOW, thread } from "./fixtures.ts";
 
 const build = (threads: Parameters<typeof buildOverview>[0], mainId = "main") =>
@@ -110,4 +110,16 @@ test("a parent loop does not hang", () => {
     thread({ id: "b", parentThreadId: "a", status: "active" }),
   ]);
   assert.deepEqual(ids(overview.lines), ["a", "b"]);
+});
+
+test("notes are read for open threads and for those archived recently enough to be listed", () => {
+  const threads = [
+    thread({ id: "main" }),
+    thread({ id: "open", parentThreadId: "main" }),
+    thread({ id: "fresh", parentThreadId: "open", archivedAt: NOW - HOUR }),
+    thread({ id: "old", parentThreadId: "main", archivedAt: NOW - 3 * DAY }),
+    thread({ id: "elsewhere", archivedAt: NOW - HOUR }),
+  ];
+  assert.deepEqual(descendantIds(threads, "main"), ["open"]);
+  assert.deepEqual(descendantIds(threads, "main", NOW - 2 * DAY), ["fresh", "open"]);
 });

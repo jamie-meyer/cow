@@ -1,14 +1,21 @@
-// A pending question, opened in place under its line. Digits choose, Enter
-// confirms, Escape cancels; choosing alone never sends anything.
+// A pending question or permission request, opened in place under its line.
+// Digits choose, Enter confirms, Escape cancels; choosing alone never sends
+// anything.
 
 import { type RefObject } from "react";
 import type { Ask, AskQuestion, Draft } from "./answer.ts";
+import { PermissionBody, PermissionKeys } from "./PermissionCard.tsx";
+import type { FileChange, PermissionDraft } from "./permission.ts";
 
 export interface AnswerState {
   threadId: string;
   /** Null while bb is being asked what the question is. */
   ask: Ask | null;
   draft: Draft;
+  /** What is chosen on a permission request. */
+  permission: PermissionDraft;
+  /** The files a permission request would change; null until they are read. */
+  files: readonly FileChange[] | null;
   sending: boolean;
   /** Why Enter did nothing, or why sending failed. */
   note: string;
@@ -121,6 +128,20 @@ export function AnswerCard({
         <kbd>⏎</kbd> open its chat · <kbd>Esc</kbd> cancel
       </>
     );
+  } else if (ask.kind === "permission") {
+    body = (
+      <PermissionBody
+        ask={ask}
+        draft={state.permission}
+        files={state.files}
+        textRef={textRef}
+        disabled={state.sending}
+        onText={onText}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />
+    );
+    keys = <PermissionKeys ask={ask} draft={state.permission} />;
   } else {
     const question = ask.questions[draft.step]!;
     const last = draft.step === ask.questions.length - 1;
@@ -154,7 +175,12 @@ export function AnswerCard({
     );
   }
   return (
-    <div className="cow-ans" data-cow-answer={state.threadId} role="group" aria-label="answer the question">
+    <div
+      className={ask?.kind === "permission" ? "cow-ans cow-perm" : "cow-ans"}
+      data-cow-answer={state.threadId}
+      role="group"
+      aria-label={ask?.kind === "permission" ? "grant or deny the permission request" : "answer the question"}
+    >
       {body}
       <p className="cow-ans-keys">
         {state.sending ? "sending…" : keys}

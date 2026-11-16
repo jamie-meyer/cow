@@ -44,11 +44,22 @@ test("toAsk picks the oldest pending interaction and reads its question", () => 
     { status: "pending", createdAt: 9, payload: { title: "Approve the deploy" } },
     { status: "pending", createdAt: 5, payload: { questions: [{ prompt: "Which colour?\nred or blue" }] } },
   ]);
-  assert.deepEqual(ask, { text: "Which colour?", at: 5 });
+  assert.deepEqual(ask, { kind: "question", text: "Which colour?", at: 5 });
   assert.deepEqual(toAsk([{ status: "pending", createdAt: 3, payload: {} }]), {
-    text: "it needs your approval",
+    kind: "question",
+    text: "it is waiting for your input",
     at: 3,
   });
+  assert.deepEqual(
+    toAsk([
+      {
+        status: "pending",
+        createdAt: 4,
+        payload: { kind: "approval", subject: { kind: "command", command: "echo cow\necho moo" } },
+      },
+    ]),
+    { kind: "permission", text: "permission to run: echo cow", at: 4 },
+  );
   assert.equal(toAsk([]), null);
   assert.equal(toAsk(["junk", null]), null);
 });

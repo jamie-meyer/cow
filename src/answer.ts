@@ -1,6 +1,7 @@
 // Answering a pending question from the page: what bb is asking, the draft
 // the user builds with digits and text, and the answer bb expects back.
 
+import { type PermissionAsk, permissionSummary, toPermission, unsupportedWhy } from "./permission.ts";
 import { firstLine } from "./text.ts";
 
 /** Options are chosen with one digit each. */
@@ -24,6 +25,8 @@ export interface AskQuestion {
 /** A pending interaction, as far as this page can deal with it. */
 export type Ask =
   | { kind: "questions"; id: string; at: number; questions: AskQuestion[] }
+  /** A permission request of a kind the page answers. */
+  | PermissionAsk
   /** Something only the chat can answer, with what to tell the user about it. */
   | { kind: "other"; id: string; at: number; title: string; why: string };
 
@@ -57,16 +60,15 @@ function toQuestion(raw: unknown): AskQuestion | null {
 }
 
 function describeOther(payload: Record<string, unknown>): { title: string; why: string } {
-  const title = firstLine(text(payload.title)) || firstLine(text(payload.reason));
   if (payload.kind === "approval") {
-    const subject = record(payload.subject);
+    const summary = permissionSummary(payload);
     return {
-      title: title || firstLine(text(subject?.command)) || "It asks for your approval",
-      why: "This is a permission request. Approve or deny it in its chat, where you can see exactly what it grants.",
+      title: `${summary[0]!.toUpperCase()}${summary.slice(1)}`,
+      why: unsupportedWhy(payload),
     };
   }
   return {
-    title: title || "It is waiting for your input",
+    title: firstLine(text(payload.title)) || firstLine(text(payload.reason)) || "It is waiting for your input",
     why: "This is a form of its own kind, which only its chat can show.",
   };
 }
@@ -81,6 +83,7 @@ export function toAskDetail(raw: unknown): Ask | null {
     const described = describeOther(payload);
     return { kind: "other", id: r.id as string, at, title: described.title, why: why ?? described.why };
   };
+  if (payload.kind === "approval") return toPermission(r.id, at, payload) ?? other();
   if (payload.kind !== "user_question" || !Array.isArray(payload.questions)) return other();
   const questions: AskQuestion[] = [];
   for (const rawQuestion of payload.questions) {

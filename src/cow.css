@@ -1,23 +1,28 @@
-/* cow's own look: paper and ink, light and dark. Everything is scoped under
-   .cow so nothing here touches bb, and bb's embedded chat keeps bb's theme. */
+/* cow's page. Every colour and font comes from bb's theme tokens, so the
+   overview matches the chat beside it in whatever theme bb runs, light or
+   dark. cow's own paper-and-ink look ships as a bb theme (themes/cow.css)
+   that sets those same tokens for the whole app. Everything here is scoped
+   under .cow, so nothing touches bb. */
 
 .cow {
-  --cow-paper: #f5f1e8;
-  --cow-paper2: #ece5d6;
-  --cow-ink: #22201c;
-  --cow-muted: #7a7366;
-  --cow-faint: #a39b8c;
-  --cow-rule: #d8cfbe;
-  --cow-needs: #a86200;
-  --cow-mark: #ffdf7e;
-  --cow-run: #17786a;
-  --cow-fail: #c23b2a;
-  --cow-unread: #2f5fc4;
-  --cow-tint-needs: rgba(255, 205, 80, 0.2);
-  --cow-tint-run: rgba(23, 120, 106, 0.09);
-  --cow-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, Georgia, serif;
-  --cow-sans: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  --cow-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --cow-paper: var(--background, #f5f1e8);
+  --cow-paper2: var(--muted, #ece5d6);
+  --cow-ink: var(--foreground, #22201c);
+  --cow-muted: var(--muted-foreground, #7a7366);
+  --cow-faint: var(--subtle-foreground, #a39b8c);
+  --cow-rule: var(--border, #d8cfbe);
+  --cow-needs: var(--warning-text, #a86200);
+  --cow-run: var(--success, #17786a);
+  --cow-fail: var(--destructive-text, #c23b2a);
+  --cow-unread: var(--primary, #2f5fc4);
+  --cow-added: var(--diff-added, #17786a);
+  --cow-removed: var(--diff-removed, #c23b2a);
+  --cow-tint-needs: color-mix(in srgb, var(--cow-needs) 13%, transparent);
+  --cow-tint-run: color-mix(in srgb, var(--cow-run) 9%, transparent);
+  /* The body face is bb's; a theme may name a second face for small labels. */
+  --cow-serif: var(--font-sans, system-ui, sans-serif);
+  --cow-sans: var(--cow-label-font, var(--font-sans, system-ui, sans-serif));
+  --cow-mono: var(--font-mono, ui-monospace, monospace);
   --cow-rh: 17px;
 
   position: relative;
@@ -31,21 +36,6 @@
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   outline: 0;
-}
-.dark .cow {
-  --cow-paper: #181714;
-  --cow-paper2: #24221d;
-  --cow-ink: #ebe5d8;
-  --cow-muted: #9a9284;
-  --cow-faint: #6e685d;
-  --cow-rule: #37332b;
-  --cow-needs: #ffcf66;
-  --cow-mark: #ffcf66;
-  --cow-run: #5fd0bb;
-  --cow-fail: #ff7b6b;
-  --cow-unread: #8fb2ff;
-  --cow-tint-needs: rgba(255, 196, 64, 0.1);
-  --cow-tint-run: rgba(95, 208, 187, 0.08);
 }
 .cow *,
 .cow *::before,
@@ -466,7 +456,7 @@
   text-overflow: ellipsis;
 }
 
-/* the chat pane: bb's own chat, in bb's own colours */
+/* the chat pane: bb's own chat, drawn from the same theme tokens */
 .cow-pane {
   min-height: 0;
   min-width: 0;
@@ -500,7 +490,7 @@
   outline: 0;
   background: var(--background, transparent);
   color: var(--foreground, inherit);
-  font: 14px/1.5 var(--cow-sans);
+  font: 14px/1.5 var(--cow-serif);
 }
 .cow-chat:focus-within {
   box-shadow: inset 0 2px 0 var(--cow-unread);
@@ -752,6 +742,89 @@
   color: var(--cow-muted);
 }
 
+/* a permission request, opened the same way */
+.cow-perm {
+  max-width: 860px;
+}
+.cow-perm-kind {
+  font: 700 10.5px/18px var(--cow-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cow-needs);
+}
+.cow pre.cow-perm-cmd,
+.cow pre.cow-perm-diff {
+  margin: 2px 0 3px;
+  padding: 4px 8px;
+  background: var(--cow-paper);
+  border: 1px solid var(--cow-rule);
+  border-radius: 3px;
+  font: 12.5px/18px var(--cow-mono);
+  color: var(--cow-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 190px;
+  overflow: auto;
+}
+.cow pre.cow-perm-cmd::before {
+  content: "$ ";
+  color: var(--cow-faint);
+}
+.cow-perm-row {
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--cow-muted);
+}
+.cow-perm-row > span:first-child {
+  font: 600 10.5px/19px var(--cow-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cow-faint);
+  margin-right: 7px;
+}
+.cow-perm-row code {
+  font: 12.5px/19px var(--cow-mono);
+  color: var(--cow-ink);
+  overflow-wrap: anywhere;
+}
+.cow-diff-add {
+  color: var(--cow-added);
+}
+.cow-diff-del {
+  color: var(--cow-removed);
+}
+.cow-diff-head {
+  color: var(--cow-faint);
+}
+.cow-perm-say {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+.cow-perm .cow-ans-o:first-of-type {
+  margin-top: 3px;
+}
+.cow-ans .cow-perm-confirm {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border: 1.5px solid var(--cow-fail);
+  border-radius: 3px;
+  background: var(--cow-paper);
+  font-size: 13px;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
+.cow-perm-confirm b {
+  color: var(--cow-fail);
+}
+
+/* why an archived line was archived */
+.cow-why {
+  font-weight: 600;
+  color: var(--cow-ink);
+}
+
 /* hints */
 .cow-hints {
   position: absolute;
@@ -762,8 +835,8 @@
 .cow-ht {
   position: absolute;
   font: 700 10px/13px var(--cow-mono);
-  background: var(--cow-mark);
-  color: #22201c;
+  background: var(--cow-needs);
+  color: var(--cow-paper);
   border: 1px solid var(--cow-needs);
   border-radius: 3px;
   padding: 0 3px;

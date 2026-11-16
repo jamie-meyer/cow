@@ -25,6 +25,23 @@ export async function connect(port, match) {
   const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
   const target = targets.find((t) => t.type === "page" && t.url.includes(match));
   if (!target) throw new Error(`no page target matching ${match}`);
+  return attach(target);
+}
+
+/** Open a new tab, which is a window of its own as far as the page can tell, and connect to it. */
+export async function newTab(port) {
+  const response = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" });
+  const target = await response.json();
+  const page = await attach(target);
+  const close = page.close;
+  page.close = async () => {
+    close();
+    await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(() => undefined);
+  };
+  return page;
+}
+
+async function attach(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;

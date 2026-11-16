@@ -72,14 +72,19 @@ test("only pending interactions count, and the oldest comes first", () => {
 });
 
 test("kinds the page cannot answer are named, not guessed at", () => {
-  const approval = toAskDetail(
+  const plan = toAskDetail(
     interaction({
-      payload: { kind: "approval", reason: null, subject: { kind: "command", command: "rm -rf build" } },
+      payload: {
+        kind: "approval",
+        reason: null,
+        availableDecisions: ["allow_once", "deny"],
+        subject: { kind: "plan", itemId: "i1", plan: "1. delete everything", planFilePath: null },
+      },
     }),
   );
-  assert.ok(approval?.kind === "other");
-  assert.equal(approval.title, "rm -rf build");
-  assert.match(approval.why, /permission request/);
+  assert.ok(plan?.kind === "other");
+  assert.equal(plan.title, "Permission to carry out its plan");
+  assert.match(plan.why, /does not answer yet/);
 
   const plugin = toAskDetail(interaction({ payload: { kind: "plugin", title: "Pick a plan", data: {} } }));
   assert.ok(plugin?.kind === "other");

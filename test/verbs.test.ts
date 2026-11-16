@@ -78,12 +78,16 @@ test("undo says what it will take back", () => {
   assert.match(undoText({ kind: "park", ...base, before: null }), /undo parking “Billing”.*tree/);
   assert.match(undoText({ kind: "park", ...base, before: record }), /asks again/);
   assert.match(undoText({ kind: "resume", ...base, record }), /back on the shelf/);
-  assert.match(undoText({ kind: "archive", ...base, dropped: false, under: [] }), /: it is unarchived$/);
+  assert.match(undoText({ kind: "archive", ...base, dropped: false, under: [], reason: null }), /: it is unarchived$/);
   assert.match(
-    undoText({ kind: "archive", ...base, dropped: false, under: ["a", "b"] }),
+    undoText({ kind: "archive", ...base, dropped: false, under: ["a", "b"], reason: null }),
     /it and the 2 threads under it are unarchived$/,
   );
-  assert.match(undoText({ kind: "archive", ...base, dropped: true, under: ["a"] }), /the thread under it.*stays stopped/);
-  assert.equal(undoShort({ kind: "archive", ...base, dropped: true, under: [] }), "undo drop");
+  assert.match(
+    undoText({ kind: "archive", ...base, dropped: false, under: [], reason: "superseded" }),
+    /it is unarchived; its reason is kept$/,
+  );
+  assert.match(undoText({ kind: "archive", ...base, dropped: true, under: ["a"], reason: null }), /the thread under it.*stays stopped/);
+  assert.equal(undoShort({ kind: "archive", ...base, dropped: true, under: [], reason: null }), "undo drop");
   assert.equal(undoShort({ kind: "park", ...base, before: null }), "undo park");
 });

@@ -12,7 +12,15 @@ export type UndoEntry =
    * together. bb archives a thread's descendants with it but brings back
    * only the thread asked for, so `under` lists the ones to bring back too.
    */
-  | { kind: "archive"; threadId: string; title: string; dropped: boolean; under: readonly string[] };
+  | {
+      kind: "archive";
+      threadId: string;
+      title: string;
+      dropped: boolean;
+      under: readonly string[];
+      /** The reason given; cow keeps it on the thread when the archive is undone. */
+      reason: string | null;
+    };
 
 function unarchived(under: number): string {
   if (under === 0) return "it is unarchived";
@@ -29,10 +37,12 @@ export function undoText(entry: UndoEntry): string {
         : `undo keeping ${name} parked: it asks again`;
     case "resume":
       return `undo resuming ${name}: it goes back on the shelf`;
-    case "archive":
+    case "archive": {
+      const kept = entry.reason === null ? "" : "; its reason is kept";
       return entry.dropped
-        ? `undo dropping ${name}: ${unarchived(entry.under.length)} and parked as before, but stays stopped`
-        : `undo archiving ${name}: ${unarchived(entry.under.length)}`;
+        ? `undo dropping ${name}: ${unarchived(entry.under.length)} and parked as before, but stays stopped${kept}`
+        : `undo archiving ${name}: ${unarchived(entry.under.length)}${kept}`;
+    }
   }
 }
 

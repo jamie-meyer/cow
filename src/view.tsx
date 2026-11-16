@@ -15,17 +15,23 @@ import {
 import {
   ThreadChat,
   useBbContext,
-  useRealtime,
   useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import type { MainState, rpcContract } from "../server.ts";
-import { pinnedProjectId, useNow } from "./clock.ts";
+import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
 import { hintLabels, matchHint } from "./hints.ts";
 import { dueText } from "./park.ts";
 import { type Parks, useParks } from "./parks.ts";
-import { MAIN_CHANGED } from "./shared.ts";
+import {
+  WINDOW_MAINS_KEY,
+  type WindowMains,
+  adopt,
+  chooseInWindow,
+  parseWindowMains,
+  resolveMain,
+} from "./main.ts";
 import {
   type Command,
   type HintTarget,
@@ -97,7 +103,7 @@ const LEGEND: readonly { state: LineState; short: string; long: string }[] = [
   {
     state: "wants",
     short: "it asked; or Main replied",
-    long: "It asked you something, or Main finished with a reply you have not read. Listed in the queue.",
+    long: "It asked you a question or for permission, or Main finished with a reply you have not read. Listed in the queue.",
   },
   {
     state: "running",
@@ -210,7 +216,13 @@ function LineRow({
         ) : null}
       </span>
       <span className="cow-wh">
-        {derived.doing}
+        {derived.archivedWhy ? (
+          <b className="cow-why" data-cow-archive-reason="">
+            archived: {derived.archivedWhy}
+            {derived.doing && derived.doing !== "archived" ? " · " : ""}
+          </b>
+        ) : null}
+        {derived.archivedWhy && derived.doing === "archived" ? null : derived.doing}
         {derived.next ? <span className="cow-nx2"> → {derived.next}</span> : null}
       </span>
       <span className="cow-nx">{derived.next}</span>
@@ -374,28 +386,57 @@ function useThreadStore(): { store: ThreadStore; snapshot: ReturnType<ThreadStor
   return { store, snapshot };
 }
 
-/** Which thread is Main, per project, kept on the bb server. */
-function useMainState() {
+function readWindowMains(): WindowMains {
+  try {
+    return parseWindowMains(window.sessionStorage.getItem(WINDOW_MAINS_KEY));
+  } catch {
+    return parseWindowMains(null);
+  }
+}
+
+/**
+ * Which thread is Main in this window. The server's record is read once, as
+ * the place to start; after that the window follows only its own choices.
+ */
+function useMainState(scopedProjectId: string | null) {
   const rpc = useRpc<typeof rpcContract>();
-  const [state, setState] = useState<MainState | null>(null);
+  const [stored, setStored] = useState<MainState | null>(null);
+  const [own, setOwn] = useState<WindowMains>(readWindowMains);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
     rpc.call("main_state").then(
       (next) => {
-        setState(next);
+        setStored(next);
         setError(null);
       },
       (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
     );
   }, [rpc]);
   useEffect(load, [load]);
-  useRealtime(MAIN_CHANGED, load);
+
+  const resolved = resolveMain(own, stored, scopedProjectId);
+  // A start taken from the server becomes this window's own.
+  const adopted = adopt(own, resolved);
+  useEffect(() => {
+    if (adopted !== own) setOwn(adopted);
+  }, [adopted, own]);
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(WINDOW_MAINS_KEY, JSON.stringify(own));
+    } catch {
+      // Without storage the choice lasts as long as the page does.
+    }
+  }, [own]);
+
   const choose = useCallback(
-    (thread: ThreadFacts) =>
-      rpc.call("main_choose", { projectId: thread.projectId, threadId: thread.id }).then(setState),
+    (thread: ThreadFacts) => {
+      setOwn((current) => chooseInWindow(current, thread.projectId, thread.id));
+      // Remembered on the server as where a new window starts.
+      return rpc.call("main_choose", { projectId: thread.projectId, threadId: thread.id }).then(setStored);
+    },
     [rpc],
   );
-  return { state, error, load, choose };
+  return { loaded: stored !== null, projectId: resolved.projectId, mainId: resolved.mainId, error, load, choose };
 }
 
 /** j/k/gg/G/Enter/f over any list of ids; shared by the overview and the picker. */
@@ -981,7 +1022,8 @@ function OverviewScreen({
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
               <p className="cow-sub">
-                Questions, failures, Main's unread replies and parked work that came back, oldest first.
+                Questions, permission requests, failures, Main's unread replies and parked work that came
+                back, oldest first.
               </p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
@@ -1120,7 +1162,9 @@ export function CowPage() {
   const context = useBbContext();
   const now = useNow();
   const { store, snapshot } = useThreadStore();
-  const mains = useMainState();
+  // bb names a project when the page is opened inside one.
+  const scopedProjectId = context.projectId ?? null;
+  const mains = useMainState(scopedProjectId);
   const [picking, setPicking] = useState(false);
   const [projectNames, setProjectNames] = useState<ReadonlyMap<string, string>>(new Map());
 
@@ -1133,11 +1177,7 @@ export function CowPage() {
     };
   }, []);
 
-  // bb names a project when the page is opened inside one; otherwise the
-  // page shows the project whose Main was chosen last.
-  const scopedProjectId = pinnedProjectId() ?? context.projectId;
-  const projectId = scopedProjectId ?? mains.state?.currentProjectId ?? null;
-  const storedMainId = projectId === null ? null : (mains.state?.mains[projectId] ?? null);
+  const storedMainId = mains.mainId;
   // An archived or deleted Main is gone as far as the user is concerned.
   const mainGone =
     storedMainId !== null &&
@@ -1145,8 +1185,12 @@ export function CowPage() {
   const mainId = mainGone ? null : storedMainId;
 
   const underMain = useMemo(
-    () => (mainId === null || snapshot.status !== "ready" ? null : descendantIds(snapshot.threads, mainId)),
-    [snapshot.threads, snapshot.status, mainId],
+    () =>
+      mainId === null || snapshot.status !== "ready"
+        ? null
+        : // A note may be on any open thread, or on one archived recently enough to be listed.
+          descendantIds(snapshot.threads, mainId, now - LIMITS.doneListedMs),
+    [snapshot.threads, snapshot.status, mainId, now],
   );
   const parks = useParks(underMain);
   const notes = parks.notes;
@@ -1165,10 +1209,11 @@ export function CowPage() {
                 snapshot.activity.get(thread.id),
                 now,
                 thread.id === mainId ? null : notes.get(thread.id),
+                parks.archives.get(thread.id)?.reason,
               ),
             now,
           ),
-    [snapshot, mainId, notes, now],
+    [snapshot, mainId, notes, parks.archives, now],
   );
 
   useEffect(() => {
@@ -1222,7 +1267,7 @@ export function CowPage() {
       </div>
     );
   }
-  if (snapshot.status === "loading" || mains.state === null || loadingNotes) {
+  if (snapshot.status === "loading" || !mains.loaded || loadingNotes) {
     return (
       <div className="cow" data-cow-root="" data-cow-screen="loading">
         <div className="cow-app">
@@ -1242,7 +1287,9 @@ export function CowPage() {
         notice={mainGone ? "The thread that was Main has been archived or deleted." : null}
         canCancel={overview?.main != null}
         onChoose={(thread) => {
-          void mains.choose(thread).then(() => setPicking(false), () => mains.load());
+          // The window shows it at once; a failure to store it only affects new windows.
+          void mains.choose(thread).catch(() => undefined);
+          setPicking(false);
         }}
         onCancel={() => setPicking(false)}
         now={now}
