@@ -1,6 +1,7 @@
 // What state a thread is in, derived from what bb knows about it and from
 // cow's own note on it when the user has parked it.
 
+import { type Replies, unreadReply } from "./attention.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
@@ -77,6 +78,16 @@ export interface Activity {
   ask: { kind: "question" | "permission"; text: string; at: number } | null;
   /** What bb refused without asking, and nothing has resolved since. */
   refusals: readonly Refusal[];
+  /** Its recent finished turns, and whether the person started them. */
+  replies?: Replies;
+}
+
+/** What decides whether a finished turn's reply is the person's to read. */
+export interface Attention {
+  /** The thread has threads under it: the person talks to it directly. */
+  head: boolean;
+  /** cow's record of the turn the person last saw, as a place in the event log. */
+  seenSeq: number | null;
 }
 
 export interface Derived {
@@ -100,6 +111,12 @@ export interface Derived {
   park?: { record: ParkRecord; due: Due | null };
   /** Set when bb refused it a permission without asking: what was refused, oldest first. */
   blocked?: { refusals: readonly Refusal[] };
+  /**
+   * Set when it waits on the person with a reply that cow tracks itself (a
+   * thread with a parent): where that reply is in the event log, which is
+   * what "seen" records.
+   */
+  reply?: { seq: number };
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -115,9 +132,9 @@ function settledAt(thread: ThreadFacts, activity: Activity | undefined): number 
 }
 
 /**
- * A finished reply is the user's to read only on a thread with no parent,
- * such as Main. A thread that has a parent reported to that parent, and is
- * the parent's to deal with.
+ * bb's own record of an unread reply, kept only for a thread with no parent,
+ * such as Main. For a thread with a parent cow keeps its own: see
+ * `unreadReply`.
  */
 function hasUnreadReply(thread: ThreadFacts): boolean {
   if (thread.parentThreadId !== null || isBusy(thread)) return false;
@@ -146,6 +163,8 @@ export function derive(
   archivedWhy?: string | null,
   /** The user dismissed its refused permissions up to this place in its event log. */
   dismissedThroughSeq?: number | null,
+  /** Whether its replies are the person's, and which they have seen. Without it, a thread with a parent reports to that parent. */
+  attention?: Attention | null,
 ): Derived {
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
@@ -186,10 +205,26 @@ export function derive(
   }
 
   const asked = thread.hasPendingInteraction;
-  if (asked || hasUnreadReply(thread)) {
+  // A thread with a parent: a worker that finished a turn its parent started
+  // reported to that parent and is done. One the person talks to replied to
+  // them, and waits until they have seen it.
+  const reply =
+    !asked && attention && thread.parentThreadId !== null && !isBusy(thread)
+      ? unreadReply(activity?.replies, attention.head, attention.seenSeq)
+      : null;
+  // A refused permission outranks a reply that is waiting to be read: the
+  // reply keeps, and only the user can unblock the work.
+  const refusals = undismissed(activity?.refusals ?? [], dismissedThroughSeq);
+  const blocked = refusals.length > 0;
+  if (asked || hasUnreadReply(thread) || (reply && !blocked)) {
     const ask = asked ? (activity?.ask ?? null) : null;
-    const since = ask?.at ?? settled;
-    const doing = asked ? ask?.text || said || "it asked you something" : said || "finished";
+    const since = ask?.at ?? reply?.at ?? settled;
+    const doing = asked
+      ? ask?.text || said || "it asked you something"
+      : reply
+        ? `replied to you: ${said || "it finished its turn"}`
+        : said || "finished";
+    const mine = reply ? { reply: { seq: reply.seq } } : {};
     if (now - since > LIMITS.waitingOnUserMs) {
       return {
         state: "stuck",
@@ -197,21 +232,28 @@ export function derive(
         doing,
         next: `it has waited ${formatAge(now - since)} on you`,
         waitingOnYou: true,
+        ...mine,
       };
     }
     return {
       state: "wants",
       since,
       doing,
-      next: !asked ? "read its reply" : ask?.kind === "permission" ? "grant or deny: press a" : "answer it: press a",
+      next: reply
+        ? "read it: Enter, or Space once seen"
+        : !asked
+          ? "read its reply"
+          : ask?.kind === "permission"
+            ? "grant or deny: press a"
+            : "answer it: press a",
       waitingOnYou: true,
+      ...mine,
     };
   }
 
   // A refused permission outranks running and done: the work may go on, but
   // not the way the agent meant, and only the user can change that.
-  const refusals = undismissed(activity?.refusals ?? [], dismissedThroughSeq);
-  if (refusals.length > 0) {
+  if (blocked) {
     return {
       state: "blocked",
       since: refusals[0]!.at,

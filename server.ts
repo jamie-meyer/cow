@@ -6,7 +6,14 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createActions } from "./src/actions.ts";
 import { cowCli } from "./src/cli.ts";
-import { archiveNoteSchema, dismissalSchema, parkRecordSchema } from "./src/shared.ts";
+import {
+  archiveNoteSchema,
+  dismissalSchema,
+  nextNoteSchema,
+  parkRecordSchema,
+  seenSchema,
+  todoListSchema,
+} from "./src/shared.ts";
 
 const id = z.string().min(1).max(200);
 const MAX_NOTE_LIST = 5000;
@@ -33,7 +40,20 @@ export const rpcContract = defineRpcContract({
       parks: z.record(z.string(), parkRecordSchema),
       archives: z.record(z.string(), archiveNoteSchema),
       dismissals: z.record(z.string(), dismissalSchema),
+      nexts: z.record(z.string(), nextNoteSchema),
+      todos: z.record(z.string(), todoListSchema),
+      seen: z.record(z.string(), seenSchema),
     }),
+  },
+  /** Record the reply of a thread the person has seen, or with null, forget it. */
+  seen_set: {
+    input: z.object({ threadId: id, seen: seenSchema.nullable() }),
+    output: z.null(),
+  },
+  /** Take an item off a thread's list of work not started, or move it one place. */
+  todo_change: {
+    input: z.object({ threadId: id, itemId: id, change: z.enum(["remove", "up", "down"]) }),
+    output: z.null(),
   },
   /** Park a thread, or with a null note, resume it. */
   park_set: {
@@ -97,6 +117,14 @@ export default async function plugin(bb: BbPluginApi) {
     },
     dismissal_set: async ({ threadId, dismissal }) => {
       await actions.setDismissal(threadId, dismissal);
+      return null;
+    },
+    seen_set: async ({ threadId, seen }) => {
+      await actions.setSeen(threadId, seen);
+      return null;
+    },
+    todo_change: async ({ threadId, itemId, change }) => {
+      await actions.todo(threadId, change === "remove" ? { kind: "take-id", id: itemId } : { kind: "move", id: itemId, by: change === "up" ? -1 : 1 });
       return null;
     },
     thread_archive: async (args) => {

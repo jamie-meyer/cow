@@ -5,11 +5,12 @@
 import { PluginCliError, cliCommand, defineCli } from "@get-bb/plugin-sdk";
 import { type Actions, CowError, MAX_REASON } from "./actions.ts";
 import { pickUpText } from "./park.ts";
+import { MAX_NEXT, MAX_TODOS, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
 import { statusText } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
-export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status">;
+export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked">;
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -52,11 +53,98 @@ const print = (asJson: boolean, data: object, text: string) => ({
   stdout: asJson ? `${JSON.stringify({ ok: true, ...data })}\n` : `${text}\n`,
 });
 
+const todoLines = (list: readonly TodoItem[]): string =>
+  list.length === 0 ? "    nothing listed" : list.map((item, index) => `${String(index + 1).padStart(3)}  ${item.title}`).join("\n");
+
+function itemNumber(value: string): number {
+  if (!/^[1-9][0-9]{0,2}$/.test(value.trim())) {
+    throw new PluginCliError(`"${value}" is not an item number`, { code: "bad_number", hint: "`bb cow todo list <thread>` numbers the items from 1." });
+  }
+  return Number(value.trim());
+}
+
+/** The plan commands: what a thread says is next for it, and what it has not started. */
+function planCommands(actions: CliActions) {
+  const item = { name: "n", description: "The item's number, as `todo list` shows it", required: true } as const;
+  const taking = (word: string, summary: string) =>
+    cliCommand({
+      summary,
+      positionals: [thread, item],
+      options: { json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const n = itemNumber(input.positionals.n);
+        const done = await acting(() => actions.todoChecked({ callerId: ctx.threadId ?? null, threadId: id, op: { kind: "take", n } }));
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, item: done.item, todo: done.list },
+          `${word} “${done.item?.title ?? ""}” for “${done.title}” (${id}); ${done.list.length} left`,
+        );
+      },
+    });
+  return {
+    next: cliCommand({
+      summary: "Say in one line what happens next for a thread, in your own words",
+      description:
+        "Shows on the thread's line on cow's page, in the next-move column, marked as the thread's own words. " +
+        "Set it whenever you end a turn with work still planned; clear it when nothing is. A thread sets it " +
+        "only for itself and for the threads under it.",
+      positionals: [thread, { name: "text", description: `What happens next, up to ${MAX_NEXT} characters` }],
+      options: { clear: { type: "boolean", description: "Remove the note" }, json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const text = input.positionals.text;
+        if (input.options.clear === (text !== undefined)) {
+          throw new PluginCliError("give the text, or --clear, not both and not neither", { code: "bad_next" });
+        }
+        const done = await acting(() => actions.nextChecked({ callerId: ctx.threadId ?? null, threadId: id, text: text ?? null }));
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, next: done.note?.text ?? null },
+          done.note ? `next for “${done.title}” (${id}): ${done.note.text}` : `cleared what is next for “${done.title}” (${id})`,
+        );
+      },
+    }),
+    "todo add": cliCommand({
+      summary: "List a piece of work a thread has not started yet",
+      description:
+        `Adds it to the end of the thread's list, which shows inside its group on cow's page. Keep the list to the next few items: it holds ${MAX_TODOS}. ` +
+        "A thread lists work only for itself and for the threads under it.",
+      positionals: [thread, { name: "title", description: "The work, in a few words", required: true }],
+      options: { json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const done = await acting(() =>
+          actions.todoChecked({ callerId: ctx.threadId ?? null, threadId: id, op: { kind: "add", title: input.positionals.title } }),
+        );
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, item: done.item, todo: done.list },
+          `listed for “${done.title}” (${id}), as item ${done.list.length}: ${done.item?.title ?? ""}`,
+        );
+      },
+    }),
+    "todo done": taking("started, and off the list:", "Take an item off the list because its work has started or is finished"),
+    "todo rm": taking("removed", "Take an item off the list because it will not be done"),
+    "todo list": cliCommand({
+      summary: "The work a thread has listed as not started, numbered",
+      positionals: [thread],
+      options: { json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const done = await acting(() => actions.todoChecked({ callerId: ctx.threadId ?? null, threadId: id, op: null }));
+        return print(input.options.json, { threadId: id, title: done.title, todo: done.list }, `Not started for “${done.title}” (${id})\n${todoLines(done.list)}`);
+      },
+    }),
+  };
+}
+
 export function cowCli(actions: CliActions) {
   return defineCli({
     name: "cow",
-    summary: "🐄 cow's notes on threads: park, resume, archive with a reason, and the overview",
+    summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
     commands: {
+      ...planCommands(actions),
       status: cliCommand({
         summary: "The overview: every thread under Main with its state, the queue, and the parked shelf",
         description:

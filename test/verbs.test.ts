@@ -13,9 +13,14 @@ const line = (facts: ThreadFacts, park?: ParkRecord, openUnder = 0): Line => ({
   thread: facts,
   derived: derive(facts, undefined, NOW, park),
   depth: 0,
+  parentId: null,
   queueNumber: null,
   under: 0,
   openUnder,
+  members: 0,
+  rollup: null,
+  olderUnder: 0,
+  note: null,
 });
 const allowed = (target: Line | null, isMain = false) =>
   VERBS.filter((verb) => verbBlocked(verb, target, isMain) === null);

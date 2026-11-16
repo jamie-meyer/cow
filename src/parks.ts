@@ -5,7 +5,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
-import { type ArchiveNote, type Dismissal, NOTES_CHANGED, type ParkRecord } from "./shared.ts";
+import {
+  type ArchiveNote,
+  type Dismissal,
+  NOTES_CHANGED,
+  type NextNote,
+  type ParkRecord,
+  type Seen,
+  type TodoItem,
+} from "./shared.ts";
 
 export interface Parks {
   /** Thread id to its note; null until the first load finishes. */
@@ -14,8 +22,17 @@ export interface Parks {
   archives: ReadonlyMap<string, ArchiveNote>;
   /** Thread id to the refused permissions the user dismissed. */
   dismissals: ReadonlyMap<string, Dismissal>;
+  /** Thread id to its own words on what is next, and to what it has not started. */
+  nexts: ReadonlyMap<string, NextNote>;
+  todos: ReadonlyMap<string, readonly TodoItem[]>;
+  /** Thread id to the reply the person has seen. */
+  seen: ReadonlyMap<string, Seen>;
   error: string | null;
   reload: () => void;
+  /** Record the reply the person has seen, or forget it with null. */
+  setSeen: (threadId: string, seen: Seen | null) => Promise<void>;
+  /** Take an item off a thread's list of work not started, or move it one place. */
+  changeTodo: (threadId: string, itemId: string, change: "remove" | "up" | "down") => Promise<void>;
   /** Park a thread with this note, or resume it with null. */
   set: (threadId: string, park: ParkRecord | null) => Promise<void>;
   /** Record why a thread is archived, or forget it with null. */
@@ -32,6 +49,9 @@ export function useParks(threadIds: readonly string[] | null): Parks {
   const [notes, setNotes] = useState<ReadonlyMap<string, ParkRecord> | null>(null);
   const [archives, setArchives] = useState<ReadonlyMap<string, ArchiveNote>>(new Map());
   const [dismissals, setDismissals] = useState<ReadonlyMap<string, Dismissal>>(new Map());
+  const [nexts, setNexts] = useState<ReadonlyMap<string, NextNote>>(new Map());
+  const [todos, setTodos] = useState<ReadonlyMap<string, readonly TodoItem[]>>(new Map());
+  const [seen, setSeenMap] = useState<ReadonlyMap<string, Seen>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const ids = useRef(threadIds);
   ids.current = threadIds;
@@ -42,8 +62,11 @@ export function useParks(threadIds: readonly string[] | null): Parks {
     if (wanted === null) return;
     const seq = ++request.current;
     rpc.call("notes_list", { threadIds: [...wanted] }).then(
-      ({ parks, archives: archived, dismissals: dismissed }) => {
+      ({ parks, archives: archived, dismissals: dismissed, nexts: next, todos: todo, seen: saw }) => {
         if (seq !== request.current) return;
+        setNexts(new Map(Object.entries(next)));
+        setTodos(new Map(Object.entries(todo)));
+        setSeenMap(new Map(Object.entries(saw)));
         setNotes(new Map(Object.entries(parks)));
         setArchives(new Map(Object.entries(archived)));
         setDismissals(new Map(Object.entries(dismissed)));
@@ -105,6 +128,29 @@ export function useParks(threadIds: readonly string[] | null): Parks {
     [rpc, reload],
   );
 
+  const setSeen = useCallback(
+    async (threadId: string, value: Seen | null) => {
+      await rpc.call("seen_set", { threadId, seen: value });
+      request.current += 1;
+      setSeenMap((current) => {
+        const next = new Map(current);
+        if (value === null) next.delete(threadId);
+        else next.set(threadId, value);
+        return next;
+      });
+      reload();
+    },
+    [rpc, reload],
+  );
+
+  const changeTodo = useCallback(
+    async (threadId: string, itemId: string, change: "remove" | "up" | "down") => {
+      await rpc.call("todo_change", { threadId, itemId, change });
+      reload();
+    },
+    [rpc, reload],
+  );
+
   const archive = useCallback(
     async (threadId: string, reason: string | null, dropped: boolean, at: number) => {
       await rpc.call("thread_archive", { threadId, reason, dropped, at });
@@ -113,5 +159,5 @@ export function useParks(threadIds: readonly string[] | null): Parks {
     [rpc, reload],
   );
 
-  return { notes, archives, dismissals, error, reload, set, setArchive, setDismissal, archive };
+  return { notes, archives, dismissals, nexts, todos, seen, error, reload, set, setArchive, setDismissal, setSeen, changeTodo, archive };
 }

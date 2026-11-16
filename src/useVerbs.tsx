@@ -26,7 +26,7 @@ import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
 import { chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
 import { isBusy } from "./state.ts";
-import { type Line, type Overview, afterLeaving, listed } from "./tree.ts";
+import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
 import { type Verb, verbBlocked } from "./verbs.ts";
 
@@ -52,6 +52,8 @@ export interface VerbHost {
   selected: Line | null;
   parks: Parks;
   now: number;
+  /** The groups folded in this window: the cursor skips their members. */
+  folded: ReadonlySet<string>;
   /** The unarchived threads under a thread, which bb archives along with it. */
   under: (id: string) => string[];
   setCursor: (id: string | null) => void;
@@ -65,6 +67,11 @@ export interface Verbs {
   mode: string | null;
   start: (verb: Verb) => void;
   startUndo: () => void;
+  /** Mark the line's reply as seen. Quietly when the person opened or answered it; `u` takes back only a marking they asked for. */
+  markSeen: (line: Line, asked: boolean) => void;
+  /** Ask, then take a not-started item off its list. */
+  removeTodo: (row: TodoRow) => void;
+  moveTodo: (row: TodoRow, by: 1 | -1) => void;
   /** The newest thing `u` would take back. */
   undoable: UndoEntry | null;
   /** While a prompt is open it takes every key; null when none is. */
@@ -96,6 +103,8 @@ export function useVerbs(host: VerbHost): Verbs {
     },
     [say, focusOverview],
   );
+
+  const afterLeaving = (id: string) => leaving(overview, id, host.folded);
 
   const remember = (entry: UndoEntry) => setUndo((entries) => [...entries.slice(1 - MAX_UNDO), entry]);
 
@@ -140,7 +149,7 @@ export function useVerbs(host: VerbHost): Verbs {
     const id = line.thread.id;
     const before = line.derived.park?.record ?? null;
     // Kept parked, the line stays on the shelf; newly parked, it leaves the tree.
-    const next = before === null ? afterLeaving(overview, id) : id;
+    const next = before === null ? afterLeaving(id) : id;
     try {
       if (stopFirst) await sdk.threads.stop({ threadId: id });
       await parks.set(id, record);
@@ -171,7 +180,7 @@ export function useVerbs(host: VerbHost): Verbs {
     const record = line.derived.park?.record;
     if (!record) return;
     const id = line.thread.id;
-    const next = afterLeaving(overview, id);
+    const next = afterLeaving(id);
     try {
       await parks.set(id, null);
       remember({ kind: "resume", threadId: id, title: line.thread.title, record });
@@ -193,7 +202,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const archive = async (line: Line, dropped: boolean, reason: string | null) => {
     const id = line.thread.id;
-    const next = afterLeaving(overview, id);
+    const next = afterLeaving(id);
     const under = host.under(id);
     try {
       // The backend records the reason, stops a dropped thread, and archives it.
@@ -211,6 +220,7 @@ export function useVerbs(host: VerbHost): Verbs {
       if (entry.kind === "park") await parks.set(entry.threadId, entry.before);
       else if (entry.kind === "resume") await parks.set(entry.threadId, entry.record);
       else if (entry.kind === "dismiss") await parks.setDismissal(entry.threadId, entry.before);
+      else if (entry.kind === "seen") await parks.setSeen(entry.threadId, entry.before);
       else {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
@@ -220,6 +230,52 @@ export function useVerbs(host: VerbHost): Verbs {
     } catch (cause) {
       close(`not undone: ${errorText(cause)}`);
     }
+  };
+
+  const markSeen = (line: Line, asked: boolean) => {
+    const reply = line.derived.reply;
+    const id = line.thread.id;
+    if (!reply) {
+      if (asked) say(line.derived.waitingOnYou ? "it waits on more than a reply: Space only marks a reply as seen" : "it has no reply waiting on you");
+      return;
+    }
+    const before = parks.seen.get(id) ?? null;
+    parks.setSeen(id, { seq: reply.seq, at: clockNow() }).then(
+      () => {
+        if (!asked) return;
+        remember({ kind: "seen", threadId: id, title: line.thread.title, before });
+        say("marked as seen: u takes it back");
+      },
+      (cause: unknown) => say(`not marked as seen: ${errorText(cause)}`),
+    );
+  };
+
+  const removeTodo = (row: TodoRow) => {
+    const next = afterLeaving(row.id);
+    say("");
+    setModal({
+      kind: "confirm",
+      mode: "REMOVE",
+      threadId: row.ownerId,
+      label: `remove “${row.item.title}” from what is not started? This cannot be undone.`,
+      cancelled: "not removed",
+      run: () =>
+        void parks.changeTodo(row.ownerId, row.item.id, "remove").then(
+          () => {
+            setCursor(next);
+            say("removed from the list");
+          },
+          (cause: unknown) => say(`not removed: ${errorText(cause)}`),
+        ),
+    });
+  };
+
+  const moveTodo = (row: TodoRow, by: 1 | -1) => {
+    if (by < 0 ? row.number === 1 : row.number === row.of) return say(by < 0 ? "it is first already" : "it is last already");
+    parks.changeTodo(row.ownerId, row.item.id, by < 0 ? "up" : "down").then(
+      () => say(""),
+      (cause: unknown) => say(`not moved: ${errorText(cause)}`),
+    );
   };
 
   const openAnswer = (line: Line) => {
@@ -414,7 +470,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume, archive or dismissal can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal or mark as seen can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -429,24 +485,23 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
+  const common = { start, startUndo, markSeen, removeTodo, moveTodo, undoable };
   if (modal === null) {
-    return { mode: null, start, startUndo, undoable, onKey: null, footer: null, card: null };
+    return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
   const title = target?.thread.title ?? "";
 
   if (modal.kind === "confirm") {
     return {
       mode: modal.mode,
-      start,
-      startUndo,
-      undoable,
+      ...common,
       onKey: (key) => {
         if (key !== "y" && key !== "Y") return close(modal.cancelled);
         // Closed before it runs, so a second y cannot run it twice.
         close();
         modal.run();
       },
-      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" ? "" : title} label={modal.label} />,
+      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" || modal.mode === "REMOVE" ? "" : title} label={modal.label} />,
       card: null,
     };
   }
@@ -456,9 +511,7 @@ export function useVerbs(host: VerbHost): Verbs {
     const question = questions[modal.draft.step];
     return {
       mode: "ANSWER",
-      start,
-      startUndo,
-      undoable,
+      ...common,
       onKey: (key) => {
         const request = modal.ask?.kind === "permission" ? modal.ask : null;
         if (key === "Escape") {
@@ -521,9 +574,7 @@ export function useVerbs(host: VerbHost): Verbs {
     const leaveText = () => focusOverview();
     return {
       mode: "BLOCKED",
-      start,
-      startUndo,
-      undoable,
+      ...common,
       onKey: (key) => {
         if (key === "Escape") return close("nothing sent: it is still blocked");
         if (key === "Enter") return confirmBlockedChoice();
@@ -578,9 +629,7 @@ export function useVerbs(host: VerbHost): Verbs {
     };
     return {
       mode: dropped ? "DROP" : "ARCHIVE",
-      start,
-      startUndo,
-      undoable,
+      ...common,
       onKey: () => promptRef.current?.focus(),
       footer: (
         <TextPrompt
@@ -623,9 +672,7 @@ export function useVerbs(host: VerbHost): Verbs {
   const asksReason = modal.kind === "park-reason";
   return {
     mode: "PARK",
-    start,
-    startUndo,
-    undoable,
+    ...common,
     // Focus was taken from the prompt, by a click perhaps: give it back.
     onKey: () => promptRef.current?.focus(),
     footer: (

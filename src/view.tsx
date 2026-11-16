@@ -21,6 +21,7 @@ import {
 import type { MainState, rpcContract } from "../server.ts";
 import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
+import { filterOverview } from "./filter.ts";
 import { hintLabels, matchHint } from "./hints.ts";
 import { dueText } from "./park.ts";
 import { type Parks, useParks } from "./parks.ts";
@@ -37,7 +38,9 @@ import {
   type HintTarget,
   KEY_MAP,
   KeyReader,
+  activate,
   attachKeys,
+  takesCaret,
   collectHintTargets,
 } from "./keys.ts";
 import {
@@ -50,7 +53,24 @@ import {
   waitingSince,
 } from "./state.ts";
 import { formatAge } from "./text.ts";
-import { type Line, type Overview, buildOverview, cursorOrder, descendantIds, listed } from "./tree.ts";
+import {
+  type Line,
+  type Overview,
+  ROLLUP_ORDER,
+  type Rollup,
+  type TodoRow,
+  buildOverview,
+  cursorOrder,
+  descendantIds,
+  foldMove,
+  headIds,
+  keepFolds,
+  listed,
+  nextMove,
+  unfoldAround,
+  visibleRows,
+  waitingInside,
+} from "./tree.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
 import { VERB_KEYS, type Verb as VerbName, verbBlocked, verbLabel } from "./verbs.ts";
@@ -65,6 +85,8 @@ const LOAD_SETTLE_MS = 4000;
 const CHAT_SETTLE_MS = 2500;
 /** The picker lists this many threads, most recently active first. */
 const PICKER_LIMIT = 300;
+/** Where a window keeps which groups are folded. */
+const FOLDS_KEY = "cow:folds";
 
 /** Whether the page is open: the "choose Main" command is offered only then. */
 export const pageSignal = {
@@ -108,8 +130,8 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
 const LEGEND: readonly { state: LineState; name?: string; short: string; long: string }[] = [
   {
     state: "wants",
-    short: "it asked; or Main replied",
-    long: "It asked you a question or for permission, or Main finished with a reply you have not read. Listed in the queue.",
+    short: "it asked, or replied to you",
+    long: "It asked you a question or for permission, or it finished with a reply that is yours to read: Main, a thread with threads under it, or any thread you sent the message to. Enter opens it; Space marks it seen. Listed in the queue.",
   },
   {
     state: "blocked",
@@ -141,7 +163,7 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
   {
     state: "done",
     short: "ended in the last 2 days",
-    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. Older ones are counted, not listed.",
+    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. A finished member stays in its group, dimmed. Older ones are counted, not listed.",
   },
 ];
 
@@ -177,6 +199,38 @@ function Age({ derived, now }: { derived: Derived; now: number }) {
   );
 }
 
+/** The rules that tie a row to the groups it is in: one for each level above it. */
+function Rails({ depth }: { depth: number }) {
+  return (
+    <>
+      {Array.from({ length: depth }, (_, index) => (
+        <i className="cow-rail" key={index} />
+      ))}
+    </>
+  );
+}
+
+/** Everything under a group head, by state: the same marks as the lines. */
+function RollupMarks({ rollup, older }: { rollup: Rollup; older: number }) {
+  const shown = ROLLUP_ORDER.filter((state) => rollup[state] > 0);
+  if (shown.length === 0) return null;
+  const words = shown.map((state) => `${rollup[state]} ${STATE_LABEL[state]}`).join(", ");
+  return (
+    <span
+      className="cow-roll"
+      data-cow-rollup={shown.map((state) => `${state}:${rollup[state]}`).join(" ")}
+      title={`under it: ${words}${older > 0 ? ` (${older} finished more than 2 days ago, not listed)` : ""}`}
+    >
+      {shown.map((state) => (
+        <span key={state} className={`cow-s-${state}`}>
+          <Glyph state={state} />
+          {rollup[state]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function LineRow({
   line,
   now,
@@ -184,8 +238,13 @@ function LineRow({
   parentTitle,
   current,
   flash,
+  fold,
+  waitingInside,
+  open,
+  context,
   onSelect,
   onOpen,
+  onFold,
 }: {
   line: Line;
   now: number;
@@ -193,23 +252,51 @@ function LineRow({
   parentTitle: string | null;
   current: boolean;
   flash: boolean;
+  /** For a group head: whether its members are showing. Null for any other line. */
+  fold: "open" | "folded" | null;
+  /** For a folded head: how many lines inside it wait on the user. */
+  waitingInside: number;
+  /** Its chat is the one open in the pane. */
+  open: boolean;
+  /** While filtering: shown only as the head of a match, not a match itself. */
+  context: boolean;
   onSelect: (id: string) => void;
   onOpen: (id: string) => void;
+  onFold: (id: string) => void;
 }) {
   const { thread, derived } = line;
   const returned = derived.park?.due != null;
+  const next = nextMove(line);
   const classes = ["cow-ln", `cow-d-${derived.state}`];
   if (returned) classes.push("cow-up");
   if (current) classes.push("cow-cur");
   if (flash) classes.push("cow-flash");
+  if (open) classes.push("cow-open");
+  if (context) classes.push("cow-context");
+  if (fold !== null) classes.push("cow-grouphead");
+  if (!flat && (fold !== null || line.depth > 0)) classes.push("cow-ingroup");
+  if (!flat && line.depth === 0) classes.push("cow-top");
+  const nextNode = next.own ? (
+    <span className="cow-own" data-cow-note="" title="what is next, in the thread's own words">
+      “{next.text}”
+    </span>
+  ) : (
+    next.text
+  );
   return (
     <div
       className={classes.join(" ")}
       data-cow-line={thread.id}
       data-cow-state={derived.state}
+      data-cow-depth={flat ? undefined : line.depth}
+      data-cow-fold={fold ?? undefined}
+      data-cow-reply={derived.reply ? "" : undefined}
+      data-cow-open={open ? "" : undefined}
+      data-cow-context={context ? "" : undefined}
       data-cow-returned={returned || undefined}
       data-cow-hint=""
       aria-current={current || undefined}
+      aria-expanded={fold === null ? undefined : fold === "open"}
       onClick={() => onSelect(thread.id)}
       onDoubleClick={() => onOpen(thread.id)}
     >
@@ -218,17 +305,51 @@ function LineRow({
         <Glyph state={derived.state} />
       </span>
       <Age derived={derived} now={now} />
-      <span className="cow-nm" style={flat ? undefined : { paddingLeft: line.depth * 15 }}>
-        {thread.title}
-        {flat && parentTitle ? <small> · {parentTitle}</small> : null}
-        {line.under > 0 ? (
-          <small data-cow-under={line.under}>
-            {" "}
-            · with {line.under} {line.under === 1 ? "thread" : "threads"} under it
-          </small>
-        ) : null}
+      <span className="cow-nm">
+        {flat ? null : <Rails depth={line.depth} />}
+        {fold === null ? (
+          // Where a head has its fold mark, so every title at one level starts at the same place.
+          <i className="cow-fold" aria-hidden="true" />
+        ) : (
+          <i
+            className="cow-fold cow-foldable"
+            title={fold === "open" ? "fold: h" : "unfold: l"}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFold(thread.id);
+            }}
+          >
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <path d={fold === "open" ? "M1.5 3 5 7.2 8.5 3z" : "M3 1.5 7.2 5 3 8.5z"} fill="currentColor" />
+            </svg>
+          </i>
+        )}
+        <span className="cow-title">
+          {thread.title}
+          {flat && parentTitle ? <small> · {parentTitle}</small> : null}
+          {open ? <small className="cow-openmark"> · chat open</small> : null}
+          {fold === "folded" ? (
+            <small data-cow-folded={line.members}>
+              {" "}
+              · {line.members} folded
+            </small>
+          ) : null}
+          {line.under > 0 ? (
+            <small data-cow-under={line.under}>
+              {" "}
+              · with {line.under} {line.under === 1 ? "thread" : "threads"} under it
+            </small>
+          ) : null}
+        </span>
+        {!flat && line.rollup ? <RollupMarks rollup={line.rollup} older={line.olderUnder} /> : null}
       </span>
       <span className="cow-wh">
+        {waitingInside > 0 ? (
+          <b className="cow-inside" data-cow-inside={waitingInside}>
+            {waitingInside} inside {waitingInside === 1 ? "waits" : "wait"} on you
+            {" · "}
+          </b>
+        ) : null}
         {derived.archivedWhy ? (
           <b className="cow-why" data-cow-archive-reason="">
             archived: {derived.archivedWhy}
@@ -236,9 +357,43 @@ function LineRow({
           </b>
         ) : null}
         {derived.archivedWhy && derived.doing === "archived" ? null : derived.doing}
-        {derived.next ? <span className="cow-nx2"> → {derived.next}</span> : null}
+        {next.text ? <span className="cow-nx2"> → {nextNode}</span> : null}
       </span>
-      <span className="cow-nx">{derived.next}</span>
+      <span className="cow-nx">{nextNode}</span>
+    </div>
+  );
+}
+
+/** Work a thread has listed as not started: a row in its group, after its members. */
+function TodoLine({ row, current, onSelect }: { row: TodoRow; current: boolean; onSelect: (id: string) => void }) {
+  return (
+    <div
+      className={current ? "cow-ln cow-todo cow-ingroup cow-cur" : "cow-ln cow-todo cow-ingroup"}
+      data-cow-todo={row.id}
+      data-cow-todo-of={row.ownerId}
+      data-cow-depth={row.depth}
+      data-cow-hint=""
+      aria-current={current || undefined}
+      onClick={() => onSelect(row.id)}
+    >
+      <span className="cow-qn" />
+      <span className="cow-gl">
+        <svg className="cow-g" viewBox="0 0 12 12" role="img" aria-label="not started">
+          <circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" strokeWidth="1.3" strokeDasharray="2.2 1.9" />
+        </svg>
+      </span>
+      <span className="cow-ag">
+        <b>
+          {row.number}/{row.of}
+        </b>
+      </span>
+      <span className="cow-nm">
+        <Rails depth={row.depth} />
+        <i className="cow-fold" aria-hidden="true" />
+        <span className="cow-title">{row.item.title}</span>
+      </span>
+      <span className="cow-wh">not started</span>
+      <span className="cow-nx">{current ? "x removes · J K move" : ""}</span>
     </div>
   );
 }
@@ -337,9 +492,30 @@ function Help({ onClose }: { onClose: () => void }) {
             </span>
           </div>
           <div className="cow-row">
-            <span>indent</span>
+            <span>▾ ▸</span>
             <span>
-              <b>started by the line above.</b> An indented line is a thread the one above it started.
+              <b>a group.</b> A thread with threads under it, drawn with them along one rule. Its line counts
+              what is under it, by state. <kbd>h</kbd> folds it, <kbd>l</kbd> unfolds it.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>chat open</span>
+            <span>
+              <b>the chat in the pane.</b> The line, or the heading, whose chat is open beside the overview:
+              a bar at its far edge. <kbd>i</kbd> types into it wherever the cursor is.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>“ ”</span>
+            <span>
+              <b>next, in its own words.</b> What the thread itself says happens next, set with bb cow next.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>◌ 1/3</span>
+            <span>
+              <b>not started.</b> Work a thread has listed for later, in order, with bb cow todo.{" "}
+              <kbd>x</kbd> removes one; <kbd>J</kbd> <kbd>K</kbd> move it.
             </span>
           </div>
         </div>
@@ -363,24 +539,37 @@ interface HintState {
   labels: string[];
 }
 
+/**
+ * The hint labels, drawn over the whole window so they also reach a menu bb
+ * opened outside the page. It is the one thing cow adds outside its own
+ * root, and it is removed when hint mode ends.
+ */
 function HintLayer({ hint }: { hint: HintState }) {
-  return (
-    <div className="cow-hints" data-cow-hints="">
-      {hint.targets.map((target, index) => {
-        const label = hint.labels[index]!;
-        return (
-          <span
-            key={label}
-            className={label.startsWith(hint.typed) ? "cow-ht" : "cow-ht cow-dim"}
-            data-cow-hint-label={label}
-            style={{ left: target.left, top: target.top }}
-          >
-            {label}
-          </span>
-        );
-      })}
-    </div>
-  );
+  useLayoutEffect(() => {
+    const layer = document.createElement("div");
+    layer.className = "cow-hints";
+    layer.dataset.cowHints = "";
+    hint.targets.forEach((target, index) => {
+      const label = hint.labels[index]!;
+      const tag = document.createElement("span");
+      tag.className = label.startsWith(hint.typed) ? "cow-ht" : "cow-ht cow-dim";
+      tag.dataset.cowHintLabel = label;
+      // What the label is for, in words: a line's id, or the kind of thing and its name.
+      const el = target.element;
+      tag.dataset.cowHintFor =
+        el.dataset.cowLine ??
+        el.dataset.cowTodo ??
+        `${el.tagName.toLowerCase()}:${(el.getAttribute("href") ?? el.getAttribute("aria-label") ?? el.title ?? "") || (el.textContent ?? "").trim().slice(0, 40)}`;
+      tag.dataset.cowHintIn = el.closest("[data-cow-chat]") ? "chat" : el.closest("[data-cow-root]") ? "page" : "popup";
+      tag.style.left = `${target.left}px`;
+      tag.style.top = `${target.top}px`;
+      tag.textContent = label;
+      layer.append(tag);
+    });
+    document.body.append(layer);
+    return () => layer.remove();
+  }, [hint]);
+  return null;
 }
 
 /** Move through `order` from `current`, staying inside it. */
@@ -397,6 +586,15 @@ function useThreadStore(): { store: ThreadStore; snapshot: ReturnType<ThreadStor
   useEffect(() => store.start(), [store]);
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
   return { store, snapshot };
+}
+
+function readFolds(): ReadonlySet<string> {
+  try {
+    const stored: unknown = JSON.parse(window.sessionStorage.getItem(FOLDS_KEY) ?? "[]");
+    return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 function readWindowMains(): WindowMains {
@@ -484,11 +682,14 @@ function usePageKeys(
   onCommand: (command: Command) => void,
   onLeaveChat: () => void,
   blocked: ((key: string) => boolean) | null,
+  /** Called with a hint's target just before and just after it is used. */
+  beforeActivate?: (element: HTMLElement) => void,
+  afterActivate?: (element: HTMLElement) => void,
 ) {
   const [hint, setHint] = useState<HintState | null>(null);
   const reader = useRef(new KeyReader());
-  const live = useRef({ onCommand, onLeaveChat, blocked, hint });
-  live.current = { onCommand, onLeaveChat, blocked, hint };
+  const live = useRef({ onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate });
+  live.current = { onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate };
 
   const startHints = useCallback(() => {
     const root = rootRef.current;
@@ -503,9 +704,10 @@ function usePageKeys(
     () =>
       attachKeys({
         onLeaveChat: () => live.current.onLeaveChat(),
+        capturing: () => live.current.hint !== null,
         onKey(key, shift) {
           const { hint: active, blocked: isBlocked } = live.current;
-          if (isBlocked?.(key)) return;
+          if (!active && isBlocked?.(key)) return;
           if (active) {
             if (key === "Escape") return setHint(null);
             if (key.length !== 1) return;
@@ -513,7 +715,14 @@ function usePageKeys(
             const match = matchHint(active.labels, typed);
             if (match.kind === "partial") return setHint({ ...active, typed });
             setHint(null);
-            if (match.kind === "hit") active.targets[match.index]!.element.click();
+            if (match.kind !== "hit") return;
+            const { element } = active.targets[match.index]!;
+            if (!element.isConnected) return;
+            live.current.beforeActivate?.(element);
+            // cow's own targets have plain click handlers; anything of bb's gets the whole gesture.
+            if (element.hasAttribute("data-cow-hint")) element.click();
+            else activate(element);
+            live.current.afterActivate?.(element);
             return;
           }
           const command = reader.current.read(key, shift, Date.now());
@@ -622,8 +831,10 @@ function Picker({
                   </span>
                   <Age derived={derived} now={now} />
                   <span className="cow-nm">
-                    {thread.title}
-                    {thread.id === currentMainId ? <small> · Main now</small> : null}
+                    <span className="cow-title">
+                      {thread.title}
+                      {thread.id === currentMainId ? <small> · Main now</small> : null}
+                    </span>
                   </span>
                   <span className="cow-wh">
                     {scopedToProject ? "" : (projectNames.get(thread.projectId) ?? "")}
@@ -673,7 +884,34 @@ function OverviewScreen({
   const sdk = useSdk();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const sayRef = useRef<HTMLInputElement | null>(null);
-  const order = useMemo(() => cursorOrder(overview), [overview]);
+  // Which groups are folded is this window's own, and outlives a reload.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(readFolds);
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(FOLDS_KEY, JSON.stringify([...folded]));
+    } catch {
+      // Without storage the folds last as long as the page does.
+    }
+  }, [folded]);
+  useEffect(() => setFolded((current) => keepFolds(overview, current)), [overview]);
+  // Filtering narrows the page to what matches. Folds are left alone, so
+  // closing the filter puts the page back as it was.
+  const [filter, setFilter] = useState<{ text: string; cursorBefore: string | null } | null>(null);
+  const filterRef = useRef<HTMLInputElement | null>(null);
+  const filterText = filter?.text ?? null;
+  const found = useMemo(() => (filterText === null ? null : filterOverview(overview, filterText)), [overview, filterText]);
+  const rows = useMemo(
+    () => (found ? overview.rows.filter((row) => found.keep.has(row.id)) : visibleRows(overview, folded)),
+    [overview, folded, found],
+  );
+  const hit = useMemo(() => (found ? new Set(found.matches) : null), [found]);
+  const parkedShown = hit ? overview.parked.filter((line) => hit.has(line.thread.id)) : overview.parked;
+  const doneShown = hit ? overview.done.filter((line) => hit.has(line.thread.id)) : overview.done;
+  // The heading is the first stop: Main is a line like any other to the cursor.
+  const order = useMemo(
+    () => (found ? found.matches : [main.thread.id, ...cursorOrder(overview, folded)]),
+    [overview, folded, found, main.thread.id],
+  );
   const titles = useMemo(() => {
     const map = new Map<string, string>([[main.thread.id, main.thread.title]]);
     for (const line of listed(overview)) map.set(line.thread.id, line.thread.title);
@@ -683,18 +921,46 @@ function OverviewScreen({
   // The cursor is a thread id, so live updates never move it. If its line
   // leaves the page, it lands on the line that took its place: the next one
   // down. The verbs that move a line say where the cursor goes themselves.
-  const [cursor, setCursor] = useState<string | null>(null);
-  const lastIndex = useRef(0);
-  // The heading is not in the line order, but the queue can put the cursor on it.
-  const onMain = cursor === main.thread.id;
+  const [cursor, setCursorRaw] = useState<string | null>(null);
+  /** Put the cursor on a row, unfolding whatever hides it. */
+  const setCursor = useCallback(
+    (id: string | null) => {
+      if (id !== null) setFolded((current) => unfoldAround(overview, current, id));
+      setCursorRaw(id);
+    },
+    [overview],
+  );
+  // A page starts on its first line, below the heading.
+  const lastIndex = useRef(1);
   const cursorIndex = cursor === null ? -1 : order.indexOf(cursor);
   const selected =
-    onMain || cursorIndex >= 0
+    cursorIndex >= 0
       ? cursor
-      : (order[Math.min(lastIndex.current, order.length - 1)] ?? null);
+      : found
+        ? // While filtering, the cursor is on the first match until it is moved.
+          (order[0] ?? null)
+        : (order[Math.min(lastIndex.current, order.length - 1)] ?? null);
+  const onMain = selected === main.thread.id;
   useEffect(() => {
-    if (selected !== null && !onMain) lastIndex.current = order.indexOf(selected);
-  }, [selected, onMain, order]);
+    if (selected !== null && !found) lastIndex.current = order.indexOf(selected);
+  }, [selected, found, order]);
+
+  const startFilter = () => {
+    setFilter({ text: "", cursorBefore: selected });
+    setMessage("");
+  };
+  useEffect(() => {
+    if (filter !== null) filterRef.current?.focus();
+  }, [filter !== null]);
+  /** Close the filter: on the line chosen, or back where the cursor was. */
+  const endFilter = (keep: boolean) => {
+    if (filter === null) return;
+    const to = keep && selected !== null ? selected : filter.cursorBefore;
+    setFilter(null);
+    setCursor(to);
+    focusOverview();
+  };
+  const moveInFilter = (by: 1 | -1) => setCursorRaw(step(order, selected, by));
 
   const [pane, setPane] = useState<string | null>(null);
   const [focusRequest, setFocusRequest] = useState(0);
@@ -751,21 +1017,21 @@ function OverviewScreen({
     };
   }, [pane, focusOverview]);
 
-  /** Open a thread's chat in the pane; a second time, put the caret in it. */
+  /** Open a thread's chat in the pane, or switch the pane to it. It never takes the keyboard. */
   const openChat = useCallback(
     (id: string | null) => {
-      if (id === null) return;
-      if (pane === id) {
-        chatMayFocus.current = true;
-        rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]")?.focus({ preventScroll: true });
-        setFocusRequest((value) => value + 1);
-        return;
-      }
+      if (id === null || pane === id) return;
       setPane(id);
       setMessage("");
     },
     [pane],
   );
+  /** Put the caret in the composer of the chat that is open: the one way into it. */
+  const typeInChat = useCallback(() => {
+    chatMayFocus.current = true;
+    rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]")?.focus({ preventScroll: true });
+    setFocusRequest((value) => value + 1);
+  }, []);
 
   const closePane = useCallback(() => {
     setPane(null);
@@ -796,6 +1062,9 @@ function OverviewScreen({
       .then(
         () => {
           setMessage(`said to ${titles.get(target) ?? "the thread"}`);
+          // Answering it is having read it.
+          const line = [main, ...listed(overview)].find((other) => other.thread.id === target);
+          if (line?.derived.reply) verbs.markSeen(line, false);
           endSay();
         },
         (cause: unknown) =>
@@ -812,6 +1081,7 @@ function OverviewScreen({
 
   const selectedLine =
     [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
+  const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
   const verbs = useVerbs({
     sdk,
     overview,
@@ -819,6 +1089,7 @@ function OverviewScreen({
     selected: selectedLine,
     parks,
     now,
+    folded,
     under: (id) => descendantIds(threads, id),
     setCursor,
     say: setMessage,
@@ -826,13 +1097,34 @@ function OverviewScreen({
     focusOverview,
   });
 
+  // A reply showing in the pane has been seen. Each is marked once, so that
+  // undoing a mark made with Space is not undone again by the open pane.
+  const paneLine = pane === null ? null : ([main, ...listed(overview)].find((line) => line.thread.id === pane) ?? null);
+  const paneReply = paneLine?.derived.reply?.seq ?? null;
+  const autoSeen = useRef(new Set<string>());
+  useEffect(() => {
+    if (paneLine === null || paneReply === null) return;
+    const key = `${paneLine.thread.id}:${paneReply}`;
+    if (autoSeen.current.has(key)) return;
+    autoSeen.current.add(key);
+    verbs.markSeen(paneLine, false);
+    // Only a new pane or a new reply marks anything.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane, paneReply]);
+
+  const toggleFold = (id: string) =>
+    setFolded((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
   const run = (command: Command) => {
-    // Nothing is above the heading.
-    if (onMain && command.kind === "move" && command.by < 0) return;
     if (moveInList({ order, cursor: selected, setCursor }, command)) return;
     switch (command.kind) {
       case "open":
-        return openChat(selected);
+        // What is not started has no chat of its own; its thread's is the nearest thing.
+        return openChat(selectedTodo ? selectedTodo.ownerId : selected);
       case "main-chat":
         return openChat(main.thread.id);
       case "back":
@@ -840,7 +1132,11 @@ function OverviewScreen({
         else setMessage("");
         return;
       case "say":
+        // With a chat open, i types into it, whichever line the cursor is on.
+        if (command.to === "main" && pane !== null) return typeInChat();
         return startSay(command.to === "main" ? main.thread.id : selected);
+      case "filter":
+        return startFilter();
       case "ask": {
         const count = overview.queue.length;
         const at = overview.queue.findIndex((line) => line.thread.id === selected);
@@ -849,7 +1145,26 @@ function OverviewScreen({
       }
       case "ask-number":
         return toAsk(command.number - 1);
+      case "fold": {
+        const move = foldMove(overview, folded, selected, command.key);
+        if (move.kind === "fold") setFolded(move.folded);
+        else if (move.kind === "cursor") setCursor(move.id);
+        return;
+      }
+      case "seen":
+        if (selectedTodo) return setMessage("that is work not started, not a reply");
+        if (selectedLine === main && main.thread.parentThreadId === null) {
+          return setMessage("Main's reply is read by opening its chat: press m");
+        }
+        return selectedLine ? verbs.markSeen(selectedLine, true) : undefined;
+      case "reorder":
+        if (!selectedTodo) return setMessage("J and K move a not-started item; select one first");
+        return verbs.moveTodo(selectedTodo, command.by);
       case "verb":
+        if (selectedTodo) {
+          if (command.verb === "stop") return verbs.removeTodo(selectedTodo);
+          return setMessage("that is work not started yet, not a thread: x removes it, J and K move it");
+        }
         return verbs.start(command.verb);
       case "undo":
         return verbs.startUndo();
@@ -882,7 +1197,28 @@ function OverviewScreen({
               sayRef.current?.focus();
               return true;
             }
-          : null,
+          : filter !== null
+            ? () => {
+                filterRef.current?.focus();
+                return true;
+              }
+            : null,
+    (element) => {
+      // A hint on a field in the chat is the user asking for the caret there.
+      if (takesCaret(element) && element.closest("[data-cow-chat]")) chatMayFocus.current = true;
+    },
+    (element) => {
+      // Anything else in the chat was only pressed. bb may move focus into the
+      // chat when it is, now or a moment later; the keyboard stays here, so
+      // that the next key, f included, is still the overview's.
+      if (takesCaret(element) || !element.closest("[data-cow-chat]")) return;
+      const back = () => {
+        if (document.activeElement?.closest("[data-cow-chat]")) focusOverview();
+      };
+      back();
+      setTimeout(back, 60);
+      setTimeout(back, 250);
+    },
   );
 
   useLayoutEffect(() => {
@@ -892,6 +1228,8 @@ function OverviewScreen({
   }, [selected]);
 
   const listedCount = listed(overview).length;
+  // Main alone can still have listed what it has not started.
+  const nothingListed = listedCount === 0 && overview.rows.length === 0;
   const returnedCount = overview.parked.filter((line) => line.derived.park?.due != null).length;
   const onHeading = selectedLine === main;
   const verbButton = (verb: VerbName) => {
@@ -910,12 +1248,20 @@ function OverviewScreen({
   };
   const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
   const card = (id: string) => (verbs.card?.threadId === id ? verbs.card.node : null);
-  const row = (line: Line, flat: boolean) => (
+  const row = (line: Line, flat: boolean) => {
+    // While filtering every group is drawn unfolded: what matches inside it is showing.
+    const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
+    return (
     <Fragment key={line.thread.id}>
       <LineRow
         line={line}
         now={now}
         flat={flat}
+        fold={fold}
+        waitingInside={fold === "folded" ? waitingInside(overview, line.thread.id) : 0}
+        open={line.thread.id === pane}
+        context={hit !== null && !hit.has(line.thread.id)}
+        onFold={toggleFold}
         parentTitle={
           line.thread.parentThreadId === main.thread.id
             ? null
@@ -928,7 +1274,8 @@ function OverviewScreen({
       />
       {card(line.thread.id)}
     </Fragment>
-  );
+    );
+  };
 
   return (
     <div
@@ -936,7 +1283,13 @@ function OverviewScreen({
       data-cow-root=""
       data-cow-screen="overview"
       data-cow-mode={
-        hint ? "hint" : sayTo !== null ? "say" : help ? "help" : (verbs.mode?.toLowerCase() ?? "normal")
+        hint
+          ? "hint"
+          : sayTo !== null
+            ? "say"
+            : help
+              ? "help"
+              : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : "normal"))
       }
       tabIndex={-1}
       ref={rootRef}
@@ -944,8 +1297,9 @@ function OverviewScreen({
       <div className="cow-app">
         <header className="cow-head">
           <div
-            className={onMain ? "cow-mainline cow-cur" : "cow-mainline"}
+            className={["cow-mainline", onMain ? "cow-cur" : "", pane === main.thread.id ? "cow-open" : ""].join(" ").trim()}
             data-cow-line={main.thread.id}
+            data-cow-open={pane === main.thread.id ? "" : undefined}
             data-cow-hint=""
             onClick={() => setCursor(main.thread.id)}
             onDoubleClick={() => openChat(main.thread.id)}
@@ -962,7 +1316,15 @@ function OverviewScreen({
               <Glyph state={main.derived.state} />
               {STATE_LABEL[main.derived.state]} <Age derived={main.derived} now={now} />
             </span>
-            <span className="cow-maindoing">{main.derived.doing}</span>
+            <span className="cow-maindoing">
+              {main.derived.doing}
+              {main.note !== null ? (
+                <span className="cow-own" data-cow-note="" title="what is next, in Main's own words">
+                  {" "}
+                  → “{main.note}”
+                </span>
+              ) : null}
+            </span>
           </div>
           {message ? (
             <span className="cow-msg" data-cow-message="">
@@ -978,7 +1340,7 @@ function OverviewScreen({
 
         <div className="cow-body">
           <main className="cow-main" data-cow-scroll="">
-            {listedCount === 0 ? (
+            {nothingListed ? (
               <Notice title="Main has not started any threads yet">
                 <p>
                   When Main hands work to another thread, that thread appears here as a line, with the
@@ -994,7 +1356,13 @@ function OverviewScreen({
             ) : (
               <>
                 <ColumnHead />
-                {overview.lines.map((line) => row(line, false))}
+                {rows.map((item) =>
+                  item.kind === "line" ? (
+                    row(item.line, false)
+                  ) : (
+                    <TodoLine key={item.id} row={item} current={item.id === selected} onSelect={setCursor} />
+                  ),
+                )}
                 <div className="cow-sec" data-cow-shelf="">
                   Parked
                   <span>
@@ -1013,16 +1381,16 @@ function OverviewScreen({
                     losing it.
                   </p>
                 ) : (
-                  overview.parked.map((line) => row(line, true))
+                  parkedShown.map((line) => row(line, true))
                 )}
                 <div className="cow-sec">
                   Done
                   <span>
-                    {overview.done.length} finished in the last 2 days with nothing open under them
+                    {overview.done.length} finished or archived in the last 2 days, with everything under them
                     {overview.olderDone > 0 ? ` · ${overview.olderDone} older, not listed` : ""}
                   </span>
                 </div>
-                {overview.done.map((line) => row(line, true))}
+                {doneShown.map((line) => row(line, true))}
               </>
             )}
             {truncated ? (
@@ -1036,8 +1404,8 @@ function OverviewScreen({
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
               <p className="cow-sub">
-                Questions, permission requests, refused permissions, failures, Main's unread replies and
-                parked work that came back, oldest first.
+                Questions, permission requests, refused permissions, failures, replies addressed to you
+                and parked work that came back, oldest first.
               </p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
@@ -1079,9 +1447,12 @@ function OverviewScreen({
           ) : (
             <aside className="cow-pane" data-cow-pane={pane}>
               <div className="cow-panehead">
-                <b>{paneTitle}</b>
+                <b data-cow-pane-title="">
+                  {pane === main.thread.id ? "Main · " : ""}
+                  {paneTitle}
+                </b>
                 <span>
-                  <kbd>⏎</kbd> type here · <kbd>Esc</kbd> back
+                  <kbd>i</kbd> type here · <kbd>Esc</kbd> back
                 </span>
                 <button type="button" className="cow-vb" data-cow-hint="" tabIndex={-1} onClick={closePane}>
                   close
@@ -1134,15 +1505,56 @@ function OverviewScreen({
             </>
           ) : verbs.footer ? (
             verbs.footer
+          ) : filter !== null ? (
+            <>
+              <span className="cow-mode cow-m-prompt">FILTER</span>
+              <span className="cow-prompt">
+                <label htmlFor="cow-filter">/</label>
+                <input
+                  id="cow-filter"
+                  ref={filterRef}
+                  data-cow-filter=""
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="part of a name, or of what it is doing"
+                  value={filter.text}
+                  onChange={(event) => setFilter({ ...filter, text: event.target.value })}
+                  onKeyDown={(event) => {
+                    const down = event.key === "ArrowDown" || (event.ctrlKey && event.key === "n");
+                    const up = event.key === "ArrowUp" || (event.ctrlKey && event.key === "p");
+                    if (!down && !up && event.key !== "Enter" && event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (down || up) moveInFilter(down ? 1 : -1);
+                    else endFilter(event.key === "Enter");
+                  }}
+                />
+                <small data-cow-filter-count={order.length}>
+                  {order.length} {order.length === 1 ? "match" : "matches"} · <kbd>Ctrl</kbd>
+                  <kbd>n</kbd> <kbd>p</kbd> move · <kbd>⏎</kbd> keep · <kbd>Esc</kbd> cancel
+                </small>
+              </span>
+            </>
           ) : (
             <>
               <span className={hint ? "cow-mode cow-m-hint" : "cow-mode"}>{hint ? "HINT" : "NORMAL"}</span>
-              <span className="cow-noun">{selectedLine?.thread.title ?? ""}</span>
+              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? ""}</span>
               <span className="cow-sep">▸</span>
               <span className="cow-verbs">
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
                 <Verb keys="I" label="say to it" off={selected === null} onRun={() => startSay(selected)} />
-                {(["answer", "park", "resume", "stop", "archive"] as const).map(verbButton)}
+                {selectedTodo ? (
+                  <>
+                    <Verb keys="x" label="remove" name="todo-remove" onRun={() => verbs.removeTodo(selectedTodo)} />
+                    <Verb keys="K" label="up" off={selectedTodo.number === 1} onRun={() => verbs.moveTodo(selectedTodo, -1)} />
+                    <Verb keys="J" label="down" off={selectedTodo.number === selectedTodo.of} onRun={() => verbs.moveTodo(selectedTodo, 1)} />
+                  </>
+                ) : (
+                  (["answer", "park", "resume", "stop", "archive"] as const).map(verbButton)
+                )}
+                {selectedLine?.derived.reply ? (
+                  <Verb keys="␣" label="seen" name="seen" onRun={() => verbs.markSeen(selectedLine, true)} />
+                ) : null}
               </span>
               <span className="cow-sep">·</span>
               <span className="cow-verbs">
@@ -1154,7 +1566,12 @@ function OverviewScreen({
                   why={verbs.undoable ? undefined : "nothing to undo"}
                   onRun={verbs.startUndo}
                 />
-                <Verb keys="i" label="say to Main" onRun={() => startSay(main.thread.id)} />
+                <Verb
+                  keys="i"
+                  label={pane === null ? "say to Main" : "type in the chat"}
+                  onRun={() => run({ kind: "say", to: "main" })}
+                />
+                <Verb keys="/" label="filter" onRun={startFilter} />
                 <Verb keys="m" label="Main's chat" onRun={() => openChat(main.thread.id)} />
                 <Verb keys="⇥" label="next ask" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
                 <Verb keys="f" label="hints" onRun={startHints} />
@@ -1203,12 +1620,14 @@ export function CowPage() {
       mainId === null || snapshot.status !== "ready"
         ? null
         : // A note may be on any open thread, or on one archived recently enough to be listed.
-          descendantIds(snapshot.threads, mainId, now - LIMITS.doneListedMs),
+          // Main's own are its note of what is next and what it has not started.
+          [mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.doneListedMs)],
     [snapshot.threads, snapshot.status, mainId, now],
   );
   const parks = useParks(underMain);
   const notes = parks.notes;
 
+  const heads = useMemo(() => headIds(snapshot.threads), [snapshot.threads]);
   const overview = useMemo(
     () =>
       mainId === null || notes === null
@@ -1225,17 +1644,22 @@ export function CowPage() {
                 thread.id === mainId ? null : notes.get(thread.id),
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
+                { head: heads.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
               ),
             now,
+            {
+              note: (id) => parks.nexts.get(id)?.text ?? null,
+              todos: (id) => parks.todos.get(id) ?? [],
+            },
           ),
-    [snapshot, mainId, notes, parks.archives, parks.dismissals, now],
+    [snapshot, mainId, heads, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, now],
   );
 
   useEffect(() => {
     if (!overview?.main) return store.watch([]);
     // When a thread with a parent finished shows only in its event log, so
     // every thread that is not archived is watched, listed or not.
-    store.watch([overview.main.thread.id, ...overview.unarchived, ...cursorOrder(overview)]);
+    store.watch([overview.main.thread.id, ...overview.unarchived, ...listed(overview).map((line) => line.thread.id)]);
   }, [store, overview]);
 
   const loadingNotes = mainId !== null && notes === null;

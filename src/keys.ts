@@ -17,25 +17,37 @@ export type Command =
   | { kind: "ask-number"; number: number }
   | { kind: "verb"; verb: Verb }
   | { kind: "undo" }
+  /** `h` folds a group or goes to its head; `l` unfolds it or steps into it. */
+  | { kind: "fold"; key: "h" | "l" }
+  /** Mark the line's reply as seen. */
+  | { kind: "seen" }
+  /** Move a not-started item up or down its list. */
+  | { kind: "reorder"; by: 1 | -1 }
+  /** Narrow the page to the lines that match what is typed. */
+  | { kind: "filter" }
   | { kind: "help" }
   | { kind: "choose-main" };
 
 /** The key map, in the order the legend lists it. */
 export const KEY_MAP: readonly { keys: string; does: string }[] = [
-  { keys: "j k", does: "next, previous line (arrows work too)" },
-  { keys: "gg G", does: "first, last line" },
-  { keys: "f", does: "letter hints on every line and action in view" },
-  { keys: "Enter", does: "open the line's chat beside the overview; again to type in it" },
+  { keys: "j k", does: "next, previous line (arrows work too); the heading, Main, is the line above the first" },
+  { keys: "gg G", does: "the heading, the last line" },
+  { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
+  { keys: "h l", does: "fold, unfold a group; on a member, h goes to its group's head (left, right arrows too)" },
+  { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened" },
+  { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat" },
   { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
   { keys: "m", does: "open Main's chat the same way" },
-  { keys: "i", does: "say something to Main" },
+  { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
   { keys: "I", does: "say something to the selected thread" },
   { keys: "a", does: "answer the line's question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms" },
   { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
   { keys: "r", does: "resume a parked line: back into the tree" },
-  { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason" },
+  { keys: "Space", does: "mark a reply as seen: the line stops waiting on you" },
+  { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
+  { keys: "J K", does: "move a not-started item down, up its list" },
   { keys: "e", does: "archive a done or failed line: a reason or nothing, then Enter" },
-  { keys: "u", does: "undo the last park, resume, archive or dismissal (y confirms)" },
+  { keys: "u", does: "undo the last park, resume, archive, dismissal or mark as seen (y confirms)" },
   { keys: "Tab", does: "next ask in the queue (Shift+Tab previous)" },
   { keys: "1 to 9", does: "jump to that ask" },
   { keys: "M", does: "choose a different Main" },
@@ -63,6 +75,20 @@ export class KeyReader {
         return chord ? { kind: "top" } : null;
       case "G":
         return { kind: "bottom" };
+      case "h":
+      case "ArrowLeft":
+        return { kind: "fold", key: "h" };
+      case "l":
+      case "ArrowRight":
+        return { kind: "fold", key: "l" };
+      case " ":
+        return { kind: "seen" };
+      case "/":
+        return { kind: "filter" };
+      case "J":
+        return { kind: "reorder", by: 1 };
+      case "K":
+        return { kind: "reorder", by: -1 };
       case "f":
         return { kind: "hints" };
       case "Enter":
@@ -125,20 +151,29 @@ const POPUPS =
  * A menu or dialog of bb's is open, so the keyboard belongs to it. bb keeps
  * closed drawers in the page, so being present is not being open.
  */
-function hostPopupOpen(): boolean {
+function hostPopups(): HTMLElement[] {
+  const open: HTMLElement[] = [];
   for (const popup of document.querySelectorAll<HTMLElement>(POPUPS)) {
-    if (popup.dataset.state === "closed") continue;
+    // A floating wrapper says nothing itself; what it holds says whether it
+    // is open. A menu that is closing stays in the page until it has faded.
+    const held = popup.firstElementChild instanceof HTMLElement ? popup.firstElementChild.dataset.state : undefined;
+    if ((popup.dataset.state ?? held) === "closed") continue;
     if (popup.closest('[data-cow-root], [inert], [aria-hidden="true"]')) continue;
-    if (popup.checkVisibility()) return true;
+    // A tooltip floats the same way a menu does, and takes no keys.
+    if (popup.querySelector('[role="tooltip"]') && !popup.querySelector('[role="menu"], [role="listbox"], [role="dialog"]')) continue;
+    if (popup.checkVisibility()) open.push(popup);
   }
-  return false;
+  return open;
 }
+const hostPopupOpen = (): boolean => hostPopups().length > 0;
 
 export interface KeyOwner {
   /** A key pressed while the cursor is in the overview. */
   onKey(key: string, shift: boolean): void;
   /** Escape pressed inside the embedded chat: give the cursor back. */
   onLeaveChat(): void;
+  /** Hint mode is on: every key is a hint letter, wherever focus is. */
+  capturing?(): boolean;
 }
 
 /**
@@ -148,28 +183,40 @@ export interface KeyOwner {
  * - Modified keys are bb's.
  * - Typing in any field works normally.
  * - Inside the embedded chat every key is the chat's, except Escape, which
- *   returns to the overview.
+ *   returns to the overview, and `f` when focus is on something that is not
+ *   a field.
  * - Anywhere else the overview owns every plain key and lets none through,
  *   so a digit can never answer a question in the embedded chat by accident.
+ * - While a menu or dialog of bb's is open the keyboard is its own, except
+ *   `f`, which puts hints on what it offers.
+ * - In hint mode every key is a hint letter, wherever focus is.
  */
 export function attachKeys(owner: KeyOwner): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (MODIFIER_KEYS.has(event.key)) return;
     const target = event.target instanceof Element ? event.target : null;
-    const inPage = target?.closest("[data-cow-root]") != null;
-    if (!inPage && hostPopupOpen()) return;
-    const inChat = target?.closest("[data-cow-chat]") != null;
-    if (inChat) {
-      if (event.key === "Escape" && !hostPopupOpen()) {
-        event.preventDefault();
-        event.stopPropagation();
-        owner.onLeaveChat();
+    if (!owner.capturing?.()) {
+      const inPage = target?.closest("[data-cow-root]") != null;
+      const typing = target !== null && isEditable(target);
+      if (!inPage && hostPopupOpen()) {
+        if (event.key !== "f" || typing) return;
+      } else {
+        const inChat = target?.closest("[data-cow-chat]") != null;
+        // Focus left on one of the chat's buttons, by a menu that closed, say,
+        // is not typing: f still asks for hints.
+        if (inChat && !(event.key === "f" && !typing)) {
+          if (event.key === "Escape" && !hostPopupOpen()) {
+            event.preventDefault();
+            event.stopPropagation();
+            owner.onLeaveChat();
+          }
+          return;
+        }
+        // Fields of ours handle their own keys; fields of bb's are bb's.
+        if (typing) return;
       }
-      return;
     }
-    // Fields of ours handle their own keys; fields of bb's are bb's.
-    if (target && isEditable(target)) return;
     if (event.key.length !== 1 && !NAMED_KEYS.has(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -181,29 +228,149 @@ export function attachKeys(owner: KeyOwner): () => void {
 
 export interface HintTarget {
   element: HTMLElement;
-  /** Where to draw the label, relative to the page root. */
+  /** Where to draw the label, in the window. */
   left: number;
   top: number;
 }
 
+/** Anything a click or a caret can use, by element type and by role. */
+const CLICKABLE = [
+  "a[href]",
+  "button",
+  "summary",
+  "input:not([type=hidden])",
+  "textarea",
+  "select",
+  "[contenteditable]:not([contenteditable=false])",
+  "[role=button]",
+  "[role=link]",
+  "[role=menuitem]",
+  "[role=menuitemcheckbox]",
+  "[role=menuitemradio]",
+  "[role=option]",
+  "[role=tab]",
+  "[role=switch]",
+  "[role=checkbox]",
+  "[role=radio]",
+  "[role=combobox]",
+  "[role=textbox]",
+  "[role=treeitem]",
+  "[aria-haspopup]",
+  "[aria-expanded]",
+  "[tabindex]:not([tabindex^='-'])",
+].join(", ");
+
+function isOff(element: HTMLElement): boolean {
+  return (
+    (element as HTMLButtonElement).disabled === true ||
+    element.getAttribute("aria-disabled") === "true" ||
+    // Not aria-hidden: bb hides the page from screen readers while one of its
+    // menus is open, and for as long as the menu takes to fade once closed.
+    // What can be clicked is decided by what a click would reach.
+    element.closest("[inert]") !== null
+  );
+}
+
 /**
- * Every element marked `data-cow-hint` that is actually visible in `root`,
- * lines first so that they get the shortest hints.
+ * Whether a click at the element's middle would reach it: on screen, not
+ * clipped away, not covered. A button that is drawn only while the mouse is
+ * over its row (the chat's copy and message actions) is transparent until
+ * then and still takes the click, so it counts.
+ */
+function reachable(element: HTMLElement, rect: DOMRect): boolean {
+  if (rect.width < 2 || rect.height < 2 || !element.checkVisibility({ checkVisibilityCSS: true })) return false;
+  const left = Math.max(rect.left, 0);
+  const right = Math.min(rect.right, window.innerWidth);
+  const top = Math.max(rect.top, 0);
+  const bottom = Math.min(rect.bottom, window.innerHeight);
+  if (right - left < 2 || bottom - top < 2) return false;
+  for (const [x, y] of [
+    [(left + right) / 2, (top + bottom) / 2],
+    [left + 2, top + 2],
+  ] as const) {
+    const hit = document.elementFromPoint(x, y);
+    if (hit !== null && (hit === element || element.contains(hit))) return true;
+  }
+  return false;
+}
+
+/**
+ * Everything on the page a hint can use, most important first: cow's lines,
+ * then cow's own actions, then every other clickable thing in view, which
+ * is what bb draws in the embedded chat. cow's own keep their place in the
+ * order whatever the chat shows, so their labels stay short and the same.
+ *
+ * While a menu or dialog of bb's is open outside the page, only what it
+ * offers takes a hint: that is where the next click goes.
  */
 export function collectHintTargets(root: HTMLElement): HintTarget[] {
-  const frame = root.getBoundingClientRect();
+  const popups = hostPopups();
   const lines: HintTarget[] = [];
+  const own: HintTarget[] = [];
   const others: HintTarget[] = [];
-  for (const element of root.querySelectorAll<HTMLElement>("[data-cow-hint]")) {
-    const rect = element.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) continue;
-    const clip = (element.closest("[data-cow-scroll]") ?? root).getBoundingClientRect();
-    if (rect.top < clip.top - 1 || rect.bottom > clip.bottom + 1) continue;
-    (element.dataset.cowLine === undefined ? others : lines).push({
-      element,
-      left: Math.max(0, rect.left - frame.left - 3),
-      top: rect.top - frame.top + Math.max(0, (rect.height - 15) / 2),
-    });
+  const taken = new Set<string>();
+  const add = (into: HintTarget[], element: HTMLElement, rect: DOMRect) => {
+    const left = Math.max(0, rect.left - 3);
+    const top = Math.max(0, rect.top + Math.max(0, (Math.min(rect.height, 28) - 15) / 2));
+    // Two targets drawn on the same spot are one thing to the eye: the outer one stands for both.
+    const spot = `${Math.round(left / 4)}:${Math.round(top / 4)}`;
+    if (taken.has(spot)) return;
+    taken.add(spot);
+    into.push({ element, left, top });
+  };
+  if (popups.length === 0) {
+    for (const element of root.querySelectorAll<HTMLElement>("[data-cow-hint]")) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const clip = (element.closest("[data-cow-scroll]") ?? root).getBoundingClientRect();
+      if (rect.top < clip.top - 1 || rect.bottom > clip.bottom + 1) continue;
+      add(element.dataset.cowLine === undefined && element.dataset.cowTodo === undefined ? own : lines, element, rect);
+    }
   }
-  return [...lines, ...others];
+  for (const scope of popups.length > 0 ? popups : [root]) {
+    for (const element of scope.querySelectorAll<HTMLElement>(CLICKABLE)) {
+      if (element.closest("[data-cow-hint]") !== null || isOff(element)) continue;
+      const rect = element.getBoundingClientRect();
+      if (reachable(element, rect)) add(others, element, rect);
+    }
+  }
+  return [...lines, ...own, ...others];
+}
+
+const TEXT_INPUTS = new Set(["text", "search", "url", "tel", "email", "password", "number", ""]);
+
+/** Whether activating the element means putting the caret in it. */
+export function takesCaret(element: HTMLElement): boolean {
+  if (element.isContentEditable || element.tagName === "TEXTAREA" || element.tagName === "SELECT") return true;
+  return element.tagName === "INPUT" && TEXT_INPUTS.has((element.getAttribute("type") ?? "").toLowerCase());
+}
+
+/**
+ * Use a hint's target as a click of the mouse would: the press, the release
+ * and the click, in the middle of the element. Menus that open on the press
+ * open, links follow their href, and a field takes the caret. Nothing but a
+ * field is given focus, so the keyboard stays with the overview and the next
+ * key is still cow's.
+ */
+export function activate(element: HTMLElement): void {
+  if (takesCaret(element)) {
+    element.focus();
+    return;
+  }
+  const rect = element.getBoundingClientRect();
+  const at = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    view: window,
+    button: 0,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  };
+  const pointer = { ...at, pointerId: 1, pointerType: "mouse", isPrimary: true };
+  element.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+  element.dispatchEvent(new MouseEvent("mousedown", { ...at, buttons: 1 }));
+  element.dispatchEvent(new PointerEvent("pointerup", pointer));
+  element.dispatchEvent(new MouseEvent("mouseup", at));
+  element.click();
 }

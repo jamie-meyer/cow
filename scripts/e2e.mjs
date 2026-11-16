@@ -5,7 +5,8 @@
 // only to those threads, and it answers, stops and archives only those. It
 // archives them all when it finishes. The permission requests it grants are
 // for `echo` and for writing one small file under /tmp, which it removes.
-// It also runs `bb cow` against the same fixtures.
+// It also runs `bb cow` against the same fixtures, and leaves and removes
+// notes of what is next on them.
 //
 // Choosing a Main records it on the server as where a new cow window starts.
 // The check puts that record back at once, each time, for the fixtures'
@@ -81,10 +82,15 @@ async function tellAs(sender, id, text) {
   else env.BB_THREAD_ID = sender;
   await run("bb", ["thread", "tell", id, text, "--json"], { env });
 }
-/** Run `bb cow …`; a refusal is an answer here, not an error. */
-async function cow(...argv) {
+/** Run `bb cow …` as the person; a refusal is an answer here, not an error. */
+const cow = (...argv) => cowAs(null, ...argv);
+/** Run `bb cow …` as the thread `sender` would, or with null as the person. */
+async function cowAs(sender, ...argv) {
+  const env = { ...process.env };
+  if (sender === null) delete env.BB_THREAD_ID;
+  else env.BB_THREAD_ID = sender;
   try {
-    const { stdout, stderr } = await run("bb", ["cow", ...argv]);
+    const { stdout, stderr } = await run("bb", ["cow", ...argv], { env });
     return { code: 0, stdout, stderr };
   } catch (error) {
     if (typeof error.code !== "number") throw error;
@@ -139,11 +145,13 @@ async function spawn({ prompt, parent, model = MODEL, permissionMode }) {
   return thread.id;
 }
 
-const FIXTURES = ["main", "quiet", "asks", "fails", "runs", "perms"];
+const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms"];
 
 /**
- * Main; a quiet child; a child that asks a question; a grandchild that
- * fails; a child that can be made to run; a child that asks for permission.
+ * Seven threads on three levels under Main: a quiet child, which heads a
+ * group; under it a grandchild that fails, which heads a group of its own;
+ * under that a quiet leaf. Then a child that asks a question, a child that
+ * can be made to run, and a child that asks for permission.
  * With --state, fixtures made by an earlier run are used again.
  */
 async function fixtures() {
@@ -160,6 +168,7 @@ async function fixtures() {
   await make("asks", { prompt: ASKS, parent: ids.main });
   // A model that does not exist fails its first turn at once, for free.
   await make("fails", { prompt: QUIET, parent: ids.quiet, model: "cow-test-no-such-model" });
+  await make("leaf", { prompt: QUIET, parent: ids.fails });
   await make("runs", { prompt: RUNS, parent: ids.main });
   await make("perms", { prompt: PERMS, parent: ids.main, permissionMode: "accept-edits" });
   return ids;
@@ -173,13 +182,17 @@ async function reset(ids) {
     await rpc("park_set", { threadId: id, park: null });
     await rpc("archive_note_set", { threadId: id, note: null });
     await rpc("dismissal_set", { threadId: id, dismissal: null });
+    await rpc("seen_set", { threadId: id, seen: null });
+    await cow("next", id, "--clear");
+    while ((await cow("todo", "rm", id, "1")).code === 0);
   }
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
   // A fixture that has just been made is still on its way to its first question.
   const asks = await waitForThread(ids.asks, (t) => t.hasPendingInteraction || t.status === "idle", "settled");
-  if (!asks.hasPendingInteraction) await bb("thread", "tell", ids.asks, "again");
+  // Told as Main would, so its answer is not a reply addressed to the user.
+  if (!asks.hasPendingInteraction) await tellAs(ids.main, ids.asks, "again");
   // A message from the user clears whatever bb refused this fixture in an earlier run.
   await waitForThread(ids.perms, (t) => t.status === "idle" && !t.hasPendingInteraction, "idle");
   await tellAs(null, ids.perms, "reset");
@@ -213,6 +226,14 @@ let restoreStored = async () => undefined;
 async function main() {
   const ids = await fixtures();
   await assertOurs(ids);
+  // A page left open by an earlier run would go on acting on the fixtures:
+  // a chat open in its pane marks that thread's reply seen as it arrives.
+  // This Chrome is the check's own, so every tab but one is closed too.
+  const tabs = (await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()).filter((tab) => tab.type === "page");
+  for (const tab of tabs.slice(1)) await fetch(`http://127.0.0.1:${PORT}/json/close/${tab.id}`).catch(() => undefined);
+  const stale = await connect(PORT, "");
+  await stale.goto("about:blank");
+  stale.close();
   await reset(ids);
   const before = await rpc("main_state", null);
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -240,8 +261,14 @@ async function main() {
   await waitForThread(ids.quiet, (t) => t.status === "idle", "idle");
   await waitForThread(ids.asks, (t) => t.hasPendingInteraction, "asking");
   await waitForThread(ids.fails, (t) => t.status === "error", "failed");
+  await waitForThread(ids.leaf, (t) => t.status === "idle", "idle");
   await waitForThread(ids.runs, (t) => t.status === "idle", "idle");
   await waitForThread(ids.perms, (t) => t.status === "idle" && !t.hasPendingInteraction, "idle");
+  // The reset message was sent as the user, so its reply is addressed to them.
+  // The run starts with that one seen; the page's own ways of seeing a reply
+  // are checked on the group head.
+  const resetEnd = (await api(`/threads/${ids.perms}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+  if (resetEnd !== undefined) await rpc("seen_set", { threadId: ids.perms, seen: { seq: resetEnd, at: Date.now() } });
 
   const page = await connect(PORT, "");
   const shot = async (name, from = page) => {
@@ -336,6 +363,8 @@ async function main() {
   );
   check("the second window has no console errors", other.consoleErrors.length === 0, other.consoleErrors.join(" | "));
   await other.close();
+  // A tab in the background runs no animations, and bb's menus close with one.
+  await page.send("Page.bringToFront");
 
   // -- lines and states --
   await page.waitFor(`${lineState(ids.fails)} === "failed"`, { label: "the failed line" });
@@ -351,32 +380,140 @@ async function main() {
   );
   const listedOrder = JSON.parse(order);
   check(
-    "lines follow the tree: child, its child, next child; then the two done ones",
-    JSON.stringify(listedOrder.slice(0, 3)) === JSON.stringify([ids.quiet, ids.fails, ids.asks]) &&
-      JSON.stringify(listedOrder.slice(3).sort()) === JSON.stringify([ids.runs, ids.perms].sort()),
+    "lines follow the tree: child, its child, that one's child, next child; then the two done ones",
+    JSON.stringify(listedOrder.slice(0, 4)) === JSON.stringify([ids.quiet, ids.fails, ids.leaf, ids.asks]) &&
+      JSON.stringify(listedOrder.slice(4).sort()) === JSON.stringify([ids.runs, ids.perms].sort()),
     order,
   );
-  const indent = await page.eval(
-    `["${ids.quiet}", "${ids.fails}"].map((id) => parseFloat(getComputedStyle(document.querySelector('[data-cow-line="' + id + '"] .cow-nm')).paddingLeft))`,
+
+  // -- groups: three levels, drawn as nested groups --
+  const lineData = (id, name) => `(document.querySelector('.cow-main [data-cow-line="${id}"]')?.dataset.${name} ?? null)`;
+  const rollupOf = (id) =>
+    `(document.querySelector('.cow-main [data-cow-line="${id}"] [data-cow-rollup]')?.dataset.cowRollup ?? null)`;
+  const shape = JSON.parse(
+    await page.eval(`JSON.stringify(Object.fromEntries(["${ids.quiet}", "${ids.fails}", "${ids.leaf}", "${ids.asks}"].map((id) => {
+      const el = document.querySelector('.cow-main [data-cow-line="' + id + '"]');
+      const rails = [...el.querySelectorAll(".cow-rail")];
+      return [id, {
+        depth: el.dataset.cowDepth,
+        fold: el.dataset.cowFold ?? null,
+        rails: rails.length,
+        railHeights: rails.map((rail) => rail.getBoundingClientRect().height),
+        height: el.getBoundingClientRect().height,
+        titleLeft: el.querySelector(".cow-title").getBoundingClientRect().left,
+      }];
+    })))`),
   );
-  check("a grandchild is indented under its parent", indent[1] > indent[0], indent.join(" < "));
-  check("a finished child is done, though nobody opened it", (await page.eval(lineState(ids.quiet))) === "done");
-  await page.waitFor(
-    `document.querySelector('[data-cow-line="${ids.quiet}"] .cow-wh')?.textContent === ${JSON.stringify(
-      // Whatever it said last: a fixture from an earlier run may not have said "ok".
-      (await api(`/threads/${ids.quiet}/output`)).output.trim(),
-    )}`,
-    { label: "what the finished child reported" },
+  check(
+    "a thread with threads under it heads a group, and groups nest",
+    shape[ids.quiet].fold === "open" && shape[ids.fails].fold === "open" && shape[ids.leaf].fold === null && shape[ids.asks].fold === null &&
+      [shape[ids.quiet].depth, shape[ids.fails].depth, shape[ids.leaf].depth, shape[ids.asks].depth].join() === "0,1,2,0",
+    JSON.stringify(shape),
   );
-  check("its line still says what it reported", true);
+  check(
+    "each member is tied to its groups by one rule per level, unbroken down the row",
+    shape[ids.quiet].rails === 0 && shape[ids.fails].rails === 1 && shape[ids.leaf].rails === 2 &&
+      shape[ids.leaf].railHeights.every((height) => height === shape[ids.leaf].height),
+    JSON.stringify(shape[ids.leaf]),
+  );
+  check(
+    "a grandchild is indented under its parent",
+    shape[ids.leaf].titleLeft > shape[ids.fails].titleLeft && shape[ids.fails].titleLeft > shape[ids.quiet].titleLeft,
+    [shape[ids.quiet].titleLeft, shape[ids.fails].titleLeft, shape[ids.leaf].titleLeft].join(" < "),
+  );
+  await page.waitFor(`${rollupOf(ids.quiet)} === "failed:1 done:1"`, { label: "the outer group's rollup" });
+  check(
+    "a head's line counts everything under it by state, at every level",
+    (await page.eval(rollupOf(ids.fails))) === "done:1" && (await page.eval(rollupOf(ids.leaf))) === null,
+    `${await page.eval(rollupOf(ids.quiet))} / ${await page.eval(rollupOf(ids.fails))}`,
+  );
+  check(
+    "a finished member stays inside its group, not under Done",
+    (await page.eval(lineState(ids.leaf))) === "done" &&
+      (await page.eval(`document.querySelector('.cow-main [data-cow-line="${ids.leaf}"]').dataset.cowDepth`)) === "2",
+  );
+
+  // -- attention: whose a finished turn's reply is --
+  const whText = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"] .cow-wh')?.textContent ?? "")`;
+  const isReply = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"]')?.dataset.cowReply === "")`;
+  const queueText = (id) => `(document.querySelector('[data-cow-queue="${id}"] p')?.textContent ?? "")`;
+  const pageMessage = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const seenOf = async (id) => (await rpc("notes_list", { threadIds: [id] })).seen[id] ?? null;
+  const lastTurnEnd = async (id) =>
+    (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq ?? null;
+  // Whatever it said last: a fixture from an earlier run may not have said "ok".
+  const quietSaid = (await api(`/threads/${ids.quiet}/output`)).output.trim();
+  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, { label: "the group head's reply" });
+  check(
+    "a group head that finished a turn replied to you, whoever started the turn",
+    (await page.eval(whText(ids.quiet))).startsWith(`replied to you: ${quietSaid}`),
+    await page.eval(whText(ids.quiet)),
+  );
+  check(
+    "its reply is in the queue, with its first line",
+    (await page.eval(queueText(ids.quiet))) === `replied to you: ${quietSaid}`,
+    await page.eval(queueText(ids.quiet)),
+  );
+  check(
+    "a leaf that finished a turn its parent started is done, and not in the queue",
+    (await page.eval(lineState(ids.leaf))) === "done" &&
+      !(await page.eval(`!!document.querySelector('[data-cow-queue="${ids.leaf}"]')`)) &&
+      (await page.eval(lineState(ids.runs))) === "done" &&
+      !(await page.eval(isReply(ids.leaf))),
+  );
+  check(
+    "the leaf's line still says what it reported",
+    (await page.eval(whText(ids.leaf))) === (await api(`/threads/${ids.leaf}/output`)).output.trim(),
+    await page.eval(whText(ids.leaf)),
+  );
+  await shot("groups-light");
+  // Space marks it seen; u takes that back; opening its chat marks it seen too.
+  await page.key("g");
+  await page.key("g");
+  await page.key("j");
+  check("the cursor is on the group head", await page.eval(isCursor(ids.quiet)));
+  check("the verb bar offers to mark its reply seen", await page.eval(`!!document.querySelector('[data-cow-verb="seen"]')`));
+  await page.key(" ");
+  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the reply marked seen" });
+  const quietEnd = await lastTurnEnd(ids.quiet);
+  check(
+    "Space marks the reply seen: the line is done, out of the queue, and cow recorded the turn",
+    !(await page.eval(`!!document.querySelector('[data-cow-queue="${ids.quiet}"]')`)) &&
+      (await seenOf(ids.quiet))?.seq === quietEnd &&
+      (await page.eval(pageMessage)).startsWith("marked as seen"),
+    JSON.stringify([await seenOf(ids.quiet), quietEnd]),
+  );
+  check("the record is cow's own, not a note on the thread", !JSON.stringify(
+    (await api(`/threads?threadIds=${ids.quiet}&limit=1`))[0]).includes('"seen"'));
+  await page.key("u");
+  check(
+    "u offers to take the mark back",
+    (await page.eval(`document.querySelector("[data-cow-confirm] label")?.textContent ?? ""`)).includes("as seen"),
+  );
+  await page.key("y");
+  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, { label: "the mark undone" });
+  check("undone, the reply waits on you again", (await seenOf(ids.quiet)) === null);
+  await page.key("Enter");
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.quiet}"`, {
+    label: "the head's chat",
+  });
+  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "seen by opening its chat" });
+  check("opening its chat from the page marks the reply seen", (await seenOf(ids.quiet))?.seq === quietEnd);
+  await page.key("Escape");
+  await page.key(" ");
+  check(
+    "Space on a line with no reply waiting says so and records nothing new",
+    (await page.eval(pageMessage)) === "it has no reply waiting on you" && (await seenOf(ids.quiet))?.seq === quietEnd,
+    await page.eval(pageMessage),
+  );
   const numbered = JSON.parse(
     await page.eval(`JSON.stringify(Object.fromEntries([...${ROOT}.querySelectorAll("[data-cow-line]")]
       .map((el) => [el.dataset.cowLine, el.querySelector(".cow-qn")?.textContent ?? ""])))`),
   );
   const queueSize = await page.eval(`document.querySelectorAll("[data-cow-queue]").length`);
   check(
-    "the queue numbers the question and the failure, not the finished child",
-    numbered[ids.asks] !== "" && numbered[ids.fails] !== "" && numbered[ids.quiet] === "",
+    "the queue numbers the question and the failure, not the finished leaf or the head that was seen",
+    numbered[ids.asks] !== "" && numbered[ids.fails] !== "" && numbered[ids.quiet] === "" && numbered[ids.leaf] === "",
     JSON.stringify(numbered),
   );
   check(
@@ -392,20 +529,232 @@ async function main() {
   await shot("overview-light");
 
   // -- moving --
+  const paneOf = `(document.querySelector("[data-cow-pane]")?.dataset.cowPane ?? null)`;
+  const openMarks = `JSON.stringify([...${ROOT}.querySelectorAll("[data-cow-open]")].map((el) => el.dataset.cowLine))`;
+  const inChatNow = `!!document.activeElement?.closest("[data-cow-chat]")`;
   await page.key("g");
   await page.key("g");
-  check("g g goes to the top", await page.eval(isCursor(ids.quiet)));
+  check("g g lands on the heading: Main is a cursor stop", await page.eval(isCursor(ids.main)));
+  await page.key("k");
+  check("k at the heading stays there", await page.eval(isCursor(ids.main)));
+  await page.key("j");
+  check("j from the heading goes to the first line", await page.eval(isCursor(ids.quiet)));
+  await page.key("k");
+  check("k from the first line goes to the heading", await page.eval(isCursor(ids.main)));
+  await page.key("I");
+  check(
+    "I on the heading says to Main",
+    (await page.eval(`document.querySelector(".cow-prompt label")?.textContent`)) === `to Main · ${TITLE}`,
+  );
+  await page.key("Escape");
+  await page.key("Enter");
+  await page.waitFor(`${paneOf} === "${ids.main}"`, { label: "Main's chat from the heading" });
+  check("Enter on the heading opens Main's chat", true);
+  check(
+    "the pane names the thread whose chat it shows",
+    (await page.eval(`document.querySelector("[data-cow-pane-title]")?.textContent`)) === `Main · ${TITLE}`,
+  );
+  await page.key("Enter");
+  await sleep(800);
+  check(
+    "Enter again on the same line does nothing: the pane stays and the keyboard stays here",
+    (await page.eval(paneOf)) === ids.main && !(await page.eval(inChatNow)) && (await page.eval(isCursor(ids.main))),
+  );
+  await page.key("j");
+  await page.key("j");
+  check(
+    "the thread whose chat is open is marked, apart from the cursor",
+    (await page.eval(openMarks)) === JSON.stringify([ids.main]) && (await page.eval(isCursor(ids.fails))),
+    await page.eval(openMarks),
+  );
+  await sleep(2600);
+  await page.key("i");
+  await page.waitFor(inChatNow, { label: "the caret in the open chat", timeout: 5000 });
+  await page.type("ii9");
+  await sleep(300);
+  check(
+    "i types into the chat that is open, wherever the cursor is",
+    (await page.eval(paneOf)) === ids.main &&
+      (await page.eval(`document.querySelector("[data-cow-chat]").textContent.includes("ii9")`)) &&
+      (await page.eval(`!document.querySelector("[data-cow-say]")`)),
+  );
+  for (let i = 0; i < 3; i += 1) await page.key("Backspace");
+  await page.key("Escape");
+  check(
+    "Escape from the composer returns to the overview with the cursor where it was",
+    !(await page.eval(inChatNow)) && (await page.eval(isCursor(ids.fails))) && (await page.eval(mode)) === "normal",
+  );
+  await page.key("Enter");
+  await page.waitFor(`${paneOf} === "${ids.fails}"`, { label: "the pane switching" });
+  check(
+    "Enter on a line whose chat is not the open one switches the pane to it, and the mark moves",
+    (await page.eval(openMarks)) === JSON.stringify([ids.fails]),
+    await page.eval(openMarks),
+  );
+  await page.key("Escape");
+  check("with the pane closed nothing is marked open", (await page.eval(openMarks)) === "[]" && (await page.eval(paneOf)) === null);
+  await page.key("i");
+  check(
+    "with no chat open, i is the one-line say to Main",
+    (await page.eval(`document.querySelector(".cow-prompt label")?.textContent`)) === `to Main · ${TITLE}`,
+  );
+  await page.key("Escape");
+  await page.key("g");
+  await page.key("g");
+  await page.key("j");
   await page.key("j");
   check("j moves down", await page.eval(isCursor(ids.fails)));
   await page.key("k");
   check("k moves up", await page.eval(isCursor(ids.quiet)));
   await page.key("ArrowDown");
   await page.key("ArrowDown");
-  check("arrows move too", await page.eval(isCursor(ids.asks)));
+  check("arrows move too", await page.eval(isCursor(ids.leaf)));
   await page.key("ArrowUp");
   check("arrow up moves up", await page.eval(isCursor(ids.fails)));
   await page.key("G");
   check("G goes to the bottom", await page.eval(isCursor(listedOrder[listedOrder.length - 1])));
+
+  // -- folding a group --
+  const inTree = (id) => `!!document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const goTo = async (id) => {
+    await page.key("g");
+    await page.key("g");
+    for (let i = 0; i < 40 && !(await page.eval(isCursor(id))); i += 1) await page.key("j");
+    if (!(await page.eval(isCursor(id)))) throw new Error(`could not select ${id}`);
+  };
+  await goTo(ids.fails);
+  await page.key("h");
+  check(
+    "h folds a group: its members leave the page, and the head says how many",
+    (await page.eval(lineData(ids.fails, "cowFold"))) === "folded" &&
+      !(await page.eval(inTree(ids.leaf))) &&
+      (await page.eval(`document.querySelector('[data-cow-line="${ids.fails}"] [data-cow-folded]')?.dataset.cowFolded`)) === "1" &&
+      (await page.eval(isCursor(ids.fails))),
+  );
+  check("a folded group still shows its rollup", (await page.eval(rollupOf(ids.fails))) === "done:1");
+  await page.key("j");
+  check("j skips a folded group's members", await page.eval(isCursor(ids.asks)));
+  await page.key("k");
+  check("k comes back onto the folded head", await page.eval(isCursor(ids.fails)));
+  await page.key("l");
+  check(
+    "l unfolds it",
+    (await page.eval(lineData(ids.fails, "cowFold"))) === "open" && (await page.eval(inTree(ids.leaf))) && (await page.eval(isCursor(ids.fails))),
+  );
+  await page.key("l");
+  check("l on an unfolded head steps onto its first member", await page.eval(isCursor(ids.leaf)));
+  await page.key("h");
+  check("h on a member jumps to its group's head", await page.eval(isCursor(ids.fails)));
+  await page.key("h");
+  await page.key("h");
+  check("h on a folded head that is itself a member goes up a level", await page.eval(isCursor(ids.quiet)));
+  await page.key("h");
+  check(
+    "folding the outer group hides both levels, and says something inside waits on you",
+    !(await page.eval(inTree(ids.fails))) && !(await page.eval(inTree(ids.leaf))) &&
+      (await page.eval(`document.querySelector('[data-cow-line="${ids.quiet}"] [data-cow-inside]')?.dataset.cowInside`)) === "1" &&
+      (await page.eval(rollupOf(ids.quiet))) === "failed:1 done:1",
+  );
+  await shot("folded");
+  await page.key("j");
+  check("j goes from the folded group to the next line outside it", await page.eval(isCursor(ids.asks)));
+  await page.goto(`${BB}/plugins/cow/main`);
+  await page.waitFor(`${screen} === "overview" && ${inTree(ids.quiet)}`, { label: "the page reloaded" });
+  check(
+    "the fold is this window's, and survives a reload",
+    (await page.eval(lineData(ids.quiet, "cowFold"))) === "folded" && !(await page.eval(inTree(ids.fails))),
+  );
+  const failsNumber = await page.waitFor(
+    `document.querySelector('[data-cow-queue="${ids.fails}"] .cow-qn')?.textContent`,
+    { label: "the failure in the queue" },
+  );
+  await page.key(failsNumber);
+  check(
+    "jumping to a queue entry inside a folded group unfolds what hides it, and no more",
+    (await page.eval(isCursor(ids.fails))) &&
+      (await page.eval(lineData(ids.quiet, "cowFold"))) === "open" &&
+      (await page.eval(lineData(ids.fails, "cowFold"))) === "folded",
+  );
+  await page.key("l");
+  check("everything is unfolded again", await page.eval(inTree(ids.leaf)));
+
+  // -- filtering the lines --
+  const treeIds = `JSON.stringify([...document.querySelectorAll(".cow-main [data-cow-line]")].map((el) => el.dataset.cowLine))`;
+  const contextIds = `JSON.stringify([...document.querySelectorAll(".cow-main [data-cow-context]")].map((el) => el.dataset.cowLine))`;
+  const matchCount = `Number(document.querySelector("[data-cow-filter-count]")?.dataset.cowFilterCount ?? -1)`;
+  const allLines = JSON.parse(await page.eval(treeIds));
+  await goTo(ids.quiet);
+  await page.key("h");
+  check("a group is folded before filtering", !(await page.eval(inTree(ids.fails))));
+  await page.key("/");
+  check(
+    "/ opens the filter, and the caret is in it",
+    (await page.eval(mode)) === "filter" && (await page.eval(`document.activeElement?.hasAttribute("data-cow-filter")`)),
+  );
+  await page.type("no-such-model");
+  await page.waitFor(`${matchCount} === 1`, { label: "one match" });
+  check(
+    "typing narrows the page to the lines that match, here by what the line says",
+    (await page.eval(treeIds)) === JSON.stringify([ids.quiet, ids.fails]) && (await page.eval(isCursor(ids.fails))),
+    await page.eval(treeIds),
+  );
+  check(
+    "a match inside a folded group shows, with its group's head kept for context",
+    (await page.eval(contextIds)) === JSON.stringify([ids.quiet]) && (await page.eval(lineData(ids.quiet, "cowFold"))) === "open",
+    await page.eval(contextIds),
+  );
+  await shot("filter");
+  await page.key("Escape");
+  check(
+    "Escape cancels: the whole list, the cursor and the folds are as they were",
+    (await page.eval(mode)) === "normal" &&
+      (await page.eval(isCursor(ids.quiet))) &&
+      (await page.eval(lineData(ids.quiet, "cowFold"))) === "folded" &&
+      !(await page.eval(inTree(ids.fails))),
+  );
+  await page.key("/");
+  await page.type("Which COL");
+  await page.waitFor(`${matchCount} === 1`, { label: "the question matching" });
+  check("matching ignores case", (await page.eval(treeIds)) === JSON.stringify([ids.asks]), await page.eval(treeIds));
+  await page.key("Enter");
+  check(
+    "Enter closes the filter with the cursor on the chosen line, and the full list is back",
+    (await page.eval(mode)) === "normal" &&
+      (await page.eval(isCursor(ids.asks))) &&
+      (await page.eval(inTree(ids.quiet))) &&
+      (await page.eval(lineData(ids.quiet, "cowFold"))) === "folded",
+  );
+  await goTo(ids.quiet);
+  await page.key("/");
+  await page.type("cwtst");
+  await page.waitFor(`${matchCount} === ${allLines.length}`, { label: "every line matching loosely" });
+  check(
+    "a name matches loosely, letters in order; parked and done lines are searched too",
+    (await page.eval(treeIds)) === JSON.stringify(allLines) && (await page.eval(isCursor(ids.quiet))),
+    `${await page.eval(matchCount)} of ${allLines.length}`,
+  );
+  await page.key("n", { ctrl: true });
+  check("Ctrl+n moves to the next match", await page.eval(isCursor(ids.fails)));
+  await page.key("ArrowDown");
+  await page.key("p", { ctrl: true });
+  check("the arrows and Ctrl+p move too", await page.eval(isCursor(ids.fails)));
+  check(
+    "letters typed in the filter are text, not keys",
+    (await page.eval(`document.querySelector("[data-cow-filter]")?.value`)) === "cwtst",
+  );
+  await page.key("Enter");
+  check(
+    "keeping a match inside a folded group unfolds what hides it",
+    (await page.eval(isCursor(ids.fails))) && (await page.eval(lineData(ids.quiet, "cowFold"))) === "open",
+  );
+  await page.key("/");
+  await page.type("zzzz");
+  await page.waitFor(`${matchCount} === 0`, { label: "no match" });
+  await page.key("Enter");
+  check(
+    "with no match, Enter leaves the cursor where it was",
+    (await page.eval(isCursor(ids.fails))) && (await page.eval(mode)) === "normal",
+  );
 
   // -- the queue --
   const queue = JSON.parse(
@@ -448,9 +797,9 @@ async function main() {
     })())`),
   );
   check(
-    "every line and usable action in view has a hint",
-    hints.labels.length === hints.targets && new Set(hints.labels).size === hints.targets,
-    `${hints.labels.length} hints`,
+    "every line and usable action in view has a hint, each its own",
+    hints.labels.length >= hints.targets && new Set(hints.labels).size === hints.labels.length,
+    `${hints.labels.length} hints for ${hints.targets} of cow's own targets`,
   );
   check(
     "every line's hint is a single letter",
@@ -521,11 +870,18 @@ async function main() {
     await page.eval(`!document.activeElement?.closest("[data-cow-chat]")`),
   );
   await page.key("m");
+  await sleep(800);
+  check(
+    "m again does not put the caret in the chat",
+    (await page.eval(`!document.activeElement?.closest("[data-cow-chat]")`)) &&
+      (await page.eval(`document.querySelector("[data-cow-pane]")?.dataset.cowPane`)) === ids.main,
+  );
+  await page.key("i");
   await page.waitFor(`!!document.activeElement?.closest("[data-cow-chat]")`, {
     label: "focus inside the chat",
     timeout: 5000,
   });
-  check("m again puts the caret in the chat", true);
+  check("i is the key that puts the caret in the open chat", true);
   await page.type("jk1");
   await sleep(300);
   check(
@@ -543,30 +899,60 @@ async function main() {
   check("Escape again closes the pane", await page.eval(`!document.querySelector("[data-cow-pane]")`));
 
   // -- say, and a state change arriving live --
-  await page.key("g");
-  await page.key("g");
+  await goTo(ids.quiet);
   await page.key("I");
   const toLine = await page.eval(`document.querySelector(".cow-prompt label")?.textContent`);
   check("I addresses the selected thread, and says so", toLine === `to thread · ${TITLE}`, toLine);
   await page.key("Escape");
   check("Escape cancels say", (await page.eval(mode)) === "normal");
 
-  // -- a line changing state live, and reading a reply --
+  // -- a line changing state live, and a reply after the one that was seen --
   await page.key("I");
   await page.type("reply with exactly: ok");
   await page.key("Enter");
   await page.waitFor(`${lineState(ids.quiet)} === "running"`, { label: "the line running", timeout: 30_000 });
   check("a state change shows live: a line starts running", true);
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the line finishing", timeout: 120_000 });
-  check("a state change shows live: it finishes and is done, not waiting on you", true);
+  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, {
+    label: "the line finishing",
+    timeout: 120_000,
+  });
+  check("a state change shows live: it finishes, and a reply after the seen one waits on you again", true);
   check("the line kept its place and the cursor", await page.eval(isCursor(ids.quiet)));
   check(
-    "a finished child stays out of the queue",
-    await page.eval(`!document.querySelector('[data-cow-queue="${ids.quiet}"]')`),
+    "the new reply is in the queue",
+    (await page.eval(queueText(ids.quiet))).startsWith("replied to you: "),
+    await page.eval(queueText(ids.quiet)),
+  );
+  // Answering it from the page is having read it.
+  const secondEnd = await lastTurnEnd(ids.quiet);
+  await page.key("I");
+  await page.type("reply with exactly: ok");
+  await page.key("Enter");
+  await page.waitFor(`${lineState(ids.quiet)} === "running"`, { label: "the line running again", timeout: 30_000 });
+  check(
+    "sending it a message from the page marks the reply it answers as seen",
+    secondEnd > quietEnd && (await seenOf(ids.quiet))?.seq === secondEnd,
+    JSON.stringify([quietEnd, secondEnd, await seenOf(ids.quiet)]),
+  );
+  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, {
+    label: "its next reply",
+    timeout: 120_000,
+  });
+  await page.key(" ");
+  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "that reply marked seen" });
+  // A leaf told by another thread reports to that thread: it is done.
+  await tellAs(ids.main, ids.perms, "hello");
+  await page.waitFor(`${lineState(ids.perms)} === "running"`, { label: "the leaf running", timeout: 30_000 });
+  await page.waitFor(`${lineState(ids.perms)} === "done"`, { label: "the leaf finishing", timeout: 120_000 });
+  check(
+    "a leaf that finishes a turn another thread started is done, not waiting on you",
+    !(await page.eval(isReply(ids.perms))) &&
+      !(await page.eval(`!!document.querySelector('[data-cow-queue="${ids.perms}"]')`)),
   );
 
   const cursorBefore = await page.eval(cursorId);
-  const note = `jk12 note ${Date.now()}`;
+  const LINK = "https://example.com/cow-test";
+  const note = `jk12 note ${Date.now()} ${LINK}`;
   await page.key("i");
   const toMain = await page.eval(`document.querySelector(".cow-prompt label")?.textContent`);
   check("i addresses Main, and says so", toMain === `to Main · ${TITLE}`, toMain);
@@ -610,11 +996,145 @@ async function main() {
     timeout: 30_000,
   });
   check("opening Main's chat reads the reply, and it leaves the queue", await page.eval(`!document.querySelector('[data-cow-queue="${ids.main}"]')`));
+
+  // -- hints reach everything clickable, inside the chat too --
+  const hintList = async () =>
+    JSON.parse(
+      await page.eval(`JSON.stringify([...document.querySelectorAll("[data-cow-hint-label]")].map((el) => ({
+        label: el.dataset.cowHintLabel, in: el.dataset.cowHintIn, for: el.dataset.cowHintFor })))`),
+    );
+  const typeHint = async (label) => {
+    for (const letter of label) await page.key(letter);
+  };
+  await page.waitFor(`!!document.querySelector('[data-cow-chat] a[href^="${LINK}"]')`, { label: "the link in the chat" });
+  await page.eval(`window.__cowClicks = [];
+    document.addEventListener("click", (event) => {
+      const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!link) return;
+      // Recorded, and stopped from leaving the page: the check is that the click arrives.
+      window.__cowClicks.push(link.getAttribute("href"));
+      event.preventDefault();
+    }, true); true`);
+  await page.key("f");
+  const inChat = await hintList();
+  await shot("hints-chat");
+  const ownLines = inChat.filter((hint) => hint.for.startsWith("thr_"));
+  check(
+    "with the chat open, cow's own lines still come first, one letter each",
+    ownLines.length >= 5 && ownLines.every((hint, index) => hint.label.length === 1 && inChat[index] === hint),
+    ownLines.map((hint) => hint.label).join(" "),
+  );
+  const linkHint = inChat.find((hint) => hint.in === "chat" && hint.for.startsWith(`a:${LINK}`));
+  const composerHint = inChat.find((hint) => hint.in === "chat" && /^(div|textarea):Ask/.test(hint.for));
+  const toggleHint = inChat.find((hint) => hint.in === "chat" && /^button:Collapse/.test(hint.for));
+  check(
+    "hints label what the chat draws: a link, a button, the composer",
+    !!linkHint && !!composerHint && !!toggleHint && new Set(inChat.map((hint) => hint.label)).size === inChat.length,
+    JSON.stringify(inChat.filter((hint) => hint.in === "chat")),
+  );
+  await typeHint(linkHint?.label ?? "");
+  check(
+    "a hint activates a link inside the chat with a click",
+    (await page.eval(`JSON.stringify(window.__cowClicks)`)) === JSON.stringify([LINK]) && (await page.eval(mode)) === "normal",
+    await page.eval(`JSON.stringify(window.__cowClicks)`),
+  );
+  const childThreads = `document.querySelector('[data-cow-chat] button[aria-label*="active child thread"]')?.getAttribute("aria-expanded")`;
+  const expandedBefore = await page.eval(childThreads);
+  await page.key("f");
+  check("the same things get the same hints the next time", JSON.stringify(await hintList()) === JSON.stringify(inChat));
+  await typeHint(toggleHint?.label ?? "");
+  await page.waitFor(`${childThreads} === "false"`, { label: "the chat's disclosure toggling", timeout: 5000 });
+  check("a hint activates a button inside the chat: its list of child threads folds", expandedBefore === "true");
+  check("the keyboard stays with the overview afterwards", await page.eval(`!document.activeElement?.closest("[data-cow-chat]")`));
+  // A button the chat draws only under the mouse takes a hint too, and the
+  // menu it opens outside the pane is reached by pressing f again.
+  const openMenus = `[...document.querySelectorAll('[role="menu"]')].filter((el) => !el.closest("[data-cow-root]") && el.dataset.state !== "closed").length`;
+  await page.key("f");
+  const withHover = await hintList();
+  const actionsHint = withHover.find((hint) => hint.in === "chat" && hint.for === "button:Message actions");
+  check(
+    "copy buttons and message menus in the chat take hints",
+    !!actionsHint && withHover.some((hint) => hint.in === "chat" && hint.for === "button:Copy message"),
+    JSON.stringify(withHover.filter((hint) => hint.in === "chat").map((hint) => hint.for)),
+  );
+  await typeHint(actionsHint?.label ?? "");
+  await page.waitFor(`${openMenus} === 1`, { label: "bb's message menu", timeout: 5000 });
+  check("a hint opens a menu of bb's, as a click would", true);
+  await page.key("f");
+  // No screenshot here: taken with bb's menu open, it leaves the menu
+  // half-closed in headless Chrome for the rest of the run.
+  const inBbMenu = await hintList();
+  check(
+    "f again labels the entries of the menu that opened outside the pane, and only those",
+    inBbMenu.length > 0 && inBbMenu.every((hint) => hint.in === "popup"),
+    JSON.stringify(inBbMenu),
+  );
+  await page.key("Escape");
+  check("Escape leaves hint mode with the menu still open", (await page.eval(openMenus)) === 1 && (await hintList()).length === 0);
+  await page.key("Escape");
+  await page.waitFor(`${openMenus} === 0`, { label: "bb closing its menu", timeout: 5000 });
+  check("the next Escape is the menu's own, and closes it", true);
+  // bb holds the page still until its menu has finished closing.
+  await page.waitFor(`getComputedStyle(document.body).pointerEvents !== "none"`, { label: "the menu gone" });
+  await sleep(1500);
+  await page.key("f");
+  const composerAgain = (await hintList()).filter((hint) => hint.in === "chat" && /^(div|textarea):/.test(hint.for));
+  await typeHint(composerAgain.find((hint) => /^(div|textarea):Ask/.test(hint.for))?.label ?? "");
+  await page.waitFor(`!!document.activeElement?.closest("[data-cow-chat]")`, { label: "the caret in the composer", timeout: 5000 });
+  await page.type("hint1");
+  await sleep(300);
+  check(
+    "a hint on the composer puts the caret in it, and typing works",
+    await page.eval(`document.querySelector("[data-cow-chat]").textContent.includes("hint1")`),
+  );
+  for (let i = 0; i < 5; i += 1) await page.key("Backspace");
+  await page.key("Escape");
+  // A menu of bb's opens outside the page. This one is a stand-in made by the
+  // check, since the compact chat offers none: f labels what it offers and
+  // nothing else, and the hint clicks it.
+  await page.eval(`(() => {
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    menu.dataset.state = "open";
+    menu.dataset.cowTestMenu = "";
+    menu.style.cssText = "position:fixed;left:400px;top:200px;z-index:50;background:#fff;padding:8px";
+    for (const name of ["First", "Second"]) {
+      const item = document.createElement("div");
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      item.textContent = name;
+      item.addEventListener("click", () => { window.__cowMenu = name; });
+      menu.append(item);
+    }
+    document.body.append(menu);
+    menu.firstChild.focus();
+  })(); true`);
+  await page.key("j");
+  check("while a menu of bb's is open, other keys are the menu's", (await page.eval(mode)) === "normal");
+  await page.key("f");
+  const inMenu = await hintList();
+  check(
+    "f with a menu open outside the page labels what the menu offers, and nothing else",
+    inMenu.length === 2 && inMenu.every((hint) => hint.in === "popup") && inMenu[1].for === "div:Second",
+    JSON.stringify(inMenu),
+  );
+  await typeHint(inMenu[1]?.label ?? "");
+  check("a hint clicks the menu's entry", (await page.eval(`window.__cowMenu`)) === "Second");
+  await page.eval(`document.querySelector("[data-cow-test-menu]").remove(); ${ROOT}.focus(); true`);
+  check(
+    "hints draw nothing in bb's page but their own overlay, and remove it",
+    await page.eval(`!document.querySelector("[data-cow-hints]")`),
+  );
   await page.key("Escape");
   await page.key("j");
   check("j leaves the heading for the first line", await page.eval(isCursor(ids.quiet)));
 
   // -- verbs: select a line, then press the verb --
+  // What can be undone lasts as long as the page: a reload starts with nothing.
+  await page.goto(`${BB}/plugins/cow/main`);
+  await page.waitFor(`${screen} === "overview" && !!document.querySelector('.cow-main [data-cow-line="${ids.quiet}"]')`, {
+    label: "the page reloaded before the verbs",
+  });
   const DAY = 86_400_000;
   const verbOff = (name) =>
     `document.querySelector('[data-cow-verb="${name}"]')?.classList.contains("cow-off")`;
@@ -625,9 +1145,13 @@ async function main() {
   const onPage = (id) => `!!document.querySelector('.cow-main [data-cow-line="${id}"]')`;
   const inQueue = (id) => `!!document.querySelector('[data-cow-queue="${id}"]')`;
   const select = async (id) => {
-    await page.key("g");
-    await page.key("g");
-    for (let i = 0; i < 40 && !(await page.eval(isCursor(id))); i += 1) await page.key("j");
+    // Twice at most: a line that has just finished changes section once, when
+    // what it said has been read, and can do so behind the cursor.
+    for (let attempt = 0; attempt < 2 && !(await page.eval(isCursor(id))); attempt += 1) {
+      await page.key("g");
+      await page.key("g");
+      for (let i = 0; i < 40 && !(await page.eval(isCursor(id))); i += 1) await page.key("j");
+    }
     if (!(await page.eval(isCursor(id)))) throw new Error(`could not select ${id}`);
   };
   const facts = async (id) => (await api(`/threads?threadIds=${id}&limit=1`))[0];
@@ -750,7 +1274,21 @@ async function main() {
     await page.type(text);
     await page.key("Enter");
   };
-  const lineText = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"] .cow-wh')?.textContent ?? "")`;
+  // What the line says it is doing. A turn started from the page ends in a
+  // reply addressed to the user, which the line says first; these checks are
+  // about what the thread said.
+  const lineText = (id) =>
+    `(() => {
+      const cell = document.querySelector('.cow-main [data-cow-line="${id}"] .cow-wh')?.cloneNode(true);
+      // In a narrow window the next move is folded into this cell.
+      cell?.querySelector(".cow-nx2")?.remove();
+      return (cell?.textContent ?? "").replace(/^replied to you: /, "");
+    })()`;
+  /** See the fixture's reply, as the user would, so that the line is at rest. */
+  const seeReply = async (id) => {
+    const seq = await lastTurnEnd(id);
+    if (seq !== null) await rpc("seen_set", { threadId: id, seen: { seq, at: Date.now() } });
+  };
   const lineNext = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"] .cow-nx')?.textContent ?? "")`;
   const cardOpen = `!!document.querySelector("[data-cow-answer]")`;
   const actions = `JSON.stringify([...document.querySelectorAll("[data-cow-permission-action]")].map((o) => o.dataset.cowPermissionAction))`;
@@ -856,6 +1394,12 @@ async function main() {
   );
   check("nothing was granted: the file was not written", !existsSync(blockedPath));
   await waitForThread(ids.perms, (t) => t.status === "idle", "at rest after carrying on", 60_000);
+  await page.waitFor(`${lineState(ids.perms)} === "wants" && ${isReply(ids.perms)}`, { label: "the leaf's reply to the user" });
+  check(
+    "a leaf that finishes a turn you started replied to you",
+    (await page.eval(queueText(ids.perms))).startsWith("replied to you: "),
+    await page.eval(queueText(ids.perms)),
+  );
 
   // A refused command: dismiss it, take that back, then ask again as the user.
   await tellAs(ids.main, ids.perms, "ask: echo blocked cow");
@@ -864,6 +1408,11 @@ async function main() {
     timeout: 120_000,
   });
   await waitForThread(ids.perms, (t) => t.status === "idle", "at rest after the second refusal", 60_000);
+  check(
+    "a refused permission outranks the reply that is still unseen",
+    (await page.eval(lineText(ids.perms))).startsWith("bb refused") && !(await page.eval(isReply(ids.perms))),
+  );
+  await seeReply(ids.perms);
   check(
     "a command bb refused the same way blocks the line again",
     (await page.eval(lineState(ids.perms))) === "blocked" && !(await facts(ids.perms)).hasPendingInteraction,
@@ -950,10 +1499,15 @@ async function main() {
     ranRow?.status === "completed" && ranRow.output.trim() === "blocked cow" && (await lastDecision(ids.perms))?.decision === "allow_once",
     JSON.stringify({ status: ranRow?.status, output: ranRow?.output }),
   );
+  await page.waitFor(`${lineState(ids.perms)} === "wants" && ${isReply(ids.perms)}`, { label: "its reply to the user" });
   check(
-    "the line is done and out of the queue",
-    (await page.eval(lineState(ids.perms))) === "done" && !(await page.eval(inQueue(ids.perms))),
+    "the turn was yours, so the line now waits on you with its reply, not with a request",
+    (await page.eval(lineState(ids.perms))) === "wants" && (await page.eval(queueText(ids.perms))) === "replied to you: blocked cow",
+    await page.eval(queueText(ids.perms)),
   );
+  await seeReply(ids.perms);
+  await page.waitFor(`${lineState(ids.perms)} === "done" && !${inQueue(ids.perms)}`, { label: "the reply seen" });
+  check("seen, the line is done and out of the queue", true);
   await waitForThread(ids.perms, (t) => t.status === "idle", "at rest", 60_000);
 
   await sayTo(ids.perms, "ask: echo cow");
@@ -1031,7 +1585,10 @@ async function main() {
   );
   await page.waitFor(`${lineText(ids.perms)} === "cow"`, { label: "the fixture running the command", timeout: 120_000 });
   check("the thread carries on: the command ran and its line updates live", true);
-  check("the card closed and the line left the queue", !(await page.eval(cardOpen)) && !(await page.eval(inQueue(ids.perms))));
+  check(
+    "the card closed and the request left the queue",
+    !(await page.eval(cardOpen)) && !(await page.eval(queueText(ids.perms))).startsWith("permission"),
+  );
 
   // Denied, with a message.
   await waitForThread(ids.perms, (t) => t.status === "idle", "at rest", 60_000);
@@ -1134,7 +1691,7 @@ async function main() {
   await select(ids.quiet);
   const afterQuiet = await page.eval(
     `[...document.querySelectorAll(".cow-main [data-cow-line]")].map((el) => el.dataset.cowLine)
-      .find((id) => id !== "${ids.quiet}" && id !== "${ids.fails}") ?? null`,
+      .find((id) => id !== "${ids.quiet}" && id !== "${ids.fails}" && id !== "${ids.leaf}") ?? null`,
   );
   await page.key("p");
   check("p asks for a reason", (await page.eval(mode)) === "park" && (await page.eval(`!!${promptInput("park-reason")}`)));
@@ -1193,7 +1750,7 @@ async function main() {
   );
   check(
     "its descendant went with it and is counted on its line",
-    shelf.under === "1" && !(await page.eval(onPage(ids.fails))) && !(await page.eval(inQueue(ids.fails))),
+    shelf.under === "2" && !(await page.eval(onPage(ids.fails))) && !(await page.eval(inQueue(ids.fails))),
     JSON.stringify(shelf),
   );
   check("parking does not touch the agent", !(await facts(ids.quiet)).archivedAt);
@@ -1235,7 +1792,7 @@ async function main() {
     "x on returned work asks for a reason before dropping, and counts what goes with it",
     (await page.eval(`!!${promptInput("archive-reason")}`)) &&
       (await page.eval(promptLabel)).startsWith("drop") &&
-      (await page.eval(promptLabel)).includes("the thread under it") &&
+      (await page.eval(promptLabel)).includes("the 2 threads under it") &&
       (await page.eval(promptHelp)).includes("stop it for good"),
     `${await page.eval(promptLabel)} / ${await page.eval(promptHelp)}`,
   );
@@ -1286,7 +1843,7 @@ async function main() {
   await page.key("Enter");
   await waitForThread(ids.quiet, (t) => t.archivedAt, "dropped", 15_000);
   check(
-    "x, a reason and Enter drop it: archived in bb, with the thread under it",
+    "x, a reason and Enter drop it: archived in bb, with the threads under it",
     !busy(await facts(ids.quiet)) && !!(await facts(ids.fails)).archivedAt,
   );
   check("the reason for dropping is kept on the thread", (await archiveNote(ids.quiet))?.reason === dropReason);
@@ -1295,7 +1852,7 @@ async function main() {
   check(
     "u offers to bring both back",
     (await page.eval(confirmLabel)).includes("undo dropping") &&
-      (await page.eval(confirmLabel)).includes("the thread under it"),
+      (await page.eval(confirmLabel)).includes("the 2 threads under it"),
     await page.eval(confirmLabel),
   );
   await page.key("y");
@@ -1337,7 +1894,9 @@ async function main() {
   await select(ids.fails);
   const afterFails = await page.eval(
     `(() => { const all = [...document.querySelectorAll(".cow-main [data-cow-line]")].map((el) => el.dataset.cowLine);
-      return all[all.indexOf("${ids.fails}") + 1] ?? all[all.indexOf("${ids.fails}") - 1]; })()`,
+      // Its member leaves with it.
+      const stay = all.filter((id) => id !== "${ids.leaf}");
+      return stay[stay.indexOf("${ids.fails}") + 1] ?? stay[stay.indexOf("${ids.fails}") - 1]; })()`,
   );
   const archiveReason = (id) =>
     `(document.querySelector('.cow-main [data-cow-line="${id}"] [data-cow-archive-reason]')?.textContent ?? "")`;
@@ -1569,8 +2128,122 @@ async function main() {
   check("archiving it twice is refused", twice.code !== 0 && /already archived/.test(twice.stderr), twice.stderr);
   // Back to where the page's own checks left things.
   await bb("thread", "unarchive", ids.fails);
+  // bb archived the thread under it with it, and brings back only the one asked for.
+  await bb("thread", "unarchive", ids.leaf).catch(() => undefined);
   await rpc("archive_note_set", { threadId: ids.fails, note: null });
   await page.waitFor(`${lineState(ids.fails)} === "failed"`, { label: "the line back after the CLI checks" });
+
+  // -- what is next: a thread's own note, and what it has not started --
+  const noteOf = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"] .cow-nx [data-cow-note]')?.textContent ?? null)`;
+  const todoTitles = (id) =>
+    `JSON.stringify([...document.querySelectorAll('.cow-main [data-cow-todo-of="${id}"] .cow-title')].map((el) => el.textContent))`;
+  const cliTodos = async (id) => JSON.parse((await cow("todo", "list", id, "--json")).stdout).todo.map((item) => item.title);
+  const stranger = await cowAs(ids.asks, "next", ids.quiet, "not mine to say");
+  const upward = await cowAs(ids.leaf, "todo", "add", ids.quiet, "not mine to list");
+  check(
+    "a thread may not write what is next for a thread that is not under it",
+    stranger.code !== 0 && /only for itself and for the threads under it/.test(stranger.stderr) &&
+      upward.code !== 0 && (await page.eval(noteOf(ids.quiet))) === null && (await cliTodos(ids.quiet)).length === 0,
+    stranger.stderr.trim(),
+  );
+  const own = await cowAs(ids.quiet, "next", ids.quiet, "cut the second   half on Monday");
+  await page.waitFor(`${noteOf(ids.quiet)} === "“cut the second half on Monday”"`, { label: "the note on its line" });
+  check(
+    "bb cow next: a thread's own note shows live in its next-move column, marked as its words",
+    own.code === 0 && /cut the second half on Monday/.test(own.stdout),
+    own.stdout.trim(),
+  );
+  const fromAbove = await cowAs(ids.main, "next", ids.leaf, "nothing more planned");
+  await page.waitFor(`${noteOf(ids.leaf)} === "“nothing more planned”"`, { label: "a note set from above" });
+  check("a thread may set it for a thread under it, at any depth", fromAbove.code === 0);
+  await cowAs(ids.quiet, "todo", "add", ids.quiet, "write the changelog");
+  await cowAs(ids.quiet, "todo", "add", ids.quiet, "tag the release");
+  const third = await cowAs(ids.main, "todo", "add", ids.quiet, "announce it");
+  await page.waitFor(`${todoTitles(ids.quiet)} === '["write the changelog","tag the release","announce it"]'`, {
+    label: "the not-started items on the page",
+  });
+  check("bb cow todo add: items show live, in order", third.code === 0 && /as item 3/.test(third.stdout), third.stdout.trim());
+  const placed = JSON.parse(
+    await page.eval(`JSON.stringify((() => {
+      const rows = [...document.querySelectorAll(".cow-main [data-cow-line], .cow-main [data-cow-todo]")];
+      const at = (selector) => rows.indexOf(document.querySelector(".cow-main " + selector));
+      const todos = [...document.querySelectorAll('.cow-main [data-cow-todo-of="${ids.quiet}"]')];
+      return {
+        afterMembers: at('[data-cow-todo-of="${ids.quiet}"]') === at('[data-cow-line="${ids.leaf}"]') + 1,
+        together: at('[data-cow-todo-of="${ids.quiet}"]') + 2 === rows.indexOf(todos[2]),
+        depth: todos.map((el) => el.dataset.cowDepth).join(),
+        rails: todos.map((el) => el.querySelectorAll(".cow-rail").length).join(),
+        states: todos.map((el) => el.dataset.cowState ?? "none").join(),
+      };
+    })())`),
+  );
+  check(
+    "they are rows inside the thread's group, after its members, tied to it by its rule",
+    placed.afterMembers && placed.together && placed.depth === "1,1,1" && placed.rails === "1,1,1" && placed.states === "none,none,none",
+    JSON.stringify(placed),
+  );
+  const statusPlans = (await cow("status", "--main", ids.main)).stdout;
+  check(
+    "bb cow status shows the note, the items, and what is under a group",
+    /next, in its words: cut the second half on Monday/.test(statusPlans) &&
+      /not started 1: write the changelog\n.*not started 2: tag the release/.test(statusPlans) &&
+      /\[under it: .*1 failed.*\]/.test(statusPlans),
+    statusPlans.split("\n").filter((line) => /not started|in its words/.test(line)).join(" | "),
+  );
+  await shot("plans");
+  const todoCursor = `(document.querySelector(".cow-main .cow-cur")?.dataset.cowTodo ?? null)`;
+  await select(ids.leaf);
+  await page.key("j");
+  check("the cursor lands on a not-started item", (await page.eval(todoCursor))?.startsWith(`todo:${ids.quiet}:`));
+  await page.key("a");
+  check(
+    "no verb for threads acts on it",
+    (await page.eval(message)).includes("not a thread") && (await page.eval(mode)) === "normal",
+    await page.eval(message),
+  );
+  await page.key("J");
+  await page.waitFor(`${todoTitles(ids.quiet)} === '["tag the release","write the changelog","announce it"]'`, {
+    label: "the item moved down",
+  });
+  check(
+    "J moves it down its list, and the cursor goes with it",
+    (await cliTodos(ids.quiet)).join() === "tag the release,write the changelog,announce it" &&
+      (await page.eval(`document.querySelector(".cow-main .cow-cur .cow-title")?.textContent`)) === "write the changelog",
+  );
+  await page.key("K");
+  await page.waitFor(`${todoTitles(ids.quiet)} === '["write the changelog","tag the release","announce it"]'`, {
+    label: "the item moved back up",
+  });
+  check("K moves it back up", true);
+  await page.key("x");
+  check(
+    "x asks before removing it",
+    (await page.eval(confirmLabel)).includes("remove “write the changelog”"),
+    await page.eval(confirmLabel),
+  );
+  await page.key("n");
+  check("any key but y keeps it", (await page.eval(message)) === "not removed" && (await cliTodos(ids.quiet)).length === 3);
+  await page.key("x");
+  await page.key("y");
+  await page.waitFor(`${todoTitles(ids.quiet)} === '["tag the release","announce it"]'`, { label: "the item removed" });
+  check(
+    "x then y removes it from the thread's list, and the cursor takes the next row",
+    (await cliTodos(ids.quiet)).join() === "tag the release,announce it" &&
+      (await page.eval(`document.querySelector(".cow-main .cow-cur .cow-title")?.textContent`)) === "tag the release",
+  );
+  const started = await cowAs(ids.quiet, "todo", "done", ids.quiet, "1");
+  await page.waitFor(`${todoTitles(ids.quiet)} === '["announce it"]'`, { label: "an item taken off by the CLI" });
+  check("bb cow todo done takes an item off, and the page follows", started.code === 0 && /1 left/.test(started.stdout));
+  const noSuch = await cowAs(ids.quiet, "todo", "rm", ids.quiet, "5");
+  check("an item number that is not on the list is refused", noSuch.code !== 0 && /there is no item 5/.test(noSuch.stderr), noSuch.stderr.trim());
+  await cowAs(ids.quiet, "todo", "rm", ids.quiet, "1");
+  await cowAs(ids.quiet, "next", ids.quiet, "--clear");
+  await cowAs(ids.main, "next", ids.leaf, "--clear");
+  await page.waitFor(
+    `${todoTitles(ids.quiet)} === "[]" && ${noteOf(ids.quiet)} === null && ${noteOf(ids.leaf)} === null`,
+    { label: "the notes cleared" },
+  );
+  check("bb cow todo rm and next --clear remove them from the page", true);
 
   // -- one theme for the page and the chat beside it --
   // What the page and the chat each draw with, read where they are drawn.
@@ -1609,8 +2282,11 @@ async function main() {
   }
   check(
     "the page draws with bb's theme, as the chat does: same paper, ink and type, light and dark",
-    matches(active.light) && matches(active.dark) && active.light.pageBackground !== active.dark.pageBackground,
-    JSON.stringify(active),
+    // Light and dark differ only when bb follows the system's appearance; a
+    // bb pinned to one draws the same both times. The cow theme below is
+    // previewed in both, whatever bb is set to.
+    matches(active.light) && matches(active.dark),
+    `${active.light.pageBackground === active.dark.pageBackground ? "bb is pinned to one appearance here; " : ""}${JSON.stringify(active)}`,
   );
   const themes = await bb("theme", "list");
   check(
@@ -1663,14 +2339,19 @@ async function main() {
       queueAbove: document.querySelector(".cow-side").getBoundingClientRect().top < document.querySelector(".cow-main").getBoundingClientRect().top,
     })`),
   );
-  await shot("narrow");
   check(
     "a narrow window folds the next move into the line and puts the queue on top",
     narrow.next === "none" && narrow.overflow && narrow.queueAbove && narrow.shelf && narrow.verbs,
     JSON.stringify(narrow),
   );
-  // bb remounts the page when it changes layout, so start from the top.
-  await page.key("j");
+  // bb remounts the page when its layout changes, and again around a
+  // screenshot at this size, which puts the cursor back at the top.
+  await shot("narrow");
+  await sleep(1500);
+  await page.waitFor(`${screen} === "overview" && !!document.querySelector('.cow-main [data-cow-line="${ids.fails}"]')`, {
+    label: "the page back in a narrow window",
+  });
+  await select(ids.fails);
   check("keys still work in a narrow window", await page.eval(isCursor(ids.fails)));
   await page.key("Enter");
   await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.fails}"`, {
@@ -1710,6 +2391,7 @@ async function main() {
       await rpc("park_set", { threadId: id, park: null });
       await rpc("archive_note_set", { threadId: id, note: null });
       await rpc("dismissal_set", { threadId: id, dismissal: null });
+      await rpc("seen_set", { threadId: id, seen: null });
       await bb("thread", "archive", id);
       // Archiving leaves a thread that is waiting on its question running.
       await fetch(`${BB}/api/v1/threads/${id}/stop`, {

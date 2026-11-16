@@ -2,6 +2,7 @@
 // them. The page and the backend both read through here, so a line on the
 // page and a line from the CLI are derived from the same things.
 
+import { findReplies } from "./attention.ts";
 import { permissionSummary } from "./permission.ts";
 import { findRefusals } from "./refusal.ts";
 import type { Activity, ThreadFacts } from "./state.ts";
@@ -9,6 +10,8 @@ import { describeItem, firstLine } from "./text.ts";
 
 /** bb returns at most this many events per request. */
 const EVENT_PAGE = "100";
+/** How many turn starts and ends are read to tell whose the latest replies are. */
+const TURN_PAGE = "40";
 const PAGE_SIZE = 200;
 /** Stop paging here; a truncated list is reported, not hidden. */
 export const MAX_THREADS = 5000;
@@ -126,7 +129,7 @@ export async function readActivity(reader: ThreadReader, threadId: string, hints
   const events = (types: EventTypes, limit: string) =>
     reader.events.list({ threadId, limit, order: "desc", types: types as never });
   const [turns, items, recent, output, interactions] = await Promise.all([
-    events(["turn/started", "turn/completed"], "1"),
+    events(["client/turn/requested", "turn/started", "turn/completed"], TURN_PAGE),
     events(["item/started", "item/completed"], "1"),
     // Refusals are read from the thread's latest turn; this many events back
     // is as far as one request reaches.
@@ -134,7 +137,8 @@ export async function readActivity(reader: ThreadReader, threadId: string, hints
     reader.output({ threadId }),
     hints.asking ? reader.interactions.list({ threadId }) : [],
   ]);
-  const turn = toEvent(turns[0]);
+  // Newest first: the first turn boundary is the latest.
+  const turn = turns.map(toEvent).find((event) => event !== null && event.type !== "client/turn/requested") ?? null;
   const item = toEvent(items[0]);
   const lastEventAt = Math.max(turn?.createdAt ?? 0, item?.createdAt ?? 0, hints.seenEventAt ?? 0);
   return {
@@ -150,5 +154,6 @@ export async function readActivity(reader: ThreadReader, threadId: string, hints
     output: (typeof output.output === "string" && output.output) || (hints.previousOutput ?? ""),
     ask: toAsk(interactions),
     refusals: findRefusals(recent),
+    replies: findReplies(turns),
   };
 }

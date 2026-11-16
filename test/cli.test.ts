@@ -9,7 +9,7 @@ import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, NOW, activity, thread } from "./fixtures.ts";
 
 const EMPTY_REPORT: StatusReport = {
-  main: { id: "main", title: "Main", state: "done", label: "done", inStateMs: 0, inState: "1m", doing: "", next: "", depth: 0, queue: null },
+  main: { id: "main", title: "Main", state: "done", label: "done", inStateMs: 0, inState: "1m", doing: "", next: "", note: null, todo: [], under: null, depth: 0, queue: null },
   queue: [],
   threads: [],
   parked: [],
@@ -29,10 +29,18 @@ function recorder(overrides: Partial<CliActions> = {}) {
     ),
     resumeChecked: async (...args) => (calls.push(["resume", ...args]), { title: "T" }),
     status: async (...args) => (calls.push(["status", ...args]), EMPTY_REPORT),
+    nextChecked: async (args) => (
+      calls.push(["next", args]),
+      { title: "T", note: args.text === null ? null : { text: args.text, at: NOW, by: args.callerId } }
+    ),
+    todoChecked: async (args) => (
+      calls.push(["todo", args]),
+      { title: "T", list: [{ id: "i1", title: "first", at: NOW }], item: args.op === null ? null : { id: "i1", title: "first", at: NOW } }
+    ),
     ...overrides,
   };
   const cli = cowCli(actions);
-  const run = (...argv: string[]) => cli.run(argv, { projectId: "proj_1", signal: new AbortController().signal });
+  const run = (...argv: string[]) => cli.run(argv, { projectId: "proj_1", threadId: "thr_me", signal: new AbortController().signal });
   return { calls, run, cli };
 }
 
@@ -134,8 +142,8 @@ test("help lists every command; an unknown command or option fails", async () =>
   const { run, cli } = recorder();
   const help = await run("help");
   assert.equal(help.exitCode, 0);
-  for (const name of ["status", "archive", "park", "resume"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
-  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "park", "resume", "status"]);
+  for (const name of ["status", "archive", "park", "resume", "next", "todo add", "todo done", "todo rm", "todo list"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
+  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "next", "park", "resume", "status", "todo-add", "todo-done", "todo-list", "todo-rm"]);
   assert.equal((await run("park", "--help")).exitCode, 0);
   assert.equal((await run("moo")).exitCode, 1);
   assert.equal((await run("resume", "thr_a", "--nope")).exitCode, 1);
@@ -217,4 +225,75 @@ test("a parked thread named to a verb counts what is under it", () => {
   assert.equal(line.under, 1);
   assert.equal(verbBlocked("resume", line, false), null);
   assert.equal(verbBlocked("park", line, false), "it is already parked");
+});
+
+// ---- what is next -----------------------------------------------------------
+
+test("next takes one line of text, or --clear, and says who is asking", async () => {
+  const { calls, run } = recorder();
+  const set = await run("next", "thr_a", "open the PR once CI is green");
+  assert.equal(set.exitCode, 0);
+  assert.equal(set.stdout, "next for “T” (thr_a): open the PR once CI is green\n");
+  const cleared = await run("next", "thr_a", "--clear");
+  assert.equal(cleared.stdout, "cleared what is next for “T” (thr_a)\n");
+  assert.deepEqual(calls, [
+    ["next", { callerId: "thr_me", threadId: "thr_a", text: "open the PR once CI is green" }],
+    ["next", { callerId: "thr_me", threadId: "thr_a", text: null }],
+  ]);
+  assert.equal((await run("next", "thr_a")).exitCode, 1);
+  assert.equal((await run("next", "thr_a", "text", "--clear")).exitCode, 1);
+  assert.equal(calls.length, 2);
+});
+
+test("todo add, done, rm and list pass the thread, the caller and the change", async () => {
+  const { calls, run } = recorder();
+  assert.equal((await run("todo", "add", "thr_a", "write the migration")).stdout, "listed for “T” (thr_a), as item 1: first\n");
+  assert.equal((await run("todo", "done", "thr_a", "1")).stdout, "started, and off the list: “first” for “T” (thr_a); 1 left\n");
+  assert.equal((await run("todo", "rm", "thr_a", "2")).stdout, "removed “first” for “T” (thr_a); 1 left\n");
+  assert.equal((await run("todo", "list", "thr_a")).stdout, "Not started for “T” (thr_a)\n  1  first\n");
+  assert.deepEqual(calls, [
+    ["todo", { callerId: "thr_me", threadId: "thr_a", op: { kind: "add", title: "write the migration" } }],
+    ["todo", { callerId: "thr_me", threadId: "thr_a", op: { kind: "take", n: 1 } }],
+    ["todo", { callerId: "thr_me", threadId: "thr_a", op: { kind: "take", n: 2 } }],
+    ["todo", { callerId: "thr_me", threadId: "thr_a", op: null }],
+  ]);
+  const bad = await run("todo", "rm", "thr_a", "first");
+  assert.equal(bad.exitCode, 1);
+  assert.match(bad.stderr ?? "", /not an item number/);
+  const json = JSON.parse((await run("todo", "list", "thr_a", "--json")).stdout ?? "");
+  assert.deepEqual(json.todo.map((item: { title: string }) => item.title), ["first"]);
+});
+
+test("a refusal to plan for a thread that is not yours exits non-zero and says why", async () => {
+  const { run } = recorder({
+    nextChecked: async () => {
+      throw new CowError("not_yours", "cannot set this on “T” (thr_a): a thread sets this only for itself and for the threads under it");
+    },
+  });
+  const refused = await run("next", "thr_a", "x", "--json");
+  assert.equal(refused.exitCode, 1);
+  assert.equal(JSON.parse(refused.stdout ?? "").error.code, "not_yours");
+});
+
+test("status shows a thread's own note, what it has not started, and what is under a group", () => {
+  const threads = [
+    thread({ id: "main", createdAt: 1 }),
+    thread({ id: "proj", title: "Project", parentThreadId: "main", createdAt: 2 }),
+    thread({ id: "w1", title: "Worker", parentThreadId: "proj", status: "active", createdAt: 3 }),
+    thread({ id: "w2", title: "Asker", parentThreadId: "proj", hasPendingInteraction: true, createdAt: 4 }),
+  ];
+  const plans = {
+    note: (id: string) => (id === "proj" ? "cut the release on Friday" : null),
+    todos: (id: string) => (id === "proj" ? [{ id: "a", title: "write the changelog", at: NOW }] : []),
+  };
+  const overview = buildOverview(threads, "main", (t) => derive(t, undefined, NOW), NOW, plans);
+  const report = statusReport(overview, NOW, false);
+  const proj = report.threads[0]!;
+  assert.equal(proj.note, "cut the release on Friday");
+  assert.deepEqual(proj.todo, ["write the changelog"]);
+  assert.deepEqual(proj.under, { wants: 1, running: 1 });
+  assert.equal(report.threads[1]!.under, null);
+  const text = statusText(report);
+  assert.match(text, /Project \(proj\)  .* → next, in its words: cut the release on Friday  \[under it: 1 wants, 1 running\]/);
+  assert.match(text, /\n +not started 1: write the changelog\n/);
 });

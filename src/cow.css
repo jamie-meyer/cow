@@ -310,6 +310,88 @@
 }
 .cow-nm {
   font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+}
+.cow-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* groups: a thread with threads under it, and what ties them together */
+.cow-rail {
+  flex: none;
+  align-self: stretch;
+  width: 15px;
+  /* One rule per level, under the fold mark of the head it belongs to. */
+  background: linear-gradient(var(--cow-faint), var(--cow-faint)) 5px 0 / 1px 100% no-repeat;
+}
+.cow-fold {
+  flex: none;
+  width: 15px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  color: var(--cow-muted);
+}
+.cow-fold.cow-foldable {
+  cursor: pointer;
+}
+.cow-fold svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+.cow-grouphead .cow-title {
+  font-weight: 600;
+}
+.cow-ln.cow-d-done.cow-grouphead .cow-title {
+  color: var(--cow-muted);
+}
+/* Room above a group at the top level, so each reads as one block. */
+.cow-ln.cow-top.cow-grouphead:not(:first-of-type),
+.cow-ln.cow-ingroup + .cow-ln.cow-top:not(.cow-grouphead) {
+  margin-top: 5px;
+}
+.cow-roll {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  display: inline-flex;
+  gap: 7px;
+  font: 10.5px var(--cow-mono);
+}
+.cow-roll > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.cow-roll .cow-g {
+  width: 8px;
+  height: 8px;
+}
+.cow-inside {
+  color: var(--cow-needs);
+  font-weight: 700;
+}
+.cow-own {
+  font-style: italic;
+  color: var(--cow-ink);
+}
+.cow-ln.cow-d-done .cow-own {
+  color: var(--cow-muted);
+}
+.cow-ln.cow-todo .cow-gl,
+.cow-ln.cow-todo .cow-ag,
+.cow-ln.cow-todo .cow-wh {
+  color: var(--cow-faint);
+}
+.cow-ln.cow-todo .cow-title {
+  color: var(--cow-muted);
+  font-style: italic;
 }
 .cow-nm small {
   font: 11.5px var(--cow-serif);
@@ -348,6 +430,24 @@
 .cow-cur {
   background: var(--cow-paper2);
   box-shadow: inset 3px 0 0 var(--cow-ink);
+}
+/* the line whose chat is open in the pane: marked at the far edge, so it
+   reads apart from the cursor, which is marked at the near one */
+.cow-open {
+  box-shadow: inset -3px 0 0 var(--cow-unread);
+}
+.cow-open.cow-cur {
+  box-shadow:
+    inset 3px 0 0 var(--cow-ink),
+    inset -3px 0 0 var(--cow-unread);
+}
+.cow .cow-openmark {
+  color: var(--cow-unread);
+  font-weight: 600;
+}
+/* while filtering: a head kept only to show where its match belongs */
+.cow-ln.cow-context {
+  opacity: 0.45;
 }
 .cow-ln.cow-flash {
   animation: cow-arrive 1.8s ease;
@@ -831,19 +931,20 @@
   color: var(--cow-ink);
 }
 
-/* hints */
+/* hints: drawn over the whole window, outside the page root, so they reach
+   bb's menus too; hence bb's tokens directly, not the page's own names */
 .cow-hints {
-  position: absolute;
+  position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 20;
+  z-index: 2147483000;
 }
 .cow-ht {
   position: absolute;
-  font: 700 10px/13px var(--cow-mono);
-  background: var(--cow-needs);
-  color: var(--cow-paper);
-  border: 1px solid var(--cow-needs);
+  font: 700 10px/13px var(--font-mono, ui-monospace, monospace);
+  background: var(--warning-text, #a86200);
+  color: var(--background, #f5f1e8);
+  border: 1px solid var(--warning-text, #a86200);
   border-radius: 3px;
   padding: 0 3px;
   text-transform: uppercase;

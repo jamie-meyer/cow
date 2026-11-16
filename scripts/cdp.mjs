@@ -15,7 +15,8 @@ const NAMED_KEYS = {
 
 function keyCode(key) {
   if (/^[0-9]$/.test(key)) return `Digit${key}`;
-  if (key === "?") return "Slash";
+  if (key === "?" || key === "/") return "Slash";
+  if (key === " ") return "Space";
   if (key.length === 1) return `Key${key.toUpperCase()}`;
   return key;
 }
@@ -107,18 +108,18 @@ async function attach(target) {
         await sleep(200);
       }
     },
-    /** A trusted key press, e.g. "j", "G", "Escape", "Tab", "?", "1". */
-    async key(key, { shift = false } = {}) {
+    /** A trusted key press, e.g. "j", "G", "Escape", "Tab", "?", "1", " ". */
+    async key(key, { shift = false, ctrl = false } = {}) {
       const isChar = key.length === 1;
       const upper = isChar && /[A-Z?]/.test(key);
       const base = {
         key,
         code: keyCode(key),
         windowsVirtualKeyCode:
-          NAMED_KEYS[key] ?? (key === "?" ? 191 : key.toUpperCase().charCodeAt(0)),
-        modifiers: shift || upper ? 8 : 0,
+          NAMED_KEYS[key] ?? (key === "?" || key === "/" ? 191 : key.toUpperCase().charCodeAt(0)),
+        modifiers: (shift || upper ? 8 : 0) | (ctrl ? 2 : 0),
       };
-      const text = isChar ? key : key === "Enter" ? "\r" : undefined;
+      const text = ctrl ? undefined : isChar ? key : key === "Enter" ? "\r" : undefined;
       await send("Input.dispatchKeyEvent", {
         type: text ? "keyDown" : "rawKeyDown",
         ...base,
