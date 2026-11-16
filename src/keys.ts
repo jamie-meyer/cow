@@ -1,6 +1,8 @@
 // Keyboard rules: which keys the page owns, what each one means, and which
 // elements on screen can take a hint.
 
+import type { Verb } from "./verbs.ts";
+
 /** What a key asks for in normal mode. */
 export type Command =
   | { kind: "move"; by: 1 | -1 }
@@ -13,6 +15,8 @@ export type Command =
   | { kind: "say"; to: "main" | "line" }
   | { kind: "ask"; by: 1 | -1 }
   | { kind: "ask-number"; number: number }
+  | { kind: "verb"; verb: Verb }
+  | { kind: "undo" }
   | { kind: "help" }
   | { kind: "choose-main" };
 
@@ -22,10 +26,16 @@ export const KEY_MAP: readonly { keys: string; does: string }[] = [
   { keys: "gg G", does: "first, last line" },
   { keys: "f", does: "letter hints on every line and action in view" },
   { keys: "Enter", does: "open the line's chat beside the overview; again to type in it" },
-  { keys: "Esc", does: "leave the chat, then close it" },
+  { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
   { keys: "m", does: "open Main's chat the same way" },
   { keys: "i", does: "say something to Main" },
   { keys: "I", does: "say something to the selected thread" },
+  { keys: "a", does: "answer the line's question: digits choose, Enter sends" },
+  { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
+  { keys: "r", does: "resume a parked line: back into the tree" },
+  { keys: "x", does: "stop a running turn; on parked work that came back, drop it (y confirms)" },
+  { keys: "e", does: "archive a done or failed line (y confirms)" },
+  { keys: "u", does: "undo the last park, resume or archive (y confirms)" },
   { keys: "Tab", does: "next ask in the queue (Shift+Tab previous)" },
   { keys: "1 to 9", does: "jump to that ask" },
   { keys: "M", does: "choose a different Main" },
@@ -67,6 +77,18 @@ export class KeyReader {
         return { kind: "say", to: "main" };
       case "I":
         return { kind: "say", to: "line" };
+      case "a":
+        return { kind: "verb", verb: "answer" };
+      case "p":
+        return { kind: "verb", verb: "park" };
+      case "r":
+        return { kind: "verb", verb: "resume" };
+      case "x":
+        return { kind: "verb", verb: "stop" };
+      case "e":
+        return { kind: "verb", verb: "archive" };
+      case "u":
+        return { kind: "undo" };
       case "Tab":
         return { kind: "ask", by: shift ? -1 : 1 };
       case "?":
@@ -164,20 +186,24 @@ export interface HintTarget {
   top: number;
 }
 
-/** Every element marked `data-cow-hint` that is actually visible in `root`. */
+/**
+ * Every element marked `data-cow-hint` that is actually visible in `root`,
+ * lines first so that they get the shortest hints.
+ */
 export function collectHintTargets(root: HTMLElement): HintTarget[] {
   const frame = root.getBoundingClientRect();
-  const targets: HintTarget[] = [];
+  const lines: HintTarget[] = [];
+  const others: HintTarget[] = [];
   for (const element of root.querySelectorAll<HTMLElement>("[data-cow-hint]")) {
     const rect = element.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) continue;
     const clip = (element.closest("[data-cow-scroll]") ?? root).getBoundingClientRect();
     if (rect.top < clip.top - 1 || rect.bottom > clip.bottom + 1) continue;
-    targets.push({
+    (element.dataset.cowLine === undefined ? others : lines).push({
       element,
       left: Math.max(0, rect.left - frame.left - 3),
       top: rect.top - frame.top + Math.max(0, (rect.height - 15) / 2),
     });
   }
-  return targets;
+  return [...lines, ...others];
 }

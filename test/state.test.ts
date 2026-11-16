@@ -41,7 +41,7 @@ test("a pending interaction wants you, even mid-turn", () => {
   assert.equal(d.state, "wants");
   assert.equal(d.since, NOW - 5 * MINUTE);
   assert.equal(d.doing, "Which colour?");
-  assert.equal(d.next, "answer it in its chat");
+  assert.equal(d.next, "answer it: press a");
   assert.equal(d.waitingOnYou, true);
 });
 

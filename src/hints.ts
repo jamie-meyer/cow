@@ -1,28 +1,32 @@
 // Letter hints: one label per target on screen, typed to activate it.
 
-/** Home-row letters, so every hint is under the fingers. */
-export const HINT_ALPHABET = "asdfghjkl";
+/** Home row first, so the first hints are under the fingers. */
+export const HINT_ALPHABET = "asdfghjklqwertyuiopzxcvbnm";
 
 /**
- * Labels for `count` targets, in target order. All labels have the same
- * length (the shortest that fits), so none is a prefix of another and a hint
- * fires on its last letter.
+ * Labels for `count` targets, most important target first. As many as
+ * possible are a single letter; the rest are two letters that start with a
+ * letter no single-letter label uses. No label is a prefix of another, so a
+ * hint fires on its last letter. Two letters reach the alphabet's size
+ * squared; targets beyond that get no label.
  */
 export function hintLabels(count: number, alphabet: string = HINT_ALPHABET): string[] {
   if (count <= 0) return [];
   const letters = [...alphabet];
-  if (letters.length < 2) throw new Error("the hint alphabet needs at least two letters");
-  let length = 1;
-  while (letters.length ** length < count) length += 1;
-  const labels: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    let label = "";
-    let rest = index;
-    for (let position = 0; position < length; position += 1) {
-      label = letters[rest % letters.length] + label;
-      rest = Math.floor(rest / letters.length);
+  const size = letters.length;
+  if (size < 2) throw new Error("the hint alphabet needs at least two letters");
+  const wanted = Math.min(count, size * size);
+  // With `pairs` letters kept as first letters of pairs, there is room for
+  // (size - pairs) single labels and pairs * size double ones.
+  let pairs = 0;
+  while (size - pairs + pairs * size < wanted) pairs += 1;
+  const singles = letters.slice(0, size - pairs);
+  const labels = singles.slice(0, wanted);
+  for (const first of letters.slice(size - pairs)) {
+    for (const second of letters) {
+      if (labels.length === wanted) return labels;
+      labels.push(first + second);
     }
-    labels.push(label);
   }
   return labels;
 }

@@ -2,37 +2,56 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HINT_ALPHABET, hintLabels, matchHint } from "../src/hints.ts";
 
+const SIZE = HINT_ALPHABET.length;
+
+/** No label may be the start of another, or the longer one could never be typed. */
+function prefixFree(labels: readonly string[]): boolean {
+  return labels.every((a) => labels.every((b) => a === b || !b.startsWith(a)));
+}
+
 test("no targets, no labels", () => {
   assert.deepEqual(hintLabels(0), []);
 });
 
-test("up to nine targets get one home-row letter each", () => {
+test("as many targets as there are letters get one letter each, home row first", () => {
   assert.deepEqual(hintLabels(3), ["a", "s", "d"]);
-  assert.deepEqual(hintLabels(9), [...HINT_ALPHABET]);
+  assert.deepEqual(hintLabels(SIZE), [...HINT_ALPHABET]);
 });
 
-test("more targets get labels of one shared length, all different", () => {
-  for (const count of [10, 40, 81, 82, 300]) {
+test("more targets keep single letters for the first ones and add pairs for the rest", () => {
+  for (const count of [SIZE + 1, 40, 80, 300, SIZE * SIZE]) {
     const labels = hintLabels(count);
     assert.equal(labels.length, count);
     assert.equal(new Set(labels).size, count);
-    assert.equal(new Set(labels.map((l) => l.length)).size, 1);
-    assert.ok(labels.every((l) => [...l].every((c) => HINT_ALPHABET.includes(c))));
+    assert.ok(prefixFree(labels), `${count} labels are prefix-free`);
+    assert.ok(labels.every((l) => l.length <= 2 && [...l].every((c) => HINT_ALPHABET.includes(c))));
+    // Singles come first, so the first targets are the cheapest to reach.
+    const firstPair = labels.findIndex((label) => label.length === 2);
+    assert.ok(labels.slice(firstPair).every((label) => label.length === 2));
   }
-  assert.equal(hintLabels(10)[0], "aa");
-  assert.equal(hintLabels(10)[9], "sa");
-  assert.equal(hintLabels(82)[0].length, 3);
+  // One more than the alphabet costs a single letter: 25 singles, then pairs.
+  const labels = hintLabels(SIZE + 1);
+  assert.equal(labels.filter((label) => label.length === 1).length, SIZE - 1);
+  assert.equal(labels[SIZE - 1], "ma");
+  assert.equal(hintLabels(40).filter((label) => label.length === 1).length, SIZE - 1);
+});
+
+test("targets beyond what two letters reach get no label", () => {
+  assert.equal(hintLabels(SIZE * SIZE + 50).length, SIZE * SIZE);
 });
 
 test("typing narrows, hits, or misses", () => {
-  const labels = hintLabels(12);
-  assert.deepEqual(matchHint(labels, "a"), { kind: "partial" });
-  assert.deepEqual(matchHint(labels, "as"), { kind: "hit", index: 1 });
-  assert.deepEqual(matchHint(labels, "l"), { kind: "miss" });
-  assert.deepEqual(matchHint(hintLabels(3), "d"), { kind: "hit", index: 2 });
+  const labels = hintLabels(30);
+  assert.deepEqual(matchHint(labels, "a"), { kind: "hit", index: 0 });
+  assert.deepEqual(matchHint(labels, "m"), { kind: "partial" });
+  assert.deepEqual(matchHint(labels, "ms"), { kind: "hit", index: 26 });
+  assert.deepEqual(matchHint(labels, "mm"), { kind: "miss" });
+  assert.deepEqual(matchHint(hintLabels(3), "f"), { kind: "miss" });
 });
 
 test("a custom alphabet is honoured", () => {
+  assert.deepEqual(hintLabels(2, "ab"), ["a", "b"]);
+  assert.deepEqual(hintLabels(3, "ab"), ["a", "ba", "bb"]);
   assert.deepEqual(hintLabels(4, "ab"), ["aa", "ab", "ba", "bb"]);
   assert.throws(() => hintLabels(2, "a"));
 });

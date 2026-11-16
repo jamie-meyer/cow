@@ -1,5 +1,8 @@
-// What state a thread is in, derived only from what bb knows about it.
+// What state a thread is in, derived from what bb knows about it and from
+// cow's own note on it when the user has parked it.
 
+import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
+import type { ParkRecord } from "./shared.ts";
 import { firstLine, formatAge } from "./text.ts";
 
 const MINUTE = 60_000;
@@ -14,11 +17,13 @@ export const LIMITS = {
   waitingOnUserMs: 7 * DAY,
   /** Done lines are listed for this long, then only counted. */
   doneListedMs: 2 * DAY,
+  /** Parked work with no pick-up date asks this often whether it is still wanted. */
+  parkCheckMs: 28 * DAY,
 } as const;
 
 /**
- * The states a line can show. Nothing produces `parked` or `waiting` yet:
- * both need the agent or the user to say so, which this page cannot do today.
+ * The states a line can show. Nothing produces `waiting` yet: it needs the
+ * agent to say what it waits on.
  */
 export type LineState =
   | "wants"
@@ -83,13 +88,11 @@ export interface Derived {
    * the state to read as stuck.
    */
   waitingOnYou: boolean;
+  /** Set when the user parked it: the note, and why it is back if it is. */
+  park?: { record: ParkRecord; due: Due | null };
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
-
-function isBusy(thread: ThreadFacts): boolean {
-  return BUSY.has(thread.status);
-}
 
 /**
  * When the thread last came to rest. bb moves `latestAttentionAt` only for
@@ -111,10 +114,24 @@ function hasUnreadReply(thread: ThreadFacts): boolean {
   return thread.lastReadAt === null || thread.lastReadAt < thread.latestAttentionAt;
 }
 
+/** Whether a turn is in progress, whatever state the line shows. */
+export function isBusy(thread: ThreadFacts): boolean {
+  return BUSY.has(thread.status);
+}
+
+/**
+ * When the user's part began: for parked work that has come back, when it
+ * came back; otherwise when the line entered its state.
+ */
+export function waitingSince(derived: Derived): number {
+  return derived.park?.due?.at ?? derived.since;
+}
+
 export function derive(
   thread: ThreadFacts,
   activity: Activity | undefined,
   now: number,
+  park?: ParkRecord | null,
 ): Derived {
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
@@ -129,12 +146,26 @@ export function derive(
     };
   }
 
+  // Parking is the user's choice, so it hides whatever the agent is doing
+  // until the thread is resumed.
+  if (park) {
+    const due = parkDue(park, now, LIMITS.parkCheckMs);
+    return {
+      state: "parked",
+      since: park.at,
+      doing: park.reason,
+      next: due ? dueShort(due, now) : pickUpText(park, now, LIMITS.parkCheckMs),
+      waitingOnYou: due !== null,
+      park: { record: park, due },
+    };
+  }
+
   if (thread.status === "error" || (!isBusy(thread) && activity?.turn?.failed)) {
     return {
       state: "failed",
       since: settled,
       doing: said || "its last turn failed",
-      next: "open it: retry or stop",
+      next: "open it to retry, or archive it",
       waitingOnYou: true,
     };
   }
@@ -157,7 +188,7 @@ export function derive(
       state: "wants",
       since,
       doing,
-      next: asked ? "answer it in its chat" : "read its reply",
+      next: asked ? "answer it: press a" : "read its reply",
       waitingOnYou: true,
     };
   }
@@ -172,7 +203,7 @@ export function derive(
         state: "stuck",
         since: lastEventAt,
         doing: `no event for ${formatAge(now - lastEventAt)}${step ? ` · last: ${step}` : ""}`,
-        next: "open it: nudge or stop",
+        next: "nudge it, or stop it: press x",
         waitingOnYou: false,
       };
     }

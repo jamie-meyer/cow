@@ -2,6 +2,7 @@
 // status line at the bottom, and the real chat in a pane when asked for.
 
 import {
+  Fragment,
   type ReactNode,
   useCallback,
   useEffect,
@@ -19,8 +20,11 @@ import {
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import type { MainState, rpcContract } from "../server.ts";
+import { pinnedProjectId, useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
 import { hintLabels, matchHint } from "./hints.ts";
+import { dueText } from "./park.ts";
+import { type Parks, useParks } from "./parks.ts";
 import { MAIN_CHANGED } from "./shared.ts";
 import {
   type Command,
@@ -37,15 +41,17 @@ import {
   STATE_LABEL,
   type ThreadFacts,
   derive,
+  waitingSince,
 } from "./state.ts";
 import { formatAge } from "./text.ts";
-import { type Line, type Overview, buildOverview, cursorOrder } from "./tree.ts";
+import { type Line, type Overview, buildOverview, cursorOrder, descendantIds, listed } from "./tree.ts";
+import { undoShort } from "./undo.ts";
+import { useVerbs } from "./useVerbs.tsx";
+import { VERB_KEYS, type Verb as VerbName, verbBlocked, verbLabel } from "./verbs.ts";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const WEEK = 7 * DAY;
-/** How often ages on the page are recomputed. */
-const CLOCK_MS = 20_000;
 const FLASH_MS = 1800;
 /** State changes this soon after the page opens are loading, not events. */
 const LOAD_SETTLE_MS = 4000;
@@ -104,9 +110,14 @@ const LEGEND: readonly { state: LineState; short: string; long: string }[] = [
     long: `Detected, never chosen: running with no event for ${formatAge(LIMITS.runningQuietMs)}, or waiting on you for ${formatAge(LIMITS.waitingOnUserMs)}.`,
   },
   {
+    state: "parked",
+    short: "set aside by you, with p",
+    long: "Chosen by you with p: a reason and a pick-up. It waits on the shelf with everything under it, and comes back to the queue when its date arrives, or every 4 weeks without one.",
+  },
+  {
     state: "failed",
     short: "its last turn failed",
-    long: "Its last turn ended in an error. Open it to retry or stop. Listed in the queue.",
+    long: "Its last turn ended in an error. Open it to retry, or archive it with e. Listed in the queue.",
   },
   {
     state: "done",
@@ -167,7 +178,9 @@ function LineRow({
   onOpen: (id: string) => void;
 }) {
   const { thread, derived } = line;
+  const returned = derived.park?.due != null;
   const classes = ["cow-ln", `cow-d-${derived.state}`];
+  if (returned) classes.push("cow-up");
   if (current) classes.push("cow-cur");
   if (flash) classes.push("cow-flash");
   return (
@@ -175,6 +188,7 @@ function LineRow({
       className={classes.join(" ")}
       data-cow-line={thread.id}
       data-cow-state={derived.state}
+      data-cow-returned={returned || undefined}
       data-cow-hint=""
       aria-current={current || undefined}
       onClick={() => onSelect(thread.id)}
@@ -188,6 +202,12 @@ function LineRow({
       <span className="cow-nm" style={flat ? undefined : { paddingLeft: line.depth * 15 }}>
         {thread.title}
         {flat && parentTitle ? <small> · {parentTitle}</small> : null}
+        {line.under > 0 ? (
+          <small data-cow-under={line.under}>
+            {" "}
+            · with {line.under} {line.under === 1 ? "thread" : "threads"} under it
+          </small>
+        ) : null}
       </span>
       <span className="cow-wh">
         {derived.doing}
@@ -196,6 +216,12 @@ function LineRow({
       <span className="cow-nx">{derived.next}</span>
     </div>
   );
+}
+
+/** What a queue entry says: the question, the failure, or why parked work is back. */
+function queueText(line: Line, now: number): string {
+  const park = line.derived.park;
+  return park?.due ? dueText(park.record, park.due, now) : line.derived.doing;
 }
 
 function ColumnHead() {
@@ -220,12 +246,30 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Verb({ keys, label, onRun, off }: { keys: string; label: string; onRun: () => void; off?: boolean }) {
+/** One entry of the verb bar. A greyed-out verb takes no hint, and says why when used. */
+function Verb({
+  keys,
+  label,
+  onRun,
+  off,
+  name,
+  why,
+}: {
+  keys: string;
+  label: string;
+  onRun: () => void;
+  off?: boolean;
+  name?: string;
+  why?: string;
+}) {
   return (
     <button
       type="button"
       className={off ? "cow-vb cow-off" : "cow-vb"}
-      data-cow-hint=""
+      data-cow-verb={name}
+      data-cow-hint={off ? undefined : ""}
+      aria-disabled={off || undefined}
+      title={why}
       tabIndex={-1}
       onClick={onRun}
     >
@@ -322,15 +366,6 @@ function step(order: readonly string[], current: string | null, by: number): str
   return order[Math.max(0, Math.min(order.length - 1, index + by))]!;
 }
 
-function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), CLOCK_MS);
-    return () => clearInterval(timer);
-  }, []);
-  return now;
-}
-
 function useThreadStore(): { store: ThreadStore; snapshot: ReturnType<ThreadStore["getSnapshot"]> } {
   const sdk = useSdk();
   const store = useMemo(() => new ThreadStore(sdk), [sdk]);
@@ -406,7 +441,8 @@ function usePageKeys(
     if (!root) return;
     const targets = collectHintTargets(root);
     if (targets.length === 0) return;
-    setHint({ typed: "", targets, labels: hintLabels(targets.length) });
+    const labels = hintLabels(targets.length);
+    setHint({ typed: "", targets: targets.slice(0, labels.length), labels });
   }, [rootRef]);
 
   useEffect(
@@ -568,12 +604,16 @@ function OverviewScreen({
   main,
   now,
   truncated,
+  parks,
+  threads,
   onChooseMain,
 }: {
   overview: Overview;
   main: Line;
   now: number;
   truncated: boolean;
+  parks: Parks;
+  threads: readonly ThreadFacts[];
   onChooseMain: () => void;
 }) {
   const sdk = useSdk();
@@ -582,12 +622,13 @@ function OverviewScreen({
   const order = useMemo(() => cursorOrder(overview), [overview]);
   const titles = useMemo(() => {
     const map = new Map<string, string>([[main.thread.id, main.thread.title]]);
-    for (const line of [...overview.lines, ...overview.done]) map.set(line.thread.id, line.thread.title);
+    for (const line of listed(overview)) map.set(line.thread.id, line.thread.title);
     return map;
   }, [overview, main]);
 
   // The cursor is a thread id, so live updates never move it. If its line
-  // leaves the page, it lands on the line that took its place.
+  // leaves the page, it lands on the line that took its place: the next one
+  // down. The verbs that move a line say where the cursor goes themselves.
   const [cursor, setCursor] = useState<string | null>(null);
   const lastIndex = useRef(0);
   // The heading is not in the line order, but the queue can put the cursor on it.
@@ -616,7 +657,7 @@ function OverviewScreen({
   useEffect(() => {
     const changed: string[] = [];
     const next = new Map<string, LineState>();
-    for (const line of [...overview.lines, ...overview.done]) {
+    for (const line of listed(overview)) {
       const before = lastStates.current.get(line.thread.id);
       if (before !== undefined && before !== line.derived.state) changed.push(line.thread.id);
       next.set(line.thread.id, line.derived.state);
@@ -715,6 +756,21 @@ function OverviewScreen({
     else setMessage(overview.queue.length ? "" : "nothing is waiting on you");
   };
 
+  const selectedLine =
+    [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
+  const verbs = useVerbs({
+    sdk,
+    overview,
+    main,
+    selected: selectedLine,
+    parks,
+    under: (id) => descendantIds(threads, id),
+    setCursor,
+    say: setMessage,
+    openChat,
+    focusOverview,
+  });
+
   const run = (command: Command) => {
     // Nothing is above the heading.
     if (onMain && command.kind === "move" && command.by < 0) return;
@@ -738,6 +794,10 @@ function OverviewScreen({
       }
       case "ask-number":
         return toAsk(command.number - 1);
+      case "verb":
+        return verbs.start(command.verb);
+      case "undo":
+        return verbs.startUndo();
       case "help":
         return setHelp(true);
       case "choose-main":
@@ -756,7 +816,18 @@ function OverviewScreen({
           if (key === "Escape" || key === "?" || key === "q") setHelp(false);
           return true;
         }
-      : null,
+      : verbs.onKey
+        ? (key) => {
+            verbs.onKey?.(key);
+            return true;
+          }
+        : sayTo !== null
+          ? () => {
+              // Focus was taken from the say input: give it back.
+              sayRef.current?.focus();
+              return true;
+            }
+          : null,
   );
 
   useLayoutEffect(() => {
@@ -765,26 +836,43 @@ function OverviewScreen({
     root?.querySelector(".cow-queue .cow-cur")?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  const selectedLine =
-    [main, ...overview.lines, ...overview.done].find((line) => line.thread.id === selected) ?? null;
-  const listed = overview.lines.length + overview.done.length;
+  const listedCount = listed(overview).length;
+  const returnedCount = overview.parked.filter((line) => line.derived.park?.due != null).length;
+  const onHeading = selectedLine === main;
+  const verbButton = (verb: VerbName) => {
+    const why = verbBlocked(verb, selectedLine, onHeading);
+    return (
+      <Verb
+        key={verb}
+        name={verb}
+        keys={VERB_KEYS[verb]}
+        label={verbLabel(verb, selectedLine)}
+        off={why !== null}
+        why={why ?? undefined}
+        onRun={() => verbs.start(verb)}
+      />
+    );
+  };
   const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
+  const card = (id: string) => (verbs.card?.threadId === id ? verbs.card.node : null);
   const row = (line: Line, flat: boolean) => (
-    <LineRow
-      key={line.thread.id}
-      line={line}
-      now={now}
-      flat={flat}
-      parentTitle={
-        line.thread.parentThreadId === main.thread.id
-          ? null
-          : (titles.get(line.thread.parentThreadId ?? "") ?? null)
-      }
-      current={line.thread.id === selected}
-      flash={flashing.has(line.thread.id)}
-      onSelect={setCursor}
-      onOpen={openChat}
-    />
+    <Fragment key={line.thread.id}>
+      <LineRow
+        line={line}
+        now={now}
+        flat={flat}
+        parentTitle={
+          line.thread.parentThreadId === main.thread.id
+            ? null
+            : (titles.get(line.thread.parentThreadId ?? "") ?? null)
+        }
+        current={line.thread.id === selected}
+        flash={flashing.has(line.thread.id)}
+        onSelect={setCursor}
+        onOpen={openChat}
+      />
+      {card(line.thread.id)}
+    </Fragment>
   );
 
   return (
@@ -792,7 +880,9 @@ function OverviewScreen({
       className={pane === null ? "cow" : "cow cow-with-pane"}
       data-cow-root=""
       data-cow-screen="overview"
-      data-cow-mode={hint ? "hint" : sayTo !== null ? "say" : help ? "help" : "normal"}
+      data-cow-mode={
+        hint ? "hint" : sayTo !== null ? "say" : help ? "help" : (verbs.mode?.toLowerCase() ?? "normal")
+      }
       tabIndex={-1}
       ref={rootRef}
     >
@@ -825,14 +915,15 @@ function OverviewScreen({
             </span>
           ) : null}
           <span className="cow-sum">
-            <b>{listed}</b> {listed === 1 ? "thread" : "threads"} · <b>{overview.queue.length}</b> waiting
+            <b>{listedCount}</b> {listedCount === 1 ? "thread" : "threads"} · <b>{overview.queue.length}</b> waiting
             on you
           </span>
         </header>
+        {card(main.thread.id)}
 
         <div className="cow-body">
           <main className="cow-main" data-cow-scroll="">
-            {listed === 0 ? (
+            {listedCount === 0 ? (
               <Notice title="Main has not started any threads yet">
                 <p>
                   When Main hands work to another thread, that thread appears here as a line, with the
@@ -849,6 +940,26 @@ function OverviewScreen({
               <>
                 <ColumnHead />
                 {overview.lines.map((line) => row(line, false))}
+                <div className="cow-sec" data-cow-shelf="">
+                  Parked
+                  <span>
+                    {overview.parked.length} on the shelf, set aside by you
+                    {overview.parked.length > 0
+                      ? ` · oldest ${formatAge(now - overview.parked[0]!.derived.since)}`
+                      : ""}
+                  </span>
+                  {returnedCount > 0 ? (
+                    <span className="cow-up">{returnedCount} asking to come back</span>
+                  ) : null}
+                </div>
+                {overview.parked.length === 0 ? (
+                  <p className="cow-shelf-empty">
+                    Nothing is parked. Select a line and press <kbd>p</kbd> to set it aside without
+                    losing it.
+                  </p>
+                ) : (
+                  overview.parked.map((line) => row(line, true))
+                )}
                 <div className="cow-sec">
                   Done
                   <span>
@@ -869,7 +980,9 @@ function OverviewScreen({
               <h2>
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
-              <p className="cow-sub">Questions, failures and Main's unread replies, oldest first.</p>
+              <p className="cow-sub">
+                Questions, failures, Main's unread replies and parked work that came back, oldest first.
+              </p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
                   <li className="cow-q-empty">Nothing is waiting on you.</li>
@@ -887,9 +1000,9 @@ function OverviewScreen({
                         <Glyph state={line.derived.state} />
                       </span>
                       <div>
-                        <p>{line.derived.doing}</p>
+                        <p>{queueText(line, now)}</p>
                         <small>
-                          {line.thread.title} · {formatAge(Math.max(0, now - line.derived.since))}
+                          {line.thread.title} · {formatAge(Math.max(0, now - waitingSince(line.derived)))}
                         </small>
                       </div>
                     </li>
@@ -963,6 +1076,8 @@ function OverviewScreen({
                 </small>
               </span>
             </>
+          ) : verbs.footer ? (
+            verbs.footer
           ) : (
             <>
               <span className={hint ? "cow-mode cow-m-hint" : "cow-mode"}>{hint ? "HINT" : "NORMAL"}</span>
@@ -971,9 +1086,18 @@ function OverviewScreen({
               <span className="cow-verbs">
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
                 <Verb keys="I" label="say to it" off={selected === null} onRun={() => startSay(selected)} />
+                {(["answer", "park", "resume", "stop", "archive"] as const).map(verbButton)}
               </span>
               <span className="cow-sep">·</span>
               <span className="cow-verbs">
+                <Verb
+                  name="undo"
+                  keys="u"
+                  label={verbs.undoable ? undoShort(verbs.undoable) : "undo"}
+                  off={verbs.undoable === null}
+                  why={verbs.undoable ? undefined : "nothing to undo"}
+                  onRun={verbs.startUndo}
+                />
                 <Verb keys="i" label="say to Main" onRun={() => startSay(main.thread.id)} />
                 <Verb keys="m" label="Main's chat" onRun={() => openChat(main.thread.id)} />
                 <Verb keys="⇥" label="next ask" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
@@ -1009,7 +1133,10 @@ export function CowPage() {
     };
   }, []);
 
-  const projectId = context.projectId ?? mains.state?.currentProjectId ?? null;
+  // bb names a project when the page is opened inside one; otherwise the
+  // page shows the project whose Main was chosen last.
+  const scopedProjectId = pinnedProjectId() ?? context.projectId;
+  const projectId = scopedProjectId ?? mains.state?.currentProjectId ?? null;
   const storedMainId = projectId === null ? null : (mains.state?.mains[projectId] ?? null);
   // An archived or deleted Main is gone as far as the user is concerned.
   const mainGone =
@@ -1017,17 +1144,31 @@ export function CowPage() {
     !snapshot.threads.some((thread) => thread.id === storedMainId && thread.archivedAt === null);
   const mainId = mainGone ? null : storedMainId;
 
+  const underMain = useMemo(
+    () => (mainId === null || snapshot.status !== "ready" ? null : descendantIds(snapshot.threads, mainId)),
+    [snapshot.threads, snapshot.status, mainId],
+  );
+  const parks = useParks(underMain);
+  const notes = parks.notes;
+
   const overview = useMemo(
     () =>
-      mainId === null
+      mainId === null || notes === null
         ? null
         : buildOverview(
             snapshot.threads,
             mainId,
-            (thread) => derive(thread, snapshot.activity.get(thread.id), now),
+            // Main is the page's heading and is never parked.
+            (thread) =>
+              derive(
+                thread,
+                snapshot.activity.get(thread.id),
+                now,
+                thread.id === mainId ? null : notes.get(thread.id),
+              ),
             now,
           ),
-    [snapshot, mainId, now],
+    [snapshot, mainId, notes, now],
   );
 
   useEffect(() => {
@@ -1037,9 +1178,10 @@ export function CowPage() {
     store.watch([overview.main.thread.id, ...overview.unarchived, ...cursorOrder(overview)]);
   }, [store, overview]);
 
-  const needsPicker = picking || mainId === null || overview?.main == null;
+  const loadingNotes = mainId !== null && notes === null;
+  const needsPicker = !loadingNotes && (picking || mainId === null || overview?.main == null);
   useEffect(() => {
-    if (!needsPicker || context.projectId !== null) return;
+    if (!needsPicker || scopedProjectId !== null) return;
     let cancelled = false;
     // Project names only label the picker, so it works without them.
     sdk.projects.list().then(
@@ -1051,9 +1193,9 @@ export function CowPage() {
     return () => {
       cancelled = true;
     };
-  }, [sdk, needsPicker, context.projectId]);
+  }, [sdk, needsPicker, scopedProjectId]);
 
-  const failure = snapshot.status === "error" ? snapshot.error : mains.error;
+  const failure = snapshot.status === "error" ? snapshot.error : (mains.error ?? (notes === null ? parks.error : null));
   if (failure !== null) {
     return (
       <div className="cow" data-cow-root="" data-cow-screen="error">
@@ -1067,6 +1209,7 @@ export function CowPage() {
                 className="cow-vb cow-link"
                 onClick={() => {
                   mains.load();
+                  parks.reload();
                   void store.reload();
                 }}
               >
@@ -1079,7 +1222,7 @@ export function CowPage() {
       </div>
     );
   }
-  if (snapshot.status === "loading" || mains.state === null) {
+  if (snapshot.status === "loading" || mains.state === null || loadingNotes) {
     return (
       <div className="cow" data-cow-root="" data-cow-screen="loading">
         <div className="cow-app">
@@ -1089,10 +1232,10 @@ export function CowPage() {
     );
   }
   if (needsPicker || overview === null || overview.main === null) {
-    const scoped = context.projectId !== null;
+    const scoped = scopedProjectId !== null;
     return (
       <Picker
-        threads={scoped ? snapshot.threads.filter((t) => t.projectId === context.projectId) : snapshot.threads}
+        threads={scoped ? snapshot.threads.filter((t) => t.projectId === scopedProjectId) : snapshot.threads}
         projectNames={projectNames}
         scopedToProject={scoped}
         currentMainId={overview?.main ? mainId : null}
@@ -1113,6 +1256,8 @@ export function CowPage() {
       main={overview.main}
       now={now}
       truncated={snapshot.truncated}
+      parks={parks}
+      threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
     />
   );
