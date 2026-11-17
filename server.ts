@@ -6,6 +6,8 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createActions } from "./src/actions.ts";
 import { registerAttention } from "./src/raised-backend.ts";
+import { registerCaps } from "./src/caps/backend.ts";
+import { capCommands } from "./src/caps/cli.ts";
 import { cowCli } from "./src/cli.ts";
 import {
   archiveNoteSchema,
@@ -156,7 +158,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(cowCli(actions, attention));
+  const caps = registerCaps(bb);
+  const titleOf = async (threadId: string) => {
+    const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+    return (typeof found?.title === "string" && found.title.trim()) || threadId;
+  };
+  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf)));
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.

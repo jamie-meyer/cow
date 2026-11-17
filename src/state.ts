@@ -211,7 +211,9 @@ export const MESSAGED_SINCE = "you have messaged this thread since it asked";
 export function asksText(asks: readonly Ask[], messaged = false): string {
   const first = asks[0];
   if (!first) return "";
-  return `asks you: ${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}${messaged ? ` · ${MESSAGED_SINCE}` : ""}`;
+  // An ask for a capability says so: it is a grant the thread wants, not a question about the work.
+  const lead = first.capability ? "" : "asks you: ";
+  return `${lead}${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}${messaged ? ` · ${MESSAGED_SINCE}` : ""}`;
 }
 
 /**

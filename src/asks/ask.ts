@@ -61,6 +61,15 @@ export const askSchema = z.object({
   withdrawnAt: z.number().nullable(),
   /** Set when it was closed as answered in chat. Asks recorded before this existed have none. */
   closed: closedSchema.nullable().default(null),
+  /**
+   * Set when the thread asks for a capability, with `bb cow cap request`:
+   * the rule it proposes, as it typed it. The person grants it from the
+   * ask's card, through the same steps as any capability, or refuses.
+   */
+  capability: z
+    .object({ kind: z.enum(["dir", "command"]), rule: z.string().max(5000) })
+    .nullable()
+    .default(null),
 });
 export type Ask = z.infer<typeof askSchema>;
 
@@ -110,7 +119,12 @@ export interface AskDraft {
   risk: Risk | null;
   proofs: readonly string[];
   context: string | null;
+  /** The capability the thread asks for, when this is that kind of ask. */
+  capability?: Ask["capability"];
 }
+
+/** The two answers an ask for a capability offers. Granting is the first. */
+export const CAPABILITY_OPTIONS = ["grant it::you choose the rule, the name and who it applies to, and confirm", "refuse::it is told no"] as const;
 
 /** Check a question as the CLI received it and make the record. */
 export function draftAsk(draft: AskDraft, id: string, now: number, storageRoot: string | null): Result<Ask> {
@@ -158,6 +172,7 @@ export function draftAsk(draft: AskDraft, id: string, now: number, storageRoot: 
       deliveredAt: null,
       withdrawnAt: null,
       closed: null,
+      capability: draft.capability ?? null,
     },
   };
 }

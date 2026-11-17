@@ -27,6 +27,7 @@ const ask = (overrides: Partial<Ask> = {}): Ask => ({
   deliveredAt: null,
   withdrawnAt: null,
   closed: null,
+  capability: null,
   ...overrides,
 });
 

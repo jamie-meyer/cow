@@ -55,6 +55,7 @@ const ask = (id: string, threadId: string, minutesAgo: number, overrides: Partia
   deliveredAt: null,
   withdrawnAt: null,
   closed: null,
+  capability: null,
   ...overrides,
 });
 

@@ -158,7 +158,7 @@ function planCommands(actions: CliActions) {
   };
 }
 
-export function cowCli(actions: CliActions, attention?: Attention) {
+export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand>> = Record<never, never>>(actions: CliActions, attention?: Attention, extra?: Extra) {
   return defineCli({
     name: "cow",
     summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
@@ -255,6 +255,7 @@ export function cowCli(actions: CliActions, attention?: Attention) {
         },
       }),
       ...(attention ? attentionCommands(attention) : {}),
+      ...(extra ?? {}),
     },
   });
 }

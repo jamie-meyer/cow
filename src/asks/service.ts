@@ -35,6 +35,8 @@ export interface AskInput {
   risk: Risk | null;
   proofs: readonly string[];
   context: string | null;
+  /** The capability the thread asks for, when this is that kind of ask. */
+  capability?: Ask["capability"];
 }
 
 export interface Asks {

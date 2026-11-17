@@ -24,6 +24,7 @@ const ask = (id: string, minutesAgo: number, overrides: Partial<Ask> = {}): Ask 
   deliveredAt: null,
   withdrawnAt: null,
   closed: null,
+  capability: null,
   ...overrides,
 });
 const mark = (overrides: Partial<BriefMark> = {}): BriefMark => ({ version: 1, state: "checked", contradicted: 0, notEstablished: 0, judgementCalls: 0, at: NOW - HOUR, read: false, ...overrides });
