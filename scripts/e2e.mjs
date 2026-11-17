@@ -45,7 +45,7 @@
 //                       be a checkout of cow, whose files the fixture links to
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { connect, newTab, sleep } from "./cdp.mjs";
@@ -1624,6 +1624,24 @@ async function capsChecks(page, ids, shot, chooseMain) {
   check("the log names the thread it was allowed on", log.find((entry) => entry.event.kind === "auto-allowed")?.event.threadId === ckid);
   await settle(ckid);
 
+  // -- a symbolic link inside the directory that leads out of it ----------------
+  mkdirSync(other, { recursive: true });
+  symlinkSync(other, `${scratch}/out`);
+  await sayTo(ckid, `write: ${scratch}/out/x.txt`);
+  await waitForThread(ckid, (t) => t.hasPendingInteraction, "asking to write through the link", 120_000);
+  await sleep(3000);
+  check(
+    "a file under the directory as written, which a symbolic link takes out of it, is not allowed: the request waits on you",
+    (await pendingOf(ckid)).length === 1 && !existsSync(`${other}/x.txt`) && (await capLog())[0].event.kind === "auto-allowed" && (await capLog())[0].event.what === `change ${third}`,
+    JSON.stringify((await capLog())[0].event),
+  );
+  await openCard(ckid, `!!document.querySelector('[data-cow-answer="${ckid}"] [data-cow-permission="file_change"]')`);
+  await page.key("3");
+  await page.key("Enter");
+  await waitForThread(ckid, (t) => !t.hasPendingInteraction, "denied", 30_000);
+  rmSync(`${scratch}/out`, { force: true });
+  await settle(ckid);
+
   // -- c on a line ------------------------------------------------------------
   await select(ckid);
   await page.key("c");
@@ -2006,11 +2024,19 @@ async function capsChecks(page, ids, shot, chooseMain) {
   // -- both themes, and a narrow window -----------------------------------------
   await page.key("C");
   await page.waitFor(`!!${sheet}`, { label: "the sheet, for its looks" });
-  await page.colorScheme("dark");
-  await shot("caps-sheet-dark");
-  const darkInk = await page.eval(`getComputedStyle(${sheet}).backgroundColor`);
-  await page.colorScheme("light");
-  check("the sheet draws with bb's theme, light and dark", darkInk !== (await page.eval(`getComputedStyle(${sheet}).backgroundColor`)) || true, darkInk);
+  // The sheet is drawn on the page's own paper, in its ink, whichever of bb's appearances is on.
+  const looks = `JSON.stringify({ paper: getComputedStyle(${sheet}).backgroundColor, page: getComputedStyle(${ROOT}).backgroundColor, ink: getComputedStyle(${sheet}.querySelector(".cow-cap-name")).color, pageInk: getComputedStyle(${ROOT}).color })`;
+  const seen = {};
+  for (const scheme of ["dark", "light"]) {
+    await page.colorScheme(scheme);
+    seen[scheme] = JSON.parse(await page.eval(looks));
+    await shot(`caps-sheet-${scheme}`);
+  }
+  check(
+    "the sheet draws with bb's theme, light and dark: the page's paper and ink",
+    ["dark", "light"].every((scheme) => seen[scheme].paper === seen[scheme].page && seen[scheme].ink === seen[scheme].pageInk && seen[scheme].ink !== seen[scheme].paper),
+    JSON.stringify(seen),
+  );
   await page.resize(700, 800);
   await sleep(1500);
   await page.waitFor(`${screen} === "overview"`, { label: "the page in a narrow window" });

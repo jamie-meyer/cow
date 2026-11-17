@@ -134,6 +134,8 @@ export interface Caps {
   raised(threadId: string, interaction: unknown): Promise<Capability | null>;
   /** Look again at the requests cow is watching (of one thread, or all): flag the ones decided somewhere else. */
   settle(threadId?: string): Promise<void>;
+  /** The threads that have a request cow is watching. */
+  watching(): Promise<string[]>;
   /** Forget what is kept about a thread that bb has deleted. Capabilities and the log stay. */
   forget(threadId: string): Promise<void>;
 }
@@ -431,6 +433,10 @@ export function createCaps(deps: CapDeps): Caps {
 
     async heldBy(threadId) {
       return held(await capabilities(), threadId, await deps.ancestors(threadId));
+    },
+
+    async watching() {
+      return [...new Set((await readAll(PENDING, pendingSchema)).map((pending) => pending.threadId))];
     },
 
     checkRule: (rule) => checkedRule(rule, null),

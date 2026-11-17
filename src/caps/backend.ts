@@ -214,30 +214,41 @@ export function registerCaps(bb: BbPluginApi): Caps {
 
   const quietly = (what: string) => (cause: unknown) => bb.log.warn(`${what}: ${cause instanceof Error ? cause.message : String(cause)}`);
 
+  /** The threads with a request cow is watching: only their events are worth a look. */
+  let watched = new Set<string>();
+  const rewatch = () => caps.watching().then((ids) => void (watched = new Set(ids)));
+  const look = (threadId?: string) =>
+    caps
+      .settle(threadId)
+      .then(rewatch)
+      .catch(quietly("could not look at decided requests"));
+
   // A request raised: allowed at once when a capability covers it, and watched either way.
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
+    watched.add(thread.id);
     void caps.raised(thread.id, interaction).catch(quietly(`could not look at the request ${interaction.id}`));
   });
 
   // A watched request that is no longer pending was decided by someone: cow, or not.
+  // bb says a request was decided in the thread's events, a moment after it stops being pending.
   const settling = new Map<string, ReturnType<typeof setTimeout>>();
   const unsubscribe = bb.sdk.subscribe({
     event: "thread:changed",
     callback: (event) => {
-      if (typeof event.id !== "string" || !(event.changes ?? []).includes("interactions-changed")) return;
+      if (typeof event.id !== "string" || !watched.has(event.id)) return;
       const threadId = event.id;
       clearTimeout(settling.get(threadId));
       settling.set(
         threadId,
         setTimeout(() => {
           settling.delete(threadId);
-          void caps.settle(threadId).catch(quietly("could not look at decided requests"));
+          void look(threadId);
         }, 400),
       );
     },
   });
   // Events can be missed (a reconnect, a reload); the watched requests are looked at again every so often.
-  const sweep = setInterval(() => void caps.settle().catch(quietly("could not look at decided requests")), 20_000);
+  const sweep = setInterval(() => void look(), 20_000);
 
   // What was raised while cow was not running is looked at when it loads.
   const catchUp = setTimeout(() => {
@@ -250,7 +261,7 @@ export function registerCaps(bb: BbPluginApi): Caps {
         }
         if (page.length < 200) break;
       }
-      await caps.settle();
+      await look();
     })().catch(quietly("could not catch up on permission requests"));
   }, 2500);
 

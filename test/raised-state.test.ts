@@ -214,3 +214,45 @@ test("a line says when you have messaged the thread since it asked, and what to 
   assert.equal(parked.doing, `later · asks you: Question a? · ${MESSAGED_SINCE}`);
   assert.equal(parked.asks?.length, 1);
 });
+
+// ---- capabilities: a request for one, and a decision made outside cow ----------
+
+test("an ask for a capability says so on its line, instead of asks you", () => {
+  const wants = ask("a", 5, { question: "asks for a capability: write under /srv/reports", capability: { kind: "dir", rule: "/srv/reports" } });
+  assert.equal(asksText([wants]), "asks for a capability: write under /srv/reports");
+  assert.equal(asksText([wants, ask("b", 2)]), "asks for a capability: write under /srv/reports (and 1 more)");
+  const line = of(child({ status: "active" }), raised([wants]));
+  assert.equal(line.state, "wants");
+  assert.equal(line.doing, "asks for a capability: write under /srv/reports");
+});
+
+test("a request decided outside cow waits on the person until acknowledged, whatever the thread goes on to do", () => {
+  const flag = { id: "note_1", text: "approved outside cow: run: echo cow", at: NOW - 2 * MINUTE };
+  const flagged: Raised = { asks: [], brief: null, outside: [flag] };
+  for (const status of ["active", "idle"]) {
+    const line = of(child({ status }), flagged);
+    assert.equal(line.state, "wants", status);
+    assert.equal(line.waitingOnYou, true);
+    assert.equal(line.doing, "approved outside cow: run: echo cow · in bb's own view, or by another thread");
+    assert.equal(line.next, "acknowledge: Space");
+    assert.equal(line.since, flag.at);
+    assert.deepEqual(line.outside, [flag]);
+  }
+  const two = of(child(), { asks: [], brief: null, outside: [flag, { id: "note_2", text: "denied outside cow: run: echo moo", at: NOW - MINUTE }] });
+  assert.equal(two.doing, "approved outside cow: run: echo cow (and 1 more) · in bb's own view, or by another thread");
+  // Acknowledged, the line is as it would have been.
+  assert.equal(of(child(), raised()).state, "done");
+  assert.equal(of(child(), raised()).outside, undefined);
+});
+
+test("what holds a turn, and an open ask, come before a decision made outside cow, which is still on the line", () => {
+  const flag = { id: "note_1", text: "approved outside cow: run: echo cow", at: NOW - 2 * MINUTE };
+  const asking = of(child({ status: "active", hasPendingInteraction: true }), { asks: [], brief: null, outside: [flag] }, activity({ ask: { kind: "permission", text: "permission to run: echo moo", at: NOW - MINUTE } }));
+  assert.equal(asking.doing, "permission to run: echo moo");
+  assert.deepEqual(asking.outside, [flag]);
+  const withAsk = of(child(), { asks: [ask("a", 5)], brief: null, outside: [flag] });
+  assert.equal(withAsk.doing, "asks you: Question a?");
+  assert.deepEqual(withAsk.outside, [flag]);
+  // An archived thread shows nothing of it: the sheet still lists the notice.
+  assert.equal(of(child({ archivedAt: NOW - MINUTE }), { asks: [], brief: null, outside: [flag] }).outside, undefined);
+});

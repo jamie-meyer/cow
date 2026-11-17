@@ -4,7 +4,7 @@
 
 import type { Rule } from "./cap.ts";
 import { splitWords } from "./command.ts";
-import { type Places, type ProtectedPlace, isInside, protectedPlaces, readPath } from "./paths.ts";
+import { type Places, directoryRefusal, isInside, readPath } from "./paths.ts";
 
 /** What a request asks for, as far as a rule can cover it. */
 export type Request =
@@ -73,13 +73,13 @@ export function coversResolved(dir: string, paths: readonly string[], resolved: 
   if (resolved === null) return { covered: true };
   const realDir = readPath(resolved.get(dir) ?? "");
   if (!realDir.ok || realDir.segments.length === 0) return no("where the rule's directory really is could not be read");
-  const guarded: ProtectedPlace[] = protectedPlaces(places);
+  // Where the directory really is must itself be grantable: a link to a protected place is not.
+  const refused = directoryRefusal(realDir.segments, places);
+  if (refused !== null) return no(`the rule's directory resolves to ${realDir.path}, and ${refused}`);
   for (const path of paths) {
     const real = readPath(resolved.get(path) ?? "");
     if (!real.ok) return no(`where ${path} really is could not be read`);
     if (!isInside(realDir.segments, real.segments)) return no(`${path} resolves through a symbolic link to ${real.path}, outside ${realDir.path}`);
-    const place = guarded.find((entry) => isInside(entry.segments, real.segments) || entry.path === real.path);
-    if (place) return no(`${path} resolves to ${real.path}, inside ${place.path}`);
   }
   return { covered: true };
 }

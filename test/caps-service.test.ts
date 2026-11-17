@@ -280,6 +280,7 @@ test("a decision made on the page is cow's own; one made anywhere else is flagge
   await w.caps.raised("grandchild", w.commandRequest("pint_3", "echo baa"));
   await w.caps.settle();
   assert.deepEqual((await w.caps.state()).notices, []);
+  assert.deepEqual((await w.caps.watching()).sort(), ["child", "grandchild"]);
   await w.caps.decideOnPage("child", "pint_1", { decision: "allow_once", grantedPermissions: null });
   // Another thread, or bb's own view, decides the other two.
   w.states.set("pint_2", { status: "decided", decision: "allow_once" });
@@ -292,6 +293,7 @@ test("a decision made on the page is cow's own; one made anywhere else is flagge
   notices = (await w.caps.state()).notices;
   assert.deepEqual(notices.map((notice) => notice.text), ["approved outside cow: run: echo moo", "denied outside cow: run: echo baa"]);
   assert.deepEqual(await kinds(w), ["decided", "outside", "outside"]);
+  assert.deepEqual(await w.caps.watching(), []);
   await w.caps.acknowledge(notices[0]!.id);
   assert.equal((await w.caps.state()).notices.length, 1);
 });

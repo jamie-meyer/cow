@@ -94,7 +94,8 @@ export function useCapSteps(host: CapStepsHost): CapStepsControl {
     else set(before);
   };
   const fieldKeys = (event: { key: string; preventDefault(): void; stopPropagation(): void }) => {
-    if (event.key !== "Enter" && event.key !== "Escape" && !(event.key === "Tab" && draft.stage === "rule" && draft.kind === "command")) return;
+    // Tab never leaves the field: on a command's rule it switches between the exact line and a prefix.
+    if (event.key !== "Enter" && event.key !== "Escape" && event.key !== "Tab") return;
     event.preventDefault();
     event.stopPropagation();
     if (event.key === "Enter") confirm();

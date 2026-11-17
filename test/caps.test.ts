@@ -76,9 +76,12 @@ test("the root, the home directory and what contains it are refused", () => {
   assert.match((refused("///") as { why: string }).why, /root of the filesystem/);
   assert.match((refused("/Users/pat") as { why: string }).why, /home directory/);
   assert.match((refused("/Users/pat/") as { why: string }).why, /home directory/);
-  assert.match((refused("/Users") as { why: string }).why, /contains your home directory/);
+  assert.match((refused("/Users") as { why: string }).why, /where home directories are kept/);
+  assert.match((readDirectoryRule("/srv", { home: "/srv/people/pat", dataDir: null }) as { why: string }).why, /contains your home directory/);
   assert.equal(refused("/Users/pat/work").ok, true);
-  assert.equal(refused("/Users/patricia").ok, true);
+  // Another account's home is a home too; what is inside it, outside the protected places, is not.
+  assert.equal(refused("/Users/patricia").ok, false);
+  assert.equal(refused("/Users/patricia/work").ok, true);
   assert.equal(refused("/tmp/scratch").ok, true);
 });
 
@@ -114,6 +117,19 @@ test("bb's data directory is refused wherever it is, and an unknown home refuses
   assert.equal(readDirectoryRule("/srv/other", elsewhere).ok, true);
   assert.equal(directoryRefusal(["tmp", "x"], { home: null, dataDir: null }), null);
   assert.notEqual(directoryRefusal([], { home: null, dataDir: null }), null);
+});
+
+test("any account's home, on any machine, is refused the same way, and so is root's", () => {
+  // A thread may run on a machine whose home is not the server's.
+  for (const path of ["/Users/sam", "/home/sam", "/home/sam/.ssh", "/Users/sam/.aws/cli", "/HOME/Sam/.Config", "/root", "/root/.ssh", "/var/root", "/private/var/root/.ssh", "/Users", "/home", "/Users/sam/Library", "/var", "/private"]) {
+    assert.equal(readDirectoryRule(path, PLACES).ok, false, path);
+    assert.equal(readDirectoryRule(path, { home: null, dataDir: null }).ok, false, `${path}, with no home known`);
+  }
+  for (const path of ["/Users/sam/work", "/home/sam/src/app", "/root/build", "/srv/reports", "/var/tmp/x", "/Users/Shared/drop", "/homework"]) {
+    assert.equal(readDirectoryRule(path, PLACES).ok, true, path);
+  }
+  assert.match((readDirectoryRule("/home/sam", PLACES) as { why: string }).why, /a home directory/);
+  assert.match((readDirectoryRule("/Users/pat", PLACES) as { why: string }).why, /your home directory/);
 });
 
 test("a directory rule is trimmed at its ends and otherwise read strictly", () => {

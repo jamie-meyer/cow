@@ -98,21 +98,51 @@ export function protectedPlaces(places: Places): ProtectedPlace[] {
   return found;
 }
 
+/** Where home directories are kept: a thread may run on a machine whose home is not this one's. */
+const HOME_PARENTS: readonly string[] = ["users", "home"];
+/** The home directories of root. */
+const ROOT_HOMES: readonly (readonly string[])[] = [["root"], ["var", "root"], ["private", "var", "root"]];
+
+/**
+ * The home directory a path is in, or is, going by where home directories
+ * are kept (`/Users/<name>`, `/home/<name>`, root's own): the refusals hold
+ * for any account on any machine, not only for the home `Places` names.
+ */
+function homeAround(segments: readonly string[]): string[] | null {
+  if (segments.length >= 2 && HOME_PARENTS.includes(fold(segments[0]!))) return segments.slice(0, 2);
+  const root = ROOT_HOMES.find((home) => home.length <= segments.length && home.every((segment, index) => fold(segments[index]!) === segment));
+  return root ? segments.slice(0, root.length) : null;
+}
+
 /**
  * Why a directory may not be granted, or null when it may. `segments` is a
  * path already read with `readPath`.
  */
 export function directoryRefusal(segments: readonly string[], places: Places): string | null {
   if (segments.length === 0) return "it is the root of the filesystem: that is everything";
-  const home = places.home === null ? null : readPath(places.home);
-  if (home?.ok) {
-    if (sameFolded(segments, home.segments)) return "it is your home directory: shell start-up files, keys and every tool's configuration are in it";
-    if (insideFolded(segments, home.segments)) return `it contains your home directory (${home.path})`;
+  if (segments.length === 1 && HOME_PARENTS.includes(fold(segments[0]!))) return `it is where home directories are kept: it contains every one of them`;
+  if (ROOT_HOMES.some((home) => insideFolded(segments, home))) return "it contains root's home directory";
+  const around = homeAround(segments);
+  const homes = [places.home, around === null ? null : `/${around.join("/")}`].filter((home): home is string => home !== null);
+  for (const raw of homes) {
+    const home = readPath(raw);
+    if (!home.ok) continue;
+    if (sameFolded(segments, home.segments)) return `it is ${raw === places.home ? "your" : "a"} home directory: shell start-up files, keys and every tool's configuration are in it`;
+    if (insideFolded(segments, home.segments)) return `it contains ${raw === places.home ? "your" : "a"} home directory (${home.path})`;
   }
-  for (const place of protectedPlaces(places)) {
-    if (sameFolded(segments, place.segments)) return `it is ${place.path}: ${place.what}`;
-    if (insideFolded(place.segments, segments)) return `it is inside ${place.path}: ${place.what}`;
-    if (insideFolded(segments, place.segments)) return `it contains ${place.path}: ${place.what}`;
+  for (const home of homes) {
+    for (const place of protectedPlaces({ home, dataDir: places.dataDir })) {
+      if (sameFolded(segments, place.segments)) return `it is ${place.path}: ${place.what}`;
+      if (insideFolded(place.segments, segments)) return `it is inside ${place.path}: ${place.what}`;
+      if (insideFolded(segments, place.segments)) return `it contains ${place.path}: ${place.what}`;
+    }
+  }
+  // With no home known at all, bb's data directory is still protected.
+  if (homes.length === 0) {
+    for (const place of protectedPlaces({ home: null, dataDir: places.dataDir })) {
+      if (sameFolded(segments, place.segments) || insideFolded(place.segments, segments)) return `it is ${place.path}, or inside it: ${place.what}`;
+      if (insideFolded(segments, place.segments)) return `it contains ${place.path}: ${place.what}`;
+    }
   }
   return null;
 }

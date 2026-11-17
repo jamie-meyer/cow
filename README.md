@@ -594,16 +594,19 @@ A directory rule is refused, with the reason, when it is:
 - relative, or starts with `~` (only a shell expands that), or has a `..` in
   it, or has a control character in it, or is longer than 1,024 characters;
 - the root of the filesystem;
-- your home directory, or a directory that contains it (shell start-up files
-  live in the home directory itself);
+- a home directory, or a directory that contains one (shell start-up files
+  live in the home directory itself). That is your home directory on the
+  machine bb's server runs on, and, because a thread may run on another
+  machine or as another account, any `/Users/<name>` or `/home/<name>`, and
+  root's own;
 - one of the protected places, inside one, or a directory that contains
   one. The protected places are bb's data directory (which holds cow's own
   storage and every thread's storage, worktrees bb manages included) and,
-  under your home directory: `.bb`, `.claude`, `.codex`, `.ssh`, `.aws`,
-  `.azure`, `.kube`, `.docker`, `.config`, `.gnupg`, `.password-store`,
-  `.local/share/keyrings` and `Library/Keychains`. These comparisons ignore
-  case and Unicode form, because the disk does. The list is in one place,
-  `PROTECTED_IN_HOME` in `src/caps/paths.ts`;
+  under any of those home directories: `.bb`, `.claude`, `.codex`, `.ssh`,
+  `.aws`, `.azure`, `.kube`, `.docker`, `.config`, `.gnupg`,
+  `.password-store`, `.local/share/keyrings` and `Library/Keychains`. These
+  comparisons ignore case and Unicode form, because the disk does. The list
+  is in one place, `PROTECTED_IN_HOME` in `src/caps/paths.ts`;
 - on the machine bb's server runs on: a directory that is a symbolic link to
   any of the above.
 
@@ -744,8 +747,10 @@ So, plainly:
   check out, or remove the plugin and its storage. A missing or broken log is
   itself the sign.
 - **Requests are watched only while cow runs.** A request raised and decided
-  while the plugin is disabled, or reloading, is not flagged. What is still
-  pending when cow loads is looked at then.
+  entirely while the plugin was disabled, or reloading, is never seen. One
+  that cow saw raised, and finds decided when it loads again, is flagged: cow
+  did not make that decision. What is still pending when cow loads is looked
+  at then, and allowed if a capability covers it.
 - cow reads bb 0.49 with the Claude Code provider, as elsewhere on this page.
 
 The log and the notices are for noticing. What you allow is still decided by
