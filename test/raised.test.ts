@@ -123,6 +123,9 @@ function cli(caller: string | null = "child") {
     nextChecked: async () => {
       throw new Error("unused");
     },
+    waitChecked: async () => {
+      throw new Error("unused");
+    },
     todoChecked: async () => {
       throw new Error("unused");
     },

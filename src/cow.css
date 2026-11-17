@@ -1801,3 +1801,26 @@
   font: 11px/19px var(--cow-mono);
   color: var(--cow-faint);
 }
+
+/* A line marked seen here stays in its place, dimmed, until the page is loaded again. */
+.cow-ln.cow-kept {
+  opacity: 0.62;
+}
+.cow-ln.cow-kept.cow-cur {
+  opacity: 0.8;
+}
+.cow-keptmark {
+  color: var(--cow-faint);
+}
+/* Waiting on someone else: what it waits on reads plainly, not as something to act on. */
+.cow-ln.cow-d-waiting .cow-wh {
+  color: var(--cow-muted);
+}
+.cow-ln[data-cow-wait="due"] .cow-wh {
+  color: var(--cow-ink);
+}
+/* A chat opened from a link to a thread that is not under this Main. */
+.cow-outside-main {
+  color: var(--cow-needs);
+  font-size: 0.85em;
+}

@@ -47,7 +47,7 @@ committed to this repository, and there is no release asset to download.
 Check that it is there:
 
 ```sh
-bb plugin list        # cow@0.2.1  running
+bb plugin list        # cow@0.2.2  running
 bb cow help
 ```
 
@@ -64,7 +64,7 @@ Other ways bb can install it, and when to prefer them:
 | Command | Follows | Use it when |
 | --- | --- | --- |
 | `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.1` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
+| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.2` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
 
@@ -123,6 +123,7 @@ thread's name, what it is doing or waiting on, and the next move.
 | ● | wants you | it asked you something, or replied to you and you have not seen it |
 | ⊘ | blocked on a permission | bb refused it a command or a file change without asking you |
 | ▶ | running | a turn is in progress |
+| ◷ | waiting | on someone other than you: a reviewer, CI, someone outside the team; said by its agent or by you with `w` |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
 | ‖ | parked | you set it aside; it is on the shelf until it comes back |
 | ✕ | failed | its last turn ended in an error |
@@ -133,8 +134,17 @@ thread's name, what it is doing or waiting on, and the next move.
 **The queue.** Only what is yours, oldest first: asks, questions, permission
 requests, permissions bb refused without asking, failures, briefs with
 disputes or judgement calls, replies addressed to you, parked work that has
-come back, capabilities you have not acknowledged, and permission requests
-decided somewhere other than cow. `Tab` and `1` to `9` jump to an entry.
+come back, work waiting on someone else whose reminder has come,
+capabilities you have not acknowledged, and permission requests decided
+somewhere other than cow. `Tab` and `1` to `9` jump to an entry. A reply you
+mark seen leaves the queue but its line stays where it is, dimmed, until you
+reload the page.
+
+**Waiting on someone else.** A thread whose next move is a reviewer's, CI's
+or anyone's but yours says so with `bb cow wait`, or you do with `w`. Its
+line keeps its place and reads "waiting on the reviewer · 3d", out of the
+queue. It clears when the thread starts a new turn. With a reminder it comes
+back to the queue on that day, and `a` keeps it waiting or takes it back.
 
 **Answering, and permissions.** `a` opens whatever the line asks under the
 line. A digit only marks a choice and `Enter` sends it, so no single key
@@ -179,8 +189,10 @@ is accepted only when it is signed by a key your browser holds. The first page t
 any other browser asks and is approved from an enrolled one. This has limits,
 stated in [What cow stores and sends](#what-cow-stores-and-sends).
 
-**The reader.** A file named in a chat, a brief or an ask opens over the
-page, read-only, with vim's keys for moving and searching.
+**The reader, and links.** A file named in a chat, a brief or an ask opens
+over the page, read-only, with vim's keys for moving and searching. A link to
+a thread in the chat opens that thread in the pane instead of bb's chat page;
+`Esc` goes back to the chat you came from.
 
 ## Keys
 
@@ -199,7 +211,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | `Tab` | next entry in the queue of what waits on you (Shift+Tab previous) |
 | `1` to `9` | jump to that entry in the queue |
 | `/` | filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels |
-| `f` | letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader |
+| `f` | letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader, and one on a link to a thread opens that thread in the pane |
 
 **Reading a thread and talking to it**
 
@@ -210,7 +222,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | `;` `'` | scroll the open chat down, up a few lines, from the overview; : and " by half a page; \ goes to its newest message |
 | `i` | type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main |
 | `I` | say something to the selected thread |
-| `Esc` | leave the chat, then close it; cancel a prompt |
+| `Esc` | leave the chat, then close it; after following a link to a thread in the chat, it first goes back to the chat you came from, as many times as you followed one; cancel a prompt |
 
 **Dealing with what waits on you**
 
@@ -218,7 +230,8 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `a` | answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card |
 | `b` | open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes |
-| `Space` | mark a reply as seen: the line stops waiting on you; on a line whose request was decided outside cow, acknowledge that |
+| `Space` | mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line whose request was decided outside cow, acknowledge that |
+| `w` | say the line is waiting on someone else: who or what, then a reminder (19 Nov, +3d, +2w) or nothing. On a waiting line, w clears it (y confirms); when its reminder comes, a keeps it waiting or takes it back |
 
 **Setting work aside, ending it, taking it back**
 
@@ -226,9 +239,9 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `p` | park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing |
 | `r` | resume a parked line: back into the tree |
-| `e` | archive a done, idle or failed line: a reason or nothing, then Enter |
+| `e` | archive a done, idle, waiting or failed line: a reason or nothing, then Enter |
 | `x` | stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it |
-| `u` | undo the last park, resume, archive, dismissal, mark as seen or project mark (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone |
+| `u` | undo the last park, resume, archive, dismissal, mark as seen, project mark or wait (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone |
 | `P` | mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree |
 | `J` `K` | move a not-started item down, up its list |
 
@@ -275,6 +288,7 @@ bb cow caps                                      # the capabilities your thread 
 bb cow caps log
 bb cow cap request --kind dir|command --rule <text> --why <text>
 bb cow next <thread> "<text>" | --clear          # what is next, in the thread's own words
+bb cow wait <thread> --on <who> [--for <what>] [--remind <date|+3d|+2w>] | --clear
 bb cow todo add|done|rm|list <thread> ...        # work not started
 bb cow project <thread> [--clear]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
@@ -302,7 +316,7 @@ no storage of its own outside bb.
 | Where | What |
 | --- | --- |
 | bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys |
-| the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, whether it is marked a project |
+| the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project |
 | the same database, table `plugin_settings` | the four settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
 | `plugins/snapshots/cow` under bb's data directory, written by bb | when you update cow, bb's own copy of what cow had stored before the update, kept to roll back to if the new version fails to start |
@@ -379,6 +393,10 @@ An agent **can**, through cow:
 - ask for a capability, which raises an ask and grants nothing;
 - write a "next" note, a list of work not started, and the project mark, on
   its own thread and the threads under it;
+- say its own thread, or one under it, waits on someone other than you.
+  **This takes a reply addressed to you out of your queue** until the
+  thread starts a new turn; the line stays in the tree and says who it waits
+  on, and anything else that needs you still shows first;
 - **park, resume and archive threads with a reason. This takes a line out of
   your queue**, with whatever it was waiting on you for. It stays on the
   page: a parked line is on the Parked shelf with its reason and comes back
@@ -494,9 +512,10 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   seen, dismissing a refusal and marking a brief read, the same script was
   run by a sandboxed fixture against 0.2.0, where all three worked by both
   routes, and against 0.2.1, where none does. What the unsigned methods can
-  change was read from the code, and for parking, archiving and running a
-  check again it is pinned by unit tests (`test/set-aside.test.ts`,
-  `test/briefs.test.ts`).
+  change was read from the code, and for parking, archiving, running a
+  check again and saying a thread waits on someone else it is pinned by
+  unit tests (`test/set-aside.test.ts`, `test/briefs.test.ts`,
+  `test/waiting.test.ts`).
 - *The checker's message.* It is one function, `checkerPrompt` in
   `src/briefs/checker.ts`.
 

@@ -197,6 +197,7 @@ test("bb cow project marks and clears, and says which thread is asking", async (
     status: unused,
     nextChecked: unused,
     todoChecked: unused,
+    waitChecked: unused,
     projectChecked: async (args) => (calls.push(args), { title: "T", project: args.on ? { at: NOW, by: args.callerId } : null }),
   });
   const command = cli.commands?.find((entry) => entry.name === "project");

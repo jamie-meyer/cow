@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -13,6 +13,7 @@ Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Re
 | ● | wants you | it has an ask open for you, it asked a question or for permission, one of its permission requests was decided outside cow, its brief has disputes or judgement calls you have not read, or it finished with a reply addressed to you that you have not seen |
 | ⊘ | blocked on a permission | bb refused it a command or a file change without asking you; `a` asks again as you |
 | ▶ | running | a turn is in progress |
+| ◷ | waiting | its next move is someone else's, not yours: said with `bb cow wait` or `w`; see "Waiting on someone else" |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
 | ‖ | parked | you set it aside with `p`; it is on the shelf until it comes back |
 | ✕ | failed | its last turn ended in an error; stays in the queue |
@@ -31,9 +32,13 @@ Two more marks sit beside a title, and say nothing about the thread's state:
 When several things wait on you at once, a line shows the first of: a
 failure; a question or permission request raised in its chat, which holds a
 running turn; an open ask; a request of its own that was decided outside cow;
-a permission bb refused; a brief with disputes or judgement calls; a reply
-addressed to you. The others are still there when
-that one is dealt with.
+a permission bb refused; a brief with disputes or judgement calls. With none
+of those, it shows the first of: a running turn; waiting on someone else; a
+reply addressed to you; idle or done. So waiting gives way to everything that
+needs you, and a thread that has said it is waiting does not read "replied
+to you" for the turn in which it said so. The others are still there when
+that one is dealt with. This order lives in one place, `derive` in
+`src/state.ts`.
 
 A line does not read done for a moment between its turn ending and cow
 reading how it ended: a thread bb says is at rest, whose newest turn event
@@ -134,6 +139,14 @@ It is set when you:
 - send it a message from the page (`I`, or `i` for a Main that has a
   parent);
 - press `Space` on its line. `u` takes that one back.
+
+A line marked seen this way does not jump away. If its new state would move
+it to another section (a worker that is now done goes to Done), it stays
+where it is, dimmed, with its new state and "seen, stays here until reload"
+beside its name, and the cursor stays on it. It moves when the page is loaded
+again, or when you park or archive it. This is the page's display alone:
+what is stored, and `bb cow status`, show it where its state puts it. `u`
+still takes the mark back.
 
 A message you send the thread later, from anywhere in bb, also clears it:
 you evidently read it. A reply that comes after the one you saw waits on
@@ -246,7 +259,23 @@ never in bb's side panel. It opens from a click or a hint on:
 
 cow hears the click before bb does, so bb's panel never opens. A click with
 Cmd, Ctrl, Alt or Shift held is left to bb: on a file row it unfolds the diff
-in the chat, as it did. If bb opens a file tab on cow's page some other way,
+in the chat, as it did.
+
+A link to a thread in the chat opens that thread in cow's pane, not in bb's
+own chat page. bb draws two kinds, and cow knows both: a mention of a thread
+in a message (`@thread:thr_…`, drawn as a pill with the thread's name), and
+its own link to a thread above the composer, the parent's name. A plain
+click, or a hint with `f`, switches the pane to that thread exactly as
+`Enter` on its line would, opening a chat marks its reply seen and signs
+that as it always does, and the cursor moves to its line when it is on the
+page, unfolding the groups around it. A thread that is not under this Main
+opens all the same, with "not under this Main" in the pane's header. A
+thread bb has not told the page about, and a click with Cmd, Ctrl, Alt or
+Shift, are left to bb. `Esc` then goes back to the chat you followed the
+link from, one link at a time, before it closes the pane; `Enter`, `m` and
+closing the pane start the way back afresh. bb shows no row of its own for a
+thread an agent starts by running `bb thread spawn`, only the command, so
+there is nothing there to follow. If bb opens a file tab on cow's page some other way,
 cow closes it in the same moment and shows the file in the reader.
 
 The heading gives the file's path under its root, which root that is
@@ -701,9 +730,43 @@ pick-up, and `x` drops it. Resuming only removes the note: the line returns
 to the tree in whatever state bb gives it, and the agent is told nothing.
 `I` says something to it if you want it to carry on.
 
+## Waiting on someone else
+
+Much work waits on someone who is not you: a reviewer, CI, a person outside
+the team. Such a line is not yours to act on, and should neither sit in your
+queue nor read as idle or done.
+
+- **Setting it.** An agent runs `bb cow wait <thread> --on "<who or what>"
+  [--for "<what is needed>"] [--remind <date|+3d|+2w>]`, on its own thread
+  or one under it, as with `bb cow next`; a command run with no thread
+  named, as from your terminal, may set it on any. On the page, `w` on a
+  line asks who or what, then for a reminder or nothing. The reminder is
+  read as a park's pick-up is, except that a condition in words is refused:
+  it has to be a day.
+- **What it shows.** The line keeps its place in the tree, with the mark ◷,
+  in state waiting, and says "waiting on the reviewer · 3d" (and what for,
+  when that was said). Its next move says when it reminds you. It is not in
+  the queue, and `bb cow status` lists it as waiting.
+- **Where it ranks.** It gives way to everything that needs you (see
+  "States"), and to a running turn, and it outranks a reply addressed to
+  you, idle and done.
+- **Clearing it.** It clears by itself when the thread starts a new turn,
+  whoever starts it: something has happened. An agent that is still waiting
+  after that turn sets it again. It also clears with `bb cow wait <thread>
+  --clear`, with `w` on a waiting line (`y` confirms), and when the thread is
+  parked or archived.
+- **The reminder.** When its day comes, the line enters the queue as "still
+  waiting on the reviewer after 3 days". `a` on it offers `1` keep waiting,
+  with a new reminder or none, or `2` it is back with me, which clears it.
+  Without a reminder it never enters the queue for this reason.
+
+`u` takes back setting, keeping or clearing it from the page. The note is
+kept with cow's other notes on the thread, in its plugin metadata, and is
+not signed: see "What is not signed, method by method".
+
 ## Archiving, with a reason
 
-`e` on a done or failed line asks why, on one line. `Enter` archives; on an
+`e` on a done, idle, waiting or failed line asks why, on one line. `Enter` archives; on an
 empty line it archives without a reason. `Esc` cancels. Dropping parked work
 that came back (`x`) asks the same way before it stops and archives it.
 
@@ -718,8 +781,8 @@ without one.
 ## Undo
 
 `u` takes back the last park, resume, archive (it unarchives), dismissal of
-a refused permission, or mark as seen made with `Space`, then the one
-before, for as long as the page stays open. Taking back a dismissal or a
+a refused permission, mark as seen made with `Space`, project mark, or wait
+set, kept or cleared with `w` or `a`, then the one before, for as long as the page stays open. Taking back a dismissal or a
 mark as seen is signed, like making it. Five things cannot be undone, and they say so: stopping a turn,
 answering a question, answering an ask, deciding a permission request, and sending a message.
 Deleting a capability has its own undo, `u` in the capabilities sheet.
@@ -1066,12 +1129,13 @@ agent and stop no other.
 
 | Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
 | --- | --- | --- | --- |
-| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks), asks, briefs, capabilities, the log, the keys | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits), asks, briefs, capabilities, the log, the keys | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
 | `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, their open asks included. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask stays in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. Removing a note only puts a line back |
 | `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Done with its reason for two days, and counted there after that. cow could not stop this by signing it: `bb thread archive` is bb's and does the same |
 | `archive_note_set` | sets or forgets the reason kept for an archived thread | the page, when an archive is undone or redone | the reason shown under Done can be changed or removed. It archives nothing and moves nothing |
+| `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
 | `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it changes whose its replies are: one that ended a turn you did not start stops reading "replied to you" and leaves the queue, and the line reads done, under Done, instead of idle in the tree. Marking only adds to what waits on you |
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
 | `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's, which a caller can make fail by naming a model that does not exist. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
@@ -1093,6 +1157,7 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `brief submit` | stores a new version of a thread's brief and has it checked | the new version replaces the one that waited. If its check disputes nothing and it lists no judgement call, nothing waits, and the disputes of the version before are no longer in front of you; every version is kept and `bb cow brief show <thread> --version <n>` prints it |
 | `brief check` | as `brief_check` above; refused to the thread the brief is from when it names itself | as `brief_check`: it costs a run and cannot take a waiting brief out of your queue |
 | `cap request` | raises an ask for a capability and writes "requested" in the log | adds to your queue and grants nothing |
+| `wait`, `wait --clear` | as `wait_set` above, for the caller's thread or one under it | as `wait_set`: a reply addressed to you leaves the queue while the thread is said to be waiting, and the line says who on |
 | `next`, `todo add`, `todo done`, `todo rm` | the thread's own line of what is next, and its list of work not started | the next-move column of a line that waits on nothing shows the agent's words, marked as its own. A line with a note or a list stays in the tree instead of going to Done. Nothing leaves the queue |
 | `project`, `project --clear` | as `project_set` above | as `project_set` |
 | `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date |
@@ -1101,8 +1166,8 @@ seen, dismissing a refusal and marking a brief as read were three more.
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked or archived.** Nothing else of cow's that is
 unsigned takes an entry out of it, apart from a thread withdrawing or
-closing an ask, replacing its brief with a new version, or taking a project
-mark off. What bb's own commands can do to it is under "What cow cannot
+closing an ask, replacing its brief with a new version, taking a project
+mark off, or saying it waits on someone else, which hides only a reply. What bb's own commands can do to it is under "What cow cannot
 guarantee". So the Parked shelf and Done are the two places to look
 for something an agent set aside, and each line there says why it is there.
 
@@ -1196,6 +1261,7 @@ bb cow archive <thread> [--reason <text>]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
+bb cow wait <thread> --on <who or what> [--for <what is needed>] [--remind <date|+3d|+2w>] | --clear
 bb cow project <thread> [--clear]
 bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
@@ -1211,6 +1277,7 @@ bb cow help
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
 | `next` | sets, or with `--clear` removes, the one line that says what happens next for a thread |
+| `wait` | says, or with `--clear` stops saying, that a thread waits on someone other than you; see "Waiting on someone else" |
 | `project` | marks a thread as a project, or with `--clear` takes the mark off: it then reads idle, never done, until it is archived |
 | `todo add` | adds a piece of work not started to the end of a thread's list; the list holds 12 |
 | `todo done`, `todo rm` | take item `n` off the list: its work has started, or it will not be done |
@@ -1223,7 +1290,7 @@ counted. `park` refuses a thread whose turn is running unless `--stop` is
 given, which stops the turn first, as the page does after asking. A refused
 command exits non-zero and says why; every command takes `--json`.
 
-`next`, `todo` and `project` may be run by a thread only on itself and on the threads
+`next`, `wait`, `todo` and `project` may be run by a thread only on itself and on the threads
 under it; bb tells the command which thread is calling, and any other
 target is refused. `status` shows each thread's note and list, and for a
 group what is under it by state.

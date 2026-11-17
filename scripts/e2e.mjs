@@ -59,6 +59,8 @@
 //   --only-reader       only the reader, projects, asks answered in chat and
 //                       chat scrolling: four fixtures, and --environment must
 //                       be a checkout of cow, whose files the fixture links to
+//   --only-waiting      only waiting on someone else, links to threads in the
+//                       chat, and seen lines staying in place: four fixtures
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -213,6 +215,14 @@ From then on:
 Never run anything else, and never ask again by yourself.`;
 
 const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader", "cmain", "chead", "ckid"];
+/** The fixtures of the waiting, thread link and seen checks: a Main of their own with two threads under it, and a thread under no Main. */
+const WAITING = ["wmain", "wkid", "wlink", "wother"];
+const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
+From then on, when you receive a message of the form "links A B C", where A, B and C are thread ids, reply with exactly these three lines, putting each id in its place:
+- first: @thread:A
+- second: @thread:B
+- third: @thread:C
+Reply to anything else with exactly: ok`;
 /** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
 const RAISED = ["amain", "asker", "briefer"];
 
@@ -226,7 +236,7 @@ const RAISED = ["amain", "asker", "briefer"];
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -254,6 +264,10 @@ async function fixtures() {
   await make("cmain", { prompt: QUIET });
   await make("chead", { prompt: CAPS, parent: ids.cmain, permissionMode: "accept-edits" });
   await make("ckid", { prompt: CAPS, parent: ids.chead, permissionMode: "accept-edits" });
+  await make("wmain", { prompt: QUIET });
+  await make("wkid", { prompt: QUIET, parent: ids.wmain });
+  await make("wlink", { prompt: LINKER, parent: ids.wmain });
+  await make("wother", { prompt: QUIET });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -268,9 +282,10 @@ async function reset(ids) {
     await signer.must("dismissal_set", { threadId: id, dismissal: null });
     await signer.must("seen_set", { threadId: id, seen: null });
     await cow("next", id, "--clear");
+    await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1418,6 +1433,194 @@ Never retry a denied call within the same message, and never use any other tool.
 /** The fixtures of the capability checks: a Main of their own, a thread under it, and a thread under that. */
 const CAPPED = ["cmain", "chead", "ckid"];
 
+// ---- waiting on someone else, links to threads, seen lines stay ----------
+
+async function prepareWaiting(ids) {
+  for (const name of WAITING) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  // The linker writes its mentions once; a later run finds them in its chat.
+  const said = (await api(`/threads/${ids.wlink}/output`)).output ?? "";
+  if (!said.includes(`@thread:${ids.wkid}`) || !said.includes(`@thread:${ids.wother}`)) {
+    // Told as Main would, so its answer is not a reply addressed to the person.
+    await tellAs(ids.wmain, ids.wlink, `links ${ids.wkid} ${ids.wother} ${ids.wmain}`);
+    await sleep(3000);
+    await waitForThread(ids.wlink, (t) => t.status === "idle", "the links written");
+  }
+  // Every run starts with every reply seen.
+  for (const name of WAITING) {
+    const id = ids[name];
+    const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+    if (end !== undefined) await signer.must("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+  }
+}
+
+async function waitingChecks(page, ids, shot, chooseMain) {
+  await prepareWaiting(ids);
+  await chooseMain(page, ids.wmain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const stateOf = (id) => `(${lineEl(id)}?.dataset.cowState ?? null)`;
+  const waitOf = (id) => `(${lineEl(id)}?.dataset.cowWait ?? null)`;
+  const inTree = (id) => `(${lineEl(id)}?.dataset.cowDepth !== undefined)`;
+  const inQueue = (id) => `!!document.querySelector('[data-cow-queue="${id}"]')`;
+  const doing = (id) => `(() => { const cell = ${lineEl(id)}?.querySelector(".cow-wh")?.cloneNode(true); cell?.querySelector(".cow-nx2")?.remove(); return cell?.textContent ?? ""; })()`;
+  const pane = `(document.querySelector("[data-cow-pane]")?.dataset.cowPane ?? null)`;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+  };
+  const waits = async () => (await rpc("notes_list", { threadIds: [ids.wkid] })).waits[ids.wkid] ?? null;
+  const offset = async (ms) =>
+    page.eval(`${ms === 0 ? `sessionStorage.removeItem("cow:test-clock-offset-ms")` : `sessionStorage.setItem("cow:test-clock-offset-ms", "${ms}")`};
+      window.dispatchEvent(new Event("cow:test-clock")); true`);
+  const DAY = 86_400_000;
+  const kid = ids.wkid;
+
+  // -- set by an agent --
+  const stranger = await cowAs(ids.wother, "wait", kid, "--on", "the reviewer");
+  check("bb cow wait: a thread may not set it on a thread that is not under it", stranger.code !== 0 && /only for itself/.test(stranger.stderr), stranger.stderr.trim());
+  const vague = await cowAs(ids.wmain, "wait", kid, "--on", "CI", "--remind", "when CI is green");
+  check("bb cow wait: a reminder in words is refused", vague.code !== 0 && /a reminder is a day/.test(vague.stderr), vague.stderr.trim());
+  const set = await cowAs(ids.wmain, "wait", kid, "--on", "the reviewer", "--for", "an approving review");
+  check("bb cow wait: the thread above it sets it", set.code === 0, set.stderr.trim());
+  await page.waitFor(`${stateOf(kid)} === "waiting"`, { label: "the line waiting" });
+  check(
+    "a waiting line keeps its place in the tree, says on whom and for how long, and is not in the queue",
+    (await page.eval(inTree(kid))) && /waiting on the reviewer: an approving review · \d+[mhdw]/.test(await page.eval(doing(kid))) && !(await page.eval(inQueue(kid))),
+    await page.eval(doing(kid)),
+  );
+  check("it has the waiting mark", await page.eval(`!!${lineEl(kid)}?.querySelector("svg.cow-s-waiting")`));
+  const status = (await cow("status", "--main", ids.wmain)).stdout;
+  check("bb cow status shows it waiting", status.includes(`(${kid})`) && /waiting\s+\S+\s+cow test \(thr_\w+\)\s+waiting on the reviewer/.test(status));
+  await shot("waiting");
+
+  // -- a new turn clears it; waiting outranks a reply --
+  await tellAs(null, kid, "hello");
+  await sleep(3000);
+  await waitForThread(kid, (t) => t.status === "idle", "its reply");
+  await page.waitFor(`${stateOf(kid)} === "wants" && ${inQueue(kid)}`, { label: "its reply waiting on the person", timeout: 30_000 });
+  check("a new turn clears the wait, and its reply waits on the person", (await page.eval(waitOf(kid))) === null);
+  await cowAs(ids.wmain, "wait", kid, "--on", "CI");
+  await page.waitFor(`${stateOf(kid)} === "waiting" && !${inQueue(kid)}`, { label: "waiting again" });
+  check("set again, waiting outranks the reply addressed to the person: it leaves the queue", true);
+
+  // -- w clears it, u puts it back --
+  await select(kid);
+  await page.key("w");
+  await page.waitFor(`${mode} === "wait"`, { label: "the clear prompt" });
+  await page.key("y");
+  await page.waitFor(`${stateOf(kid)} === "wants" && ${inQueue(kid)}`, { label: "cleared" });
+  check("w on a waiting line clears it, after y: its reply is back in the queue", (await waits()) === null);
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${stateOf(kid)} === "waiting"`, { label: "the wait back" });
+  check("u puts the wait back", (await waits())?.on === "CI");
+
+  // -- w sets it from the page, with a reminder; the reminder comes --
+  await cow("wait", kid, "--clear");
+  await page.waitFor(`${stateOf(kid)} === "wants"`, { label: "cleared from the CLI" });
+  await select(kid);
+  await page.key("w");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "wait-on"`, { label: "who it waits on" });
+  await page.type("the reviewer");
+  await page.key("Enter");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "wait-remind"`, { label: "the reminder" });
+  await page.type("+3d");
+  await page.key("Enter");
+  await page.waitFor(`${stateOf(kid)} === "waiting" && ${waitOf(kid)} === ""`, { label: "waiting with a reminder" });
+  const stored = await waits();
+  check("w asks who or what, then a reminder; the note is stored with the day", stored?.on === "the reviewer" && Math.abs((stored?.remindAt ?? 0) - (Date.now() + 3 * DAY)) < DAY && !(await page.eval(inQueue(kid))), JSON.stringify(stored));
+  await offset(4 * DAY);
+  await page.waitFor(`${inQueue(kid)} && ${waitOf(kid)} === "due"`, { label: "the reminder in the queue" });
+  const queued = await page.eval(`document.querySelector('[data-cow-queue="${kid}"]')?.textContent ?? ""`);
+  check("when the reminder comes the line enters the queue: still waiting on whom, after how long", /still waiting on the reviewer after 4 days/.test(queued), queued);
+  await shot("waiting-due");
+  await select(kid);
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector("[data-cow-wait-due]")`, { label: "keep or take back" });
+  await page.key("2");
+  await page.waitFor(`${stateOf(kid)} === "wants" && ${waitOf(kid)} === null`, { label: "back with the person" });
+  check("a on it, then 2: it is back with the person, and the note is gone", (await waits()) === null);
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${waitOf(kid)} === "due"`, { label: "the reminder back" });
+  check("u takes that back", true);
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector("[data-cow-wait-due]")`, { label: "keep or take back again" });
+  await page.key("1");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "wait-remind"`, { label: "a new reminder" });
+  await page.type("+2w");
+  await page.key("Enter");
+  await page.waitFor(`${waitOf(kid)} === "" && !${inQueue(kid)}`, { label: "kept waiting" });
+  check("a, then 1 and a new reminder: it keeps waiting, out of the queue", (await waits())?.on === "the reviewer");
+  await offset(0);
+
+  // -- a line marked seen stays where it is --
+  await cow("wait", kid, "--clear");
+  await page.waitFor(`${stateOf(kid)} === "wants" && ${inQueue(kid)}`, { label: "the reply waiting" });
+  await select(kid);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(kid)} === "done"`, { label: "seen" });
+  check(
+    "Space: the line is done and out of the queue, but stays in the tree, kept and dimmed, with the cursor on it",
+    (await page.eval(inTree(kid))) && (await page.eval(`${lineEl(kid)}?.dataset.cowKept === ""`)) && (await page.eval(isCursor(kid))) && !(await page.eval(inQueue(kid))),
+  );
+  await shot("seen-stays");
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${stateOf(kid)} === "wants"`, { label: "seen taken back" });
+  check("u takes the mark back, in place", await page.eval(inTree(kid)));
+  await page.key(" ");
+  await page.waitFor(`${stateOf(kid)} === "done"`, { label: "seen again" });
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!document.querySelector('[data-cow-line="${kid}"]')`, { label: "the page reloaded" });
+  check("after a reload it is where its state puts it: under Done", !(await page.eval(inTree(kid))));
+
+  // -- a link to a thread in the chat --
+  await select(ids.wlink);
+  await page.key("Enter");
+  const mention = (id) => `[...document.querySelectorAll('[data-cow-chat] a[data-prompt-mention-resource]')].filter((a) => (a.getAttribute("data-prompt-mention-resource") ?? "").includes('"${id}"')).pop()`;
+  await page.waitFor(`${pane} === "${ids.wlink}" && !!${mention(kid)} && !!${mention(ids.wother)}`, { label: "the linker's chat with its mentions", timeout: 30_000 });
+  const at = await page.eval(`(() => { const a = ${mention(kid)}; a.scrollIntoView({ block: "center" }); const r = a.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  await sleep(200);
+  await page.click(...at);
+  await page.waitFor(`${pane} === "${kid}"`, { label: "the pane on the linked thread" });
+  check(
+    "a click on a thread mention switches the pane to that thread, and its line takes the cursor",
+    (await page.eval(isCursor(kid))) && (await page.eval(`location.pathname`)).includes(`/plugins/${PLUGIN}/`) && (await page.eval(`!document.querySelector("[data-cow-pane-outside]")`)),
+  );
+  await page.key("Escape");
+  await page.waitFor(`${pane} === "${ids.wlink}"`, { label: "back to the linker" });
+  check("Escape goes back to the chat the link was followed from", true);
+  await page.waitFor(`!!${mention(ids.wother)}`, { label: "the mentions again", timeout: 30_000 });
+  await page.key("f");
+  await page.waitFor(`document.querySelectorAll("[data-cow-hint-label]").length > 0`, { label: "hints" });
+  const label = await page.eval(`[...document.querySelectorAll("[data-cow-hint-label]")].filter((tag) => tag.dataset.cowHintIn === "chat" && (tag.dataset.cowHintFor ?? "").endsWith("/threads/${ids.wother}")).pop()?.dataset.cowHintLabel ?? null`);
+  if (label) for (const letter of label) await page.key(letter);
+  else await page.key("Escape");
+  await page.waitFor(`${pane} === "${ids.wother}"`, { label: "the pane on a thread not under Main" }).catch(() => undefined);
+  check("a hint on a mention of a thread not under this Main opens it in the pane, and its header says so", (await page.eval(pane)) === ids.wother && (await page.eval(`!!document.querySelector("[data-cow-pane-outside]")`)), String(label));
+  await shot("link-outside");
+  await page.key("Escape");
+  await page.waitFor(`${pane} === "${ids.wlink}"`, { label: "back again" });
+  await page.key("Escape");
+  await page.waitFor(`${pane} === null`, { label: "the pane closed" });
+  check("then Escape closes the pane", true);
+  // A click with a modifier is bb's: cow does not take it. The listener on the link keeps bb from acting on it here.
+  await select(ids.wlink);
+  await page.key("Enter");
+  await page.waitFor(`${pane} === "${ids.wlink}" && !!${mention(kid)}`, { label: "the linker's chat again", timeout: 30_000 });
+  const leftToBb = await page.eval(`(() => {
+    const a = ${mention(kid)};
+    let reached = null;
+    a.addEventListener("click", (event) => { reached = !event.defaultPrevented; event.preventDefault(); event.stopPropagation(); }, { once: true });
+    a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, shiftKey: true }));
+    return reached;
+  })()`);
+  await sleep(500);
+  check("a click with Shift on a thread mention is left to bb", leftToBb === true && (await page.eval(pane)) === ids.wlink);
+  await page.key("Escape");
+}
+
 /** Removes what the capability checks made outside bb's threads. */
 let restoreCaps = async () => undefined;
 
@@ -2524,7 +2727,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -2544,6 +2747,7 @@ async function main() {
       await restoreStored();
     };
     if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
+    else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
@@ -4784,6 +4988,7 @@ async function main() {
       await rpc("park_set", { threadId: id, park: null });
       await rpc("archive_note_set", { threadId: id, note: null });
       await cow("project", id, "--clear");
+      await cow("wait", id, "--clear");
       await bb("thread", "archive", id);
       // Archiving leaves a thread that is waiting on its question running.
       await fetch(`${BB}/api/v1/threads/${id}/stop`, {

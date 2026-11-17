@@ -33,6 +33,8 @@ export type Command =
   | { kind: "close" }
   /** Mark the line as a project, or take the mark off. */
   | { kind: "project" }
+  /** Say the line waits on someone other than the person, or clear that. */
+  | { kind: "wait" }
   /** Scroll the chat in the pane: a few lines, or half of what shows. */
   | { kind: "chat-scroll"; by: 1 | -1; half: boolean }
   /** Scroll the chat in the pane to its newest message. */
@@ -51,7 +53,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
       { keys: "Tab", does: "next entry in the queue of what waits on you (Shift+Tab previous)" },
       { keys: "1 to 9", does: "jump to that entry in the queue" },
       { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
-      { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader" },
+      { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader, and one on a link to a thread opens that thread in the pane" },
     ],
   },
   {
@@ -62,7 +64,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
       { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
       { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
       { keys: "I", does: "say something to the selected thread" },
-      { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
+      { keys: "Esc", does: "leave the chat, then close it; after following a link to a thread in the chat, it first goes back to the chat you came from, as many times as you followed one; cancel a prompt" },
     ],
   },
   {
@@ -70,7 +72,8 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card" },
       { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
-      { keys: "Space", does: "mark a reply as seen: the line stops waiting on you; on a line whose request was decided outside cow, acknowledge that" },
+      { keys: "Space", does: "mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line whose request was decided outside cow, acknowledge that" },
+      { keys: "w", does: "say the line is waiting on someone else: who or what, then a reminder (19 Nov, +3d, +2w) or nothing. On a waiting line, w clears it (y confirms); when its reminder comes, a keeps it waiting or takes it back" },
     ],
   },
   {
@@ -78,9 +81,9 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
       { keys: "r", does: "resume a parked line: back into the tree" },
-      { keys: "e", does: "archive a done, idle or failed line: a reason or nothing, then Enter" },
+      { keys: "e", does: "archive a done, idle, waiting or failed line: a reason or nothing, then Enter" },
       { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
-      { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen or project mark (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
+      { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen, project mark or wait (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
       { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
       { keys: "J K", does: "move a not-started item down, up its list" },
     ],
@@ -179,6 +182,8 @@ export class KeyReader {
         return { kind: "close" };
       case "P":
         return { kind: "project" };
+      case "w":
+        return { kind: "wait" };
       case ";":
         return { kind: "chat-scroll", by: 1, half: false };
       case "'":

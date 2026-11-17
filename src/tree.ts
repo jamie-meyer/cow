@@ -45,6 +45,8 @@ export interface Line {
   note: string | null;
   /** It is a project: "marked" by the person or an agent, or a "head" with threads under it. Null for any other line. */
   project: "marked" | "head" | null;
+  /** The person marked it seen on this page, and it is kept in its place instead of moving to Done. */
+  kept?: true;
 }
 
 /** Work a thread has listed as not started yet: a row in its group. */
@@ -68,6 +70,12 @@ export interface Plans {
   todos(threadId: string): readonly TodoItem[];
   /** Whether the thread is marked as a project. */
   marked?(threadId: string): boolean;
+  /**
+   * Whether the person marked it seen on this page: a line that would leave
+   * for Done stays where it was until the page is loaded again. The page's
+   * own rule; what is stored, and `bb cow status`, know nothing of it.
+   */
+  kept?(threadId: string): boolean;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -179,6 +187,8 @@ export function buildOverview(
     /** When the newest thing in it finished. */
     latest: number;
     rollup: Rollup;
+    /** Open only because the person marked it seen here: see `Plans.kept`. */
+    kept?: true;
   }
   const seen = new Set<string>([mainId]);
   const read = (thread: ThreadFacts): Node => {
@@ -189,6 +199,10 @@ export function buildOverview(
     const parked = derived.state === "parked";
     const planned = !archived && !parked && (plans.note(thread.id) !== null || plans.todos(thread.id).length > 0);
     node.open = !parked && (derived.state !== "done" || planned);
+    if (!node.open && !archived && !parked && plans.kept?.(thread.id)) {
+      node.open = true;
+      node.kept = true;
+    }
     for (const child of children.get(thread.id) ?? []) {
       if (seen.has(child.id)) continue;
       const kid = read(child);
@@ -219,6 +233,7 @@ export function buildOverview(
     olderUnder: 0,
     note: node.thread.archivedAt === null ? plans.note(node.thread.id) : null,
     project: plans.marked?.(node.thread.id) ? "marked" : node.kids.length > 0 ? "head" : null,
+    ...(node.kept ? { kept: true as const } : {}),
   });
   const recent = (node: Node): boolean => now - node.latest <= LIMITS.doneListedMs;
   const noteUnarchived = (node: Node) => {

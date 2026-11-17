@@ -6,12 +6,13 @@ import { PluginCliError, cliCommand, defineCli } from "@get-bb/plugin-sdk";
 import { type Actions, CowError, MAX_REASON } from "./actions.ts";
 import { type Attention, attend, attentionCommands, elsewhereText } from "./raised-cli.ts";
 import { pickUpText } from "./park.ts";
-import { MAX_NEXT, MAX_TODOS, type TodoItem } from "./shared.ts";
+import { formatDay } from "./pickup.ts";
+import { MAX_NEXT, MAX_TODOS, MAX_WAIT_FOR, MAX_WAIT_ON, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
 import { statusText, withCapabilities } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
-export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked">;
+export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked">;
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -106,6 +107,48 @@ function planCommands(actions: CliActions) {
         );
       },
     }),
+    wait: cliCommand({
+      summary: "Say a thread is waiting on someone other than the user: a reviewer, CI, someone outside the team",
+      description:
+        "The line on cow's page reads waiting, with who or what it waits on and for how long, and it stays out of the user's " +
+        "queue. Set it when you end a turn and the next move belongs to someone who is not the user, instead of writing that " +
+        "in a next note. It clears by itself when the thread starts a new turn, so set it again if it is still waiting then. " +
+        "With --remind, the line comes back to the user's queue on that day. A thread sets it only for itself and for the " +
+        "threads under it. --clear removes it.",
+      positionals: [thread],
+      options: {
+        on: { type: "string", description: `Who or what it waits on, up to ${MAX_WAIT_ON} characters: "the reviewer", "CI"` },
+        for: { type: "string", description: `What is needed from them, up to ${MAX_WAIT_FOR} characters` },
+        remind: { type: "string", description: "Put it in front of the user on this day if it is still waiting: 19 Nov, 2027-11-19, +3d or +2w" },
+        clear: { type: "boolean", description: "It is no longer waiting" },
+        json,
+      },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const { on, clear } = input.options;
+        if (clear === (on !== undefined)) {
+          throw new PluginCliError("give --on, or --clear, not both and not neither", { code: "bad_wait", hint: 'bb cow wait <thread> --on "the reviewer" [--for "<what>"] [--remind +3d]' });
+        }
+        if (clear && (input.options.for !== undefined || input.options.remind !== undefined)) {
+          throw new PluginCliError("--clear takes no --for or --remind", { code: "bad_wait" });
+        }
+        const done = await acting(() =>
+          actions.waitChecked({
+            callerId: ctx.threadId ?? null,
+            threadId: id,
+            wait: clear ? null : { on: on ?? "", for: input.options.for ?? null, remind: input.options.remind ?? "" },
+          }),
+        );
+        const wait = done.wait;
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, wait },
+          wait
+            ? `“${done.title}” (${id}) is waiting on ${wait.on}${wait.for ? `: ${wait.for}` : ""}${wait.remindAt === null ? "" : ` · the user is reminded ${formatDay(wait.remindAt, wait.at)}`} · it clears when the thread starts a new turn`
+            : `“${done.title}” (${id}) is no longer waiting on anyone`,
+        );
+      },
+    }),
     project: cliCommand({
       summary: "Mark a thread as a project: long-lived, and one the user talks to",
       description:
@@ -169,7 +212,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
 ) {
   return defineCli({
     name,
-    summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
+    summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, who it waits on, and the overview",
     commands: {
       ...planCommands(actions),
       status: cliCommand({

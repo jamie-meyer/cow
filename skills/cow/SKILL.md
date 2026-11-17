@@ -1,6 +1,6 @@
 ---
 name: cow
-description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), see or ask for a capability to write outside your workspace or run a command outside the sandbox (`bb cow caps`, `bb cow cap request`), record why a thread is parked or archived, say what is next for your thread, and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when you need to write outside your workspace or run something bb's sandbox refuses, when cleaning up or setting aside threads you started, when you end a turn with work still planned, or when asked what is waiting on the user.
+description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), see or ask for a capability to write outside your workspace or run a command outside the sandbox (`bb cow caps`, `bb cow cap request`), record why a thread is parked or archived, say what is next for your thread or who other than the user it waits on (`bb cow wait`), and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when you need to write outside your workspace or run something bb's sandbox refuses, when cleaning up or setting aside threads you started, when you end a turn with work still planned or waiting on a reviewer, CI or someone else, or when asked what is waiting on the user.
 ---
 
 # cow: notes on the threads you started
@@ -127,6 +127,7 @@ bb cow archive <thread> [--reason <text>]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
+bb cow wait <thread> --on "<who or what>" [--for "<what is needed>"] [--remind <date|+3d|+2w>] | --clear
 bb cow project <thread> [--clear]
 bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
@@ -274,6 +275,25 @@ it says otherwise. Your own id is in `$BB_THREAD_ID`.
 You may set these only on your own thread and on the threads under it;
 anything else is refused. The user can remove and reorder the items from
 the page. `bb cow status` shows each thread's note and list.
+
+## Waiting on someone who is not the user
+
+When you end a turn and the next move belongs to someone who is not the
+user (a reviewer, CI, someone outside the team), say so with `bb cow wait`
+instead of writing it into a next note:
+
+```sh
+bb cow wait "$BB_THREAD_ID" --on "the reviewer" --for "an approving review" --remind +3d
+```
+
+The line reads waiting, with who or what and for how long, and it stays out
+of the user's queue. `--remind` (a date, `+3d`, `+2w`) puts it back in front
+of the user on that day if it is still waiting; leave it out when there is
+no point at which the user should chase it. The note clears by itself when
+your thread starts a new turn, whoever starts it: if you are still waiting
+at the end of that turn, set it again. `--clear` removes it. Do not use it
+to put off something that is the user's to decide: ask them instead. The
+same rule as `next` applies: only your own thread and the threads under it.
 
 ## Limits
 

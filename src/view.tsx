@@ -168,6 +168,13 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
     long: "A turn is in progress. The line says what it did last.",
   },
   {
+    state: "waiting",
+    // The side legend's column fits one word.
+    name: "waiting",
+    short: "on someone else, said",
+    long: "Said by its agent with bb cow wait, or by you with w: its next move belongs to someone who is not you, a reviewer, CI, someone outside the team. The line says who or what, and for how long. It is not in the queue, unless you asked to be reminded and the day has come: then a keeps it waiting or takes it back. It clears when the thread starts a new turn, and when you park or archive it; w clears it too.",
+  },
+  {
     state: "stuck",
     short: "quiet too long, detected",
     long: `Detected, never chosen: running with no event for ${formatAge(LIMITS.runningQuietMs)}, or waiting on you for ${formatAge(LIMITS.waitingOnUserMs)}.`,
@@ -407,6 +414,7 @@ function LineRow({
   if (flash) classes.push("cow-flash");
   if (open) classes.push("cow-open");
   if (context) classes.push("cow-context");
+  if (line.kept) classes.push("cow-kept");
   if (fold !== null) classes.push("cow-grouphead");
   if (line.project && thread.archivedAt === null) classes.push("cow-project");
   if (!flat && (fold !== null || line.depth > 0)) classes.push("cow-ingroup");
@@ -432,6 +440,8 @@ function LineRow({
       data-cow-outside={derived.outside?.length}
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
+      data-cow-kept={line.kept ? "" : undefined}
+      data-cow-wait={derived.wait ? (derived.wait.due ? "due" : "") : undefined}
       data-cow-returned={returned || undefined}
       data-cow-hint=""
       aria-current={current || undefined}
@@ -476,6 +486,12 @@ function LineRow({
           {thread.title}
           {flat && parentTitle ? <small> · {parentTitle}</small> : null}
           {open ? <small className="cow-openmark"> · chat open</small> : null}
+          {line.kept ? (
+            <small className="cow-keptmark" title="marked seen here: it moves to where its state puts it when the page is loaded again">
+              {" "}
+              · seen, stays here until reload
+            </small>
+          ) : null}
           {fold === "folded" ? (
             <small data-cow-folded={line.members}>
               {" "}
@@ -1144,7 +1160,10 @@ function OverviewScreen({
   signer,
   threads,
   onChooseMain,
+  keep,
 }: {
+  /** Keep a line the person marked seen in its place on this page, or let it go. */
+  keep: (id: string, kept: boolean) => void;
   overview: Overview;
   main: Line;
   now: number;
@@ -1292,11 +1311,14 @@ function OverviewScreen({
     };
   }, [pane, focusOverview]);
 
-  /** Open a thread's chat in the pane, or switch the pane to it. It never takes the keyboard. */
+  // The chats a link in the pane was followed from, newest last: Escape goes back through them before it closes the pane.
+  const [paneBack, setPaneBack] = useState<readonly string[]>([]);
+  /** Open a thread's chat in the pane, or switch the pane to it. It never takes the keyboard, and starts the way back afresh. */
   const openChat = useCallback(
     (id: string | null) => {
       if (id === null || pane === id) return;
       setPane(id);
+      setPaneBack([]);
       setMessage("");
     },
     [pane],
@@ -1310,6 +1332,7 @@ function OverviewScreen({
 
   const closePane = useCallback(() => {
     setPane(null);
+    setPaneBack([]);
     focusOverview();
   }, [focusOverview]);
 
@@ -1409,10 +1432,12 @@ function OverviewScreen({
     },
     cancelled: (origin) => (origin.interactionId ? "nothing saved: the request is still waiting" : origin.askId ? "nothing saved: the ask is still open" : "nothing saved"),
   });
+  /** Main and every thread under it, archived ones included. */
+  const underMainIds = useMemo(() => new Set([main.thread.id, ...descendantIds(threads, main.thread.id, 0)]), [threads, main.thread.id]);
   const capSheet = useCapSheet({
     caps,
     signer,
-    underMain: useMemo(() => new Set([main.thread.id, ...descendantIds(threads, main.thread.id, 0)]), [threads, main.thread.id]),
+    underMain: underMainIds,
     threads,
     titleOf: (id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? id,
     now,
@@ -1453,6 +1478,7 @@ function OverviewScreen({
     say: setMessage,
     openChat,
     focusOverview,
+    keep,
   });
 
   const sheet = useBriefSheet({
@@ -1505,6 +1531,23 @@ function OverviewScreen({
   useEffect(() => {
     if (reader.depth > 0) focusOverview();
   }, [reader.depth, focusOverview]);
+  // A link to a thread in the chat switches the pane to it, as Enter on its line would.
+  const followRef = useRef<(id: string) => boolean>(() => false);
+  followRef.current = (id: string) => {
+    // A thread bb has not told this page about is left to bb.
+    if (id !== main.thread.id && !threads.some((thread) => thread.id === id)) return false;
+    if (pane !== id) {
+      if (pane !== null) setPaneBack((current) => [...current, pane]);
+      setPane(id);
+    }
+    // Its line takes the cursor, unfolding what hides it; a thread not under this Main has none.
+    const onPage = id === main.thread.id || listed(overview).some((line) => line.thread.id === id);
+    if (onPage) setCursor(id);
+    // As with Enter, the keyboard stays with the overview: the click may have left focus on the link.
+    focusOverview();
+    setMessage(onPage ? (pane !== null ? "Esc goes back to the chat before" : "") : `that thread is not under this Main${pane !== null ? " · Esc goes back to the chat before" : ""}`);
+    return true;
+  };
   useEffect(
     () =>
       attachFileClicks({
@@ -1512,6 +1555,7 @@ function OverviewScreen({
         paneThread: () => paneRef.current,
         open: (target) => readerRef.current.open(target),
         openLink: (href) => readerRef.current.openLink(href),
+        openThread: (id) => followRef.current(id),
       }),
     [],
   );
@@ -1596,12 +1640,20 @@ function OverviewScreen({
         return openChat(selectedTodo ? selectedTodo.ownerId : selected);
       case "main-chat":
         return openChat(main.thread.id);
-      case "back":
+      case "back": {
         if (capsFor !== null) return setCapsFor(null);
         if (panelFiles.closeShown()) return;
+        // After following a link, back to the chat it was followed from, then closed.
+        const previous = paneBack[paneBack.length - 1];
+        if (pane !== null && previous !== undefined) {
+          setPaneBack(paneBack.slice(0, -1));
+          setPane(previous);
+          return setMessage(`back to ${previous === main.thread.id ? "Main" : `“${titles.get(previous) ?? threads.find((thread) => thread.id === previous)?.title ?? previous}”`}${paneBack.length > 1 ? " · Esc goes back again" : " · Esc closes the chat"}`);
+        }
         if (pane !== null) closePane();
         else setMessage("");
         return;
+      }
       case "say":
         // With a chat open, i types into it, whichever line the cursor is on.
         if (command.to === "main" && pane !== null) return typeInChat();
@@ -1633,6 +1685,9 @@ function OverviewScreen({
       case "project":
         if (selectedTodo) return setMessage("that is work not started, not a thread");
         return selectedLine ? verbs.toggleProject(selectedLine) : undefined;
+      case "wait":
+        if (selectedTodo) return setMessage("that is work not started, not a thread");
+        return verbs.startWait(selectedLine);
       case "reorder":
         if (!selectedTodo) return setMessage("J and K move a not-started item; select one first");
         return verbs.moveTodo(selectedTodo, command.by);
@@ -1746,7 +1801,9 @@ function OverviewScreen({
       />
     );
   };
-  const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
+  // A thread opened from a link may not be under this Main: its header says so.
+  const paneOutside = pane !== null && !underMainIds.has(pane);
+  const paneTitle = pane === null ? "" : (titles.get(pane) ?? threads.find((thread) => thread.id === pane)?.title ?? "a thread that is no longer listed");
   // A card opened for one ask from inside a brief is drawn there, not under the line.
   const allLines = [main, ...listed(overview)];
   const card = (id: string) => {
@@ -1954,7 +2011,7 @@ function OverviewScreen({
               </h2>
               <p className="cow-sub">
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
-                replies addressed to you, parked work that came back, new capabilities and decisions made outside cow, oldest first.
+                replies addressed to you, parked work that came back, reminders of work waiting on someone else, new capabilities and decisions made outside cow, oldest first.
               </p>
               {capNotices.length + keyRequests.length > 0 ? (
                 <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length + keyRequests.length}>
@@ -2030,19 +2087,24 @@ function OverviewScreen({
                   {pane === main.thread.id ? "Main · " : ""}
                   {paneTitle}
                 </b>
+                {paneOutside ? (
+                  <small className="cow-outside-main" data-cow-pane-outside="">
+                    not under this Main
+                  </small>
+                ) : null}
                 {below ? (
                   <button type="button" className="cow-vb cow-below" data-cow-chat-below="" data-cow-hint="" tabIndex={-1} title="more has arrived since you scrolled up" onClick={() => scrollChat(() => "end")}>
                     new output below · <kbd>\</kbd>
                   </button>
                 ) : null}
                 <span>
-                  <kbd>;</kbd> <kbd>'</kbd> scroll · <kbd>i</kbd> type here · <kbd>Esc</kbd> back
+                  <kbd>;</kbd> <kbd>'</kbd> scroll · <kbd>i</kbd> type here · <kbd>Esc</kbd> {paneBack.length > 0 ? "previous chat" : "back"}
                 </span>
                 <button type="button" className="cow-vb" data-cow-hint="" tabIndex={-1} onClick={closePane}>
                   close
                 </button>
               </div>
-              <div className="cow-chat" data-cow-chat="" tabIndex={-1}>
+              <div className="cow-chat" data-cow-chat="" data-cow-pane-back={paneBack.length || undefined} tabIndex={-1}>
                 <ThreadChat
                   key={pane}
                   threadId={pane}
@@ -2146,6 +2208,9 @@ function OverviewScreen({
                 {selectedLine?.derived.reply ? (
                   <Verb keys="␣" label="seen" name="seen" onRun={() => verbs.markSeen(selectedLine, true)} />
                 ) : null}
+                {selectedLine && !selectedTodo && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" ? (
+                  <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
+                ) : null}
               </span>
               <span className="cow-sep">·</span>
               <span className="cow-verbs">
@@ -2226,6 +2291,17 @@ export function CowPage() {
   const caps = useCaps(signer);
 
   const projects = useMemo(() => projectIds(snapshot.threads, parks.projects.keys(), mainId), [snapshot.threads, parks.projects, mainId]);
+  // Lines the person marked seen here stay in their place until the page is loaded again.
+  const [kept, setKept] = useState<ReadonlySet<string>>(new Set());
+  const keep = useCallback((id: string, on: boolean) => {
+    setKept((current) => {
+      if (current.has(id) === on) return current;
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const overview = useMemo(
     () =>
       mainId === null || notes === null
@@ -2244,15 +2320,17 @@ export function CowPage() {
                 parks.dismissals.get(thread.id)?.throughSeq,
                 { head: projects.has(thread.id), project: projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
                 { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id), outside: caps.outside.get(thread.id) },
+                parks.waits.get(thread.id),
               ),
             now,
             {
               note: (id) => parks.nexts.get(id)?.text ?? null,
               todos: (id) => parks.todos.get(id) ?? [],
               marked: (id) => parks.projects.has(id),
+              kept: (id) => kept.has(id),
             },
           ),
-    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, kept, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
   );
 
   useEffect(() => {
@@ -2348,6 +2426,7 @@ export function CowPage() {
       signer={signer}
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
+      keep={keep}
     />
   );
 }

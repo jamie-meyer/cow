@@ -68,6 +68,28 @@ export const nextNoteSchema = z.object({
 });
 export type NextNote = z.infer<typeof nextNoteSchema>;
 
+/**
+ * A thread's note that its next move belongs to someone other than the
+ * person: a reviewer, CI, someone outside the team. It holds until the
+ * thread starts a new turn, and with a reminder it comes back to the
+ * person's queue on that day.
+ */
+export const WAIT_KEY = "waiting";
+export const MAX_WAIT_ON = 80;
+export const MAX_WAIT_FOR = 160;
+export const waitNoteSchema = z.object({
+  /** Who or what it waits on, in a few words: "the reviewer", "CI". */
+  on: z.string().min(1).max(MAX_WAIT_ON),
+  /** What is needed from them, if said. */
+  for: z.string().min(1).max(MAX_WAIT_FOR).nullable(),
+  /** When to put it in front of the person if it is still waiting; null for never. */
+  remindAt: z.number().nullable(),
+  /** When it was set, and by which thread when the CLI knew. */
+  at: z.number(),
+  by: z.string().nullable(),
+});
+export type WaitNote = z.infer<typeof waitNoteSchema>;
+
 /** A thread's short list of work it has not started yet, in order. */
 export const TODO_KEY = "todo";
 export const MAX_TODOS = 12;

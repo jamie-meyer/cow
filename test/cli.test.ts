@@ -34,6 +34,10 @@ function recorder(overrides: Partial<CliActions> = {}) {
       { title: "T", note: args.text === null ? null : { text: args.text, at: NOW, by: args.callerId } }
     ),
     projectChecked: async (args) => (calls.push(["project", args]), { title: "T", project: args.on ? { at: NOW, by: args.callerId } : null }),
+    waitChecked: async (args) => (
+      calls.push(["wait", args]),
+      { title: "T", wait: args.wait === null ? null : { on: args.wait.on, for: args.wait.for, remindAt: null, at: NOW, by: args.callerId } }
+    ),
     todoChecked: async (args) => (
       calls.push(["todo", args]),
       { title: "T", list: [{ id: "i1", title: "first", at: NOW }], item: args.op === null ? null : { id: "i1", title: "first", at: NOW } }
@@ -143,8 +147,8 @@ test("help lists every command; an unknown command or option fails", async () =>
   const { run, cli } = recorder();
   const help = await run("help");
   assert.equal(help.exitCode, 0);
-  for (const name of ["status", "archive", "park", "project", "resume", "next", "todo add", "todo done", "todo rm", "todo list"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
-  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "next", "park", "project", "resume", "status", "todo-add", "todo-done", "todo-list", "todo-rm"]);
+  for (const name of ["status", "archive", "park", "project", "resume", "next", "todo add", "todo done", "todo rm", "todo list", "wait"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
+  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "next", "park", "project", "resume", "status", "todo-add", "todo-done", "todo-list", "todo-rm", "wait"]);
   assert.equal((await run("park", "--help")).exitCode, 0);
   assert.equal((await run("moo")).exitCode, 1);
   assert.equal((await run("resume", "thr_a", "--nope")).exitCode, 1);

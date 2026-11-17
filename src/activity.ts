@@ -139,6 +139,7 @@ export async function readActivity(reader: ThreadReader, threadId: string, hints
   ]);
   // Newest first: the first turn boundary is the latest.
   const turn = turns.map(toEvent).find((event) => event !== null && event.type !== "client/turn/requested") ?? null;
+  const started = turns.map(toEvent).find((event) => event !== null && event.type === "turn/started") ?? null;
   const item = toEvent(items[0]);
   const lastEventAt = Math.max(turn?.createdAt ?? 0, item?.createdAt ?? 0, hints.seenEventAt ?? 0);
   return {
@@ -150,6 +151,7 @@ export async function readActivity(reader: ThreadReader, threadId: string, hints
           failed: turn.type === "turn/completed" && turn.data.status === "failed",
         }
       : null,
+    startedAt: started?.createdAt ?? null,
     latestStep: describeItem(item?.data.item as Parameters<typeof describeItem>[0]),
     output: (typeof output.output === "string" && output.output) || (hints.previousOutput ?? ""),
     ask: toAsk(interactions),

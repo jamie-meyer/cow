@@ -31,6 +31,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       // An ask stays the person's to answer wherever its thread has gone, the shelf included.
       if (derived.asks) return null;
       if (parked) return "it is parked: resume it first";
+      // A reminder that came is answered too: keep waiting, or it is back with the person.
+      if (derived.wait?.due) return null;
       // A refused permission is answered too: ask again, carry on, or dismiss.
       return thread.hasPendingInteraction || derived.blocked ? null : "it has not asked anything";
     case "brief":
@@ -55,7 +57,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       if (derived.briefWaits) return null;
       if (derived.asks) return "it has an open ask: answer it, or have it withdrawn";
       // An idle project is at rest too: archiving it is the person saying it is finished.
-      return derived.state === "done" || derived.state === "idle" || derived.state === "failed" ? null : "only done, idle or failed lines can be archived";
+      // Waiting on someone else is at rest too: archiving it ends the wait.
+      return derived.state === "done" || derived.state === "idle" || derived.state === "failed" || derived.state === "waiting" ? null : "only done, idle, waiting or failed lines can be archived";
   }
 }
 
@@ -75,7 +78,7 @@ const INSTEAD: Record<string, { page: string; cli: string }> = {
   "it is already archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
   "threads under it are still open": { page: "archive or park those first", cli: "Archive or park those first: `bb cow status` lists them." },
   "it has an open ask: answer it, or have it withdrawn": { page: "a answers it", cli: "The user answers it on cow's page, or its thread runs `bb cow ask withdraw <id>` or `bb cow ask close <id> --answered <text>`." },
-  "only done, idle or failed lines can be archived": { page: "x stops a running turn, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
+  "only done, idle, waiting or failed lines can be archived": { page: "x stops a running turn, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
 };
 
 /** What to do instead of a refused verb, in the page's keys; empty when the reason already says. */

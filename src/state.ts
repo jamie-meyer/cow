@@ -6,8 +6,9 @@ import { type Replies, unreadReply } from "./attention.ts";
 import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
-import type { ParkRecord } from "./shared.ts";
+import type { ParkRecord, WaitNote } from "./shared.ts";
 import { firstLine, formatAge } from "./text.ts";
+import { waitDue, waitDueText, waitHolds, waitNext, waitText } from "./waiting.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -32,9 +33,9 @@ export const LIMITS = {
 } as const;
 
 /**
- * The states a line can show. Nothing produces `waiting` yet: it needs the
- * agent to say what it waits on. `blocked` is detected: bb refused the agent
- * a permission without asking the user.
+ * The states a line can show. `waiting` is said, by the agent or the person:
+ * its next move belongs to someone else. `blocked` is detected: bb refused
+ * the agent a permission without asking the user.
  */
 export type LineState =
   | "wants"
@@ -85,6 +86,8 @@ export interface Activity {
   latestStep: string;
   /** The agent's latest message. */
   output: string;
+  /** When its newest turn started, as far as its events have been read. */
+  startedAt?: number | null;
   /** The question or permission request it is waiting on the user for, if any. */
   ask: { kind: "question" | "permission"; text: string; at: number } | null;
   /** What bb refused without asking, and nothing has resolved since. */
@@ -166,6 +169,8 @@ export interface Derived {
   briefWaits?: true;
   /** Set when decisions on its requests were made outside cow and are not acknowledged, whatever state the line shows. */
   outside?: readonly OutsideFlag[];
+  /** Set when the line reads waiting on someone else: the note, and whether its reminder has arrived. */
+  wait?: { note: WaitNote; due: boolean };
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -216,6 +221,7 @@ export function atRest(state: LineState): boolean {
  * came back; otherwise when the line entered its state.
  */
 export function waitingSince(derived: Derived): number {
+  if (derived.wait?.due && derived.wait.note.remindAt !== null) return derived.wait.note.remindAt;
   return derived.park?.due?.at ?? derived.since;
 }
 
@@ -234,8 +240,10 @@ export function asksText(asks: readonly Ask[], messaged = false): string {
 /**
  * What a line shows. Where several things wait on the person at once, the
  * line shows the first of: a failure; a question or permission request of
- * bb's own, which holds a running turn; an open ask; a permission bb refused;
- * a brief with disputes or judgement calls; a reply addressed to them.
+ * bb's own, which holds a running turn; an open ask; a decision made outside
+ * cow; a permission bb refused; a brief with disputes or judgement calls.
+ * Then, with nothing of those: a running turn; waiting on someone else; a
+ * reply addressed to them; idle or done.
  */
 export function derive(
   thread: ThreadFacts,
@@ -250,12 +258,15 @@ export function derive(
   attention?: Attention | null,
   /** Its open asks and its latest brief. */
   raised?: Raised | null,
+  /** Its note that it waits on someone other than the person, if any. */
+  wait?: WaitNote | null,
 ): Derived {
   const asks = thread.archivedAt === null ? (raised?.asks ?? []) : [];
   const spokeAt = activity?.replies?.personSpokeAt ?? null;
   const messaged = asks.filter((ask) => messagedSince(ask, spokeAt, raised?.delivered)).map((ask) => ask.id);
   const outside = thread.archivedAt === null ? (raised?.outside ?? []) : [];
-  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged, outside);
+  const holding = wait && waitHolds(wait, activity?.startedAt) ? wait : null;
+  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged, outside, holding);
   return {
     ...derived,
     ...(outside.length > 0 ? { outside } : {}),
@@ -278,6 +289,7 @@ function deriveLine(
   /** The ids of the asks the person has messaged the thread since. */
   messaged: readonly string[],
   outside: readonly OutsideFlag[],
+  wait: WaitNote | null,
 ): Derived {
   // The line shows its oldest ask: whether that one may be answered already is what it says.
   const firstMessaged = asks.length > 0 && messaged.includes(asks[0]!.id);
@@ -377,6 +389,21 @@ function deriveLine(
       next: "read it: press b",
       waitingOnYou: true,
       briefWaits: true,
+    };
+  }
+
+  // Waiting on someone else gives way to everything above, and to a turn in
+  // progress: a reply it ends with says it is waiting, so it is not the
+  // person's to act on. With a reminder that has arrived, it is.
+  if (wait && !asked && !blocked && !busy) {
+    const due = waitDue(wait, now);
+    return {
+      state: "waiting",
+      since: wait.at,
+      doing: due ? waitDueText(wait, now) : waitText(wait, now),
+      next: waitNext(wait, now, due),
+      waitingOnYou: due,
+      wait: { note: wait, due },
     };
   }
 

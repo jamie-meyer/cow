@@ -4,6 +4,40 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.2
+
+Three things from using cow every day.
+
+- **Waiting on someone else is a state of its own.** A thread whose next
+  move belongs to a reviewer, CI or someone outside the team used to read
+  idle or done, or sit in your queue with its reply. Now its agent says so
+  with `bb cow wait <thread> --on "the reviewer"`, or you do with `w` on its
+  line. The line keeps its place, marked ◷, and reads "waiting on the
+  reviewer · 3d"; it is not in your queue. Anything that really needs you
+  (an ask, a permission request, a refusal, a failure, a disputed brief)
+  still shows first. It clears by itself when the thread starts a new turn,
+  and when you park or archive it; `w` clears it too, and `u` takes back
+  what `w` did. Give it a reminder (`--remind +3d`, or a day) and it comes
+  back to your queue on that day as "still waiting on the reviewer after 3
+  days", where `a` keeps it waiting or takes it back. The skill tells agents
+  to use it instead of a next note that says who they wait on. Like `next`,
+  it is not signed: see "What is not signed" in `docs/reference.md`.
+- **A link to a thread in the chat opens it in cow's pane.** Clicking a
+  thread mentioned in a message, or the parent named above the composer,
+  used to leave cow for bb's own chat page. Now the pane switches to that
+  thread, as `Enter` on its line would, and the cursor moves to its line.
+  `Esc` goes back to the chat you came from before it closes the pane. A
+  thread that is not under this Main opens too, and the pane says so.
+  Cmd, Ctrl, Alt or Shift with the click leaves it to bb.
+- **A line you mark seen stays where it is.** `Space`, or opening its chat,
+  used to send a finished worker to Done at once, which read as the thread
+  disappearing. It now stays in place, dimmed, with its new state, until you
+  reload the page or park or archive it. Nothing stored changes: this is how
+  the page shows it.
+
+After updating, reload any cow page that was open. Nothing stored changes
+shape; the new note is one more key in cow's notes on a thread.
+
 ## 0.2.1
 
 What takes a line out of your queue is now yours alone to do.

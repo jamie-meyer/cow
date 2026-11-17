@@ -19,6 +19,7 @@ import {
   projectMarkSchema,
   seenSchema,
   todoListSchema,
+  waitNoteSchema,
 } from "./src/shared.ts";
 
 const id = z.string().min(1).max(200);
@@ -51,7 +52,13 @@ export const rpcContract = defineRpcContract({
       todos: z.record(z.string(), todoListSchema),
       seen: z.record(z.string(), seenSchema),
       projects: z.record(z.string(), projectMarkSchema),
+      waits: z.record(z.string(), waitNoteSchema),
     }),
+  },
+  /** Say a thread waits on someone other than the person, or with null that it no longer does. */
+  wait_set: {
+    input: z.object({ threadId: id, wait: waitNoteSchema.nullable() }),
+    output: z.null(),
   },
   /** Mark a thread as a project, or with null, take the mark off. */
   project_set: {
@@ -148,6 +155,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     archive_note_set: async ({ threadId, note }) => {
       await actions.setArchiveNote(threadId, note);
+      return null;
+    },
+    wait_set: async ({ threadId, wait }) => {
+      await actions.setWait(threadId, wait);
       return null;
     },
     project_set: async ({ threadId, project }) => {

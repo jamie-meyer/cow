@@ -15,6 +15,7 @@ import {
   type ProjectMark,
   type Seen,
   type TodoItem,
+  type WaitNote,
 } from "./shared.ts";
 
 export interface Parks {
@@ -33,6 +34,10 @@ export interface Parks {
   projects: ReadonlyMap<string, ProjectMark>;
   /** Mark a thread as a project, or take the mark off with null. */
   setProject: (threadId: string, project: ProjectMark | null) => Promise<void>;
+  /** Thread id to who or what it says it waits on. */
+  waits: ReadonlyMap<string, WaitNote>;
+  /** Say a thread waits on someone other than the person, or with null that it no longer does. */
+  setWait: (threadId: string, wait: WaitNote | null) => Promise<void>;
   error: string | null;
   reload: () => void;
   /** Record the reply the person has seen, or forget it with null. */
@@ -59,6 +64,7 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
   const [todos, setTodos] = useState<ReadonlyMap<string, readonly TodoItem[]>>(new Map());
   const [seen, setSeenMap] = useState<ReadonlyMap<string, Seen>>(new Map());
   const [projects, setProjects] = useState<ReadonlyMap<string, ProjectMark>>(new Map());
+  const [waits, setWaits] = useState<ReadonlyMap<string, WaitNote>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const ids = useRef(threadIds);
   ids.current = threadIds;
@@ -70,8 +76,9 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     if (wanted === null) return;
     const seq = ++request.current;
     rpc.call("notes_list", { threadIds: [...wanted] }).then(
-      ({ parks, archives: archived, dismissals: dismissed, nexts: next, todos: todo, seen: saw, projects: marked }) => {
+      ({ parks, archives: archived, dismissals: dismissed, nexts: next, todos: todo, seen: saw, projects: marked, waits: waiting }) => {
         if (seq !== request.current) return;
+        setWaits(new Map(Object.entries(waiting)));
         setProjects(new Map(Object.entries(marked)));
         setNexts(new Map(Object.entries(next)));
         setTodos(new Map(Object.entries(todo)));
@@ -169,6 +176,21 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     [rpc, reload],
   );
 
+  const setWait = useCallback(
+    async (threadId: string, wait: WaitNote | null) => {
+      await rpc.call("wait_set", { threadId, wait });
+      request.current += 1;
+      setWaits((current) => {
+        const next = new Map(current);
+        if (wait === null) next.delete(threadId);
+        else next.set(threadId, wait);
+        return next;
+      });
+      reload();
+    },
+    [rpc, reload],
+  );
+
   const changeTodo = useCallback(
     async (threadId: string, itemId: string, change: "remove" | "up" | "down") => {
       await rpc.call("todo_change", { threadId, itemId, change });
@@ -185,5 +207,5 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     [rpc, reload],
   );
 
-  return { notes, archives, dismissals, nexts, todos, seen, projects, setProject, error, reload, set, setArchive, setDismissal, setSeen, changeTodo, archive };
+  return { notes, archives, dismissals, nexts, todos, seen, projects, setProject, waits, setWait, error, reload, set, setArchive, setDismissal, setSeen, changeTodo, archive };
 }

@@ -7,6 +7,7 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 import { experimental_useAppPanel as useAppPanel, experimental_usePanelTabs as usePanelTabs } from "@get-bb/plugin-sdk/app";
 import type { OpenTarget } from "./files.ts";
 import { type TabFile, parseFileHref, parseTimelineRow, tabFile } from "./link.ts";
+import { classifyThreadLink } from "./threadLink.ts";
 
 export interface ClickHost {
   /** cow's page. */
@@ -16,6 +17,8 @@ export interface ClickHost {
   open: (target: OpenTarget) => void;
   /** A link inside the file the reader is showing. False when it is not to a file. */
   openLink: (href: string) => boolean;
+  /** A link to a thread in the chat: open it in the pane. False when cow does not know the thread, and bb is left to it. */
+  openThread?: (threadId: string) => boolean;
 }
 
 /** A link of cow's own to a file: what `data-cow-file` holds. */
@@ -56,8 +59,9 @@ export function classifyClick(element: Element, paneThread: string | null): Open
 
 /**
  * Hear clicks on cow's page before bb does. A plain click on a file opens
- * the reader and goes no further; a click with Cmd, Ctrl, Alt or Shift held
- * is left to bb, as is everything that is not a file.
+ * the reader, and one on a link to a thread in the chat opens that thread in
+ * the pane; either goes no further. A click with Cmd, Ctrl, Alt or Shift
+ * held is left to bb, as is everything else.
  */
 export function attachFileClicks(host: ClickHost): () => void {
   const onClick = (event: MouseEvent) => {
@@ -65,6 +69,13 @@ export function attachFileClicks(host: ClickHost): () => void {
     const element = event.target instanceof Element ? event.target : null;
     const root = host.root();
     if (!element || !root || !root.contains(element)) return;
+    const thread = host.openThread ? classifyThreadLink(element, window.location.origin) : null;
+    if (thread !== null) {
+      if (!host.openThread?.(thread)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const found = classifyClick(element, host.paneThread());
     if (found === null) return;
     if (found.kind === "link") {

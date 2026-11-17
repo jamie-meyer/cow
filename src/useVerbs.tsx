@@ -31,11 +31,12 @@ import {
 import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
 import { BLOCKED_OPTIONS, type Refusal, chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
-import type { ParkRecord } from "./shared.ts";
+import type { ParkRecord, WaitNote } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
 import { type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
+import { waitNote } from "./waiting.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
@@ -49,6 +50,12 @@ type Modal =
   /** Why it is archived, or dropped: one optional line, then it happens. */
   | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
+  /** Who or what it waits on, then an optional reminder. */
+  | { kind: "wait-on"; threadId: string; value: string; error: string }
+  /** `keep` when it was waiting already and its reminder came: who it waits on, and what for, stay. */
+  | { kind: "wait-remind"; threadId: string; on: string; needed: string | null; keep: boolean; value: string; error: string }
+  /** Its reminder came: keep waiting, or it is back with the person. */
+  | { kind: "wait-due"; threadId: string; note: WaitNote }
   | ({ kind: "answer" } & AnswerState)
   | ({ kind: "ask" } & AskState)
   | ({ kind: "blocked" } & BlockedState);
@@ -80,6 +87,8 @@ export interface VerbHost {
   say: (message: string) => void;
   openChat: (id: string) => void;
   focusOverview: () => void;
+  /** Keep a line the person marked seen in its place on this page; `false` lets it go where its state puts it. */
+  keep: (id: string, kept: boolean) => void;
 }
 
 export interface Verbs {
@@ -93,6 +102,8 @@ export interface Verbs {
   markSeen: (line: Line, asked: boolean) => void;
   /** Mark the line as a project, or take the mark off. `u` takes it back. */
   toggleProject: (line: Line) => void;
+  /** Say the line waits on someone other than the person, or on a waiting line, offer to clear it. `u` takes it back. */
+  startWait: (line: Line | null) => void;
   /** Ask, then take a not-started item off its list. */
   removeTodo: (row: TodoRow) => void;
   moveTodo: (row: TodoRow, by: 1 | -1) => void;
@@ -135,7 +146,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // A text prompt holds the keyboard for as long as it is open.
   const promptKey =
-    modal?.kind === "park-reason" || modal?.kind === "park-pickup" || modal?.kind === "archive-reason"
+    modal?.kind === "park-reason" || modal?.kind === "park-pickup" || modal?.kind === "archive-reason" || modal?.kind === "wait-on" || modal?.kind === "wait-remind"
       ? modal.kind
       : null;
   useEffect(() => {
@@ -204,6 +215,7 @@ export function useVerbs(host: VerbHost): Verbs {
     try {
       if (stopFirst) await sdk.threads.stop({ threadId: id });
       await parks.set(id, record);
+      host.keep(id, false);
       remember({ kind: "park", threadId: id, title: line.thread.title, before });
       setCursor(next);
       close(before === null ? "parked: it is on the shelf" : "kept parked");
@@ -258,6 +270,7 @@ export function useVerbs(host: VerbHost): Verbs {
     try {
       // The backend records the reason, stops a dropped thread, and archives it.
       await parks.archive(id, reason, dropped, clockNow());
+      host.keep(id, false);
       remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under, reason });
       setCursor(next);
       close(`${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`);
@@ -273,6 +286,7 @@ export function useVerbs(host: VerbHost): Verbs {
       else if (entry.kind === "dismiss") await parks.setDismissal(entry.threadId, entry.before);
       else if (entry.kind === "seen") await parks.setSeen(entry.threadId, entry.before);
       else if (entry.kind === "project") await parks.setProject(entry.threadId, entry.before);
+      else if (entry.kind === "wait") await parks.setWait(entry.threadId, entry.before);
       else {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
@@ -294,6 +308,8 @@ export function useVerbs(host: VerbHost): Verbs {
     const before = parks.seen.get(id) ?? null;
     parks.setSeen(id, { seq: reply.seq, at: clockNow() }).then(
       () => {
+        // Seen, it stays where it is on this page, whatever its state now says.
+        host.keep(id, true);
         if (!asked) return;
         remember({ kind: "seen", threadId: id, title: line.thread.title, before });
         say("marked as seen: u takes it back");
@@ -322,6 +338,38 @@ export function useVerbs(host: VerbHost): Verbs {
       },
       (cause: unknown) => say(`not changed: ${errorText(cause)}`),
     );
+  };
+
+  const setWait = (line: Line, note: WaitNote | null, said: string) => {
+    const id = line.thread.id;
+    const before = parks.waits.get(id) ?? null;
+    parks.setWait(id, note).then(
+      () => {
+        remember({ kind: "wait", threadId: id, title: line.thread.title, before });
+        close(`${said} · u takes it back`);
+      },
+      (cause: unknown) => close(`not changed: ${errorText(cause)}`),
+    );
+  };
+
+  const startWait = (line: Line | null) => {
+    if (line === null) return say("select a line first");
+    const id = line.thread.id;
+    if (line.thread.archivedAt !== null) return say("it is archived, so it waits on nobody");
+    if (line.derived.state === "parked") return say("it is parked: r resumes it first");
+    say("");
+    const wait = line.derived.wait;
+    if (wait) {
+      return setModal({
+        kind: "confirm",
+        mode: "WAIT",
+        threadId: id,
+        label: `it is no longer waiting on ${wait.note.on}: it reads as it did before?`,
+        cancelled: `still waiting on ${wait.note.on}`,
+        run: () => setWait(line, null, `no longer waiting on ${wait.note.on}`),
+      });
+    }
+    setModal({ kind: "wait-on", threadId: id, value: "", error: "" });
   };
 
   const removeTodo = (row: TodoRow) => {
@@ -562,6 +610,8 @@ export function useVerbs(host: VerbHost): Verbs {
       case "brief":
         return host.openBrief(threadId);
       case "answer": {
+        // A reminder that came: it is still waiting, or it is back with the person.
+        if (line.derived.wait?.due) return setModal({ kind: "wait-due", threadId, note: line.derived.wait.note });
         // A request of bb's own comes first: it holds a turn. Then the thread's asks, oldest first.
         const oldest = line.derived.asks?.[0];
         if (!line.thread.hasPendingInteraction && oldest) return startAsk(threadId, oldest.id, false);
@@ -614,7 +664,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen or project mark can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen, project mark or wait can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -629,7 +679,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -824,6 +874,74 @@ export function useVerbs(host: VerbHost): Verbs {
     };
   }
 
+  if (modal.kind === "wait-due") {
+    const { note } = modal;
+    return {
+      mode: "WAIT",
+      ...common,
+      onKey: (key) => {
+        if (key === "1") return setModal({ kind: "wait-remind", threadId: modal.threadId, on: note.on, needed: note.for, keep: true, value: "", error: "" });
+        if (key === "2" && target) return setWait(target, null, `back with you: no longer waiting on ${note.on}`);
+        close(`still waiting on ${note.on}; it stays in your queue`);
+      },
+      footer: (
+        <>
+          <span className="cow-mode cow-m-prompt">WAIT</span>
+          <span className="cow-noun">{title}</span>
+          <span className="cow-sep">▸</span>
+          <span className="cow-prompt" data-cow-wait-due="">
+            <label>still waiting on {note.on}:</label>
+            <small>
+              <kbd>1</kbd> keep waiting, with a new reminder · <kbd>2</kbd> it is back with me · any other key cancels
+            </small>
+          </span>
+        </>
+      ),
+      card: null,
+    };
+  }
+  if (modal.kind === "wait-on" || modal.kind === "wait-remind") {
+    const asksOn = modal.kind === "wait-on";
+    const submitWait = () => {
+      if (target === null) return;
+      if (modal.kind === "wait-on") {
+        const value = modal.value.trim();
+        if (value === "") return setModal({ ...modal, error: "who or what is it waiting on?" });
+        const checked = waitNote({ on: value, for: null, remind: "" }, clockNow(), null);
+        if (!checked.ok) return setModal({ ...modal, error: checked.error });
+        return setModal({ kind: "wait-remind", threadId: modal.threadId, on: checked.note.on, needed: null, keep: false, value: "", error: "" });
+      }
+      const checked = waitNote({ on: modal.on, for: modal.needed, remind: modal.value }, clockNow(), null);
+      if (!checked.ok) return setModal({ ...modal, error: checked.error });
+      setWait(target, checked.note, `waiting on ${checked.note.on}${checked.note.remindAt === null ? "" : `: it comes back to you on the day`}`);
+    };
+    return {
+      mode: "WAIT",
+      ...common,
+      onKey: () => promptRef.current?.focus(),
+      footer: (
+        <TextPrompt
+          key={modal.kind}
+          mode="WAIT"
+          name={modal.kind}
+          label={
+            <>
+              {modal.kind === "wait-remind" && modal.keep ? "keep waiting" : "waiting"} · <b>{title}</b> · {asksOn ? "on whom or what:" : `on ${modal.on} · remind me:`}
+            </>
+          }
+          placeholder={asksOn ? "the reviewer, CI, someone outside the team" : "19 Nov, +3d, +2w, or nothing for no reminder"}
+          value={modal.value}
+          error={modal.error}
+          go={asksOn ? "next" : "set it; u takes it back"}
+          inputRef={promptRef}
+          onChange={(value) => setModal({ ...modal, value, error: "" })}
+          onSubmit={submitWait}
+          onCancel={() => close(modal.kind === "wait-remind" && modal.keep ? "still waiting; it stays in your queue" : "not changed")}
+        />
+      ),
+      card: null,
+    };
+  }
   if (modal.kind === "archive-reason") {
     const { dropped } = modal;
     const under = host.under(modal.threadId).length;
