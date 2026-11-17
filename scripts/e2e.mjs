@@ -696,6 +696,9 @@ async function prepareReading(ids) {
     await waitForThread(ids.reader, (t) => t.status === "idle", "the reader's files made");
   } else if (!said) await sleep(0);
   writeFileSync(join(storage, "proof.txt"), PROOF_TEXT);
+  // A picture and a file that is neither text nor a picture, for what the reader does with each.
+  writeFileSync(join(storage, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSAMyCP8GywMNNAAAAAElFTkSuQmCC", "base64"));
+  writeFileSync(join(storage, "blob.bin"), Buffer.from(Array.from({ length: 600 }, (_, i) => (i * 37 + (i % 7 === 0 ? 0 : 255 - i)) % 256)));
   writeFileSync(join(storage, "notes.md"), "# Notes\n\nSee [the proof](proof.txt) beside this file, and [where keys are read](" + join(workspace, "src/keys.ts") + ":62).\n\n- one\n- two\n");
   // Every run starts with nothing marked, nothing asked, and every reply seen.
   for (const name of READING) {
@@ -746,17 +749,19 @@ async function readingChecks(page, ids, shot, chooseMain) {
   // -- projects: never done ------------------------------------------------
   await page.waitFor(`${stateOf(ids.reader)} === "done" && ${stateOf(ids.phead)} === "idle"`, { label: "the fixtures at rest" });
   check("a quiet thread with nothing under it and no mark is done, in the Done section", !(await page.eval(inTree(ids.reader))) && (await page.eval(projectOf(ids.reader))) === null);
-  check(
-    "a group head is a project without being marked: at rest it is idle, in the tree, with its member under it",
-    (await page.eval(stateOf(ids.phead))) === "idle" && (await page.eval(inTree(ids.phead))) && (await page.eval(projectOf(ids.phead))) === "head" && (await page.eval(`${lineEl(ids.pkid)}?.dataset.cowDepth`)) === "1",
-    JSON.stringify([await page.eval(stateOf(ids.phead)), await page.eval(projectOf(ids.phead))]),
-  );
   // bb keeps the unread reply of a Main with no parent itself; opening its chat reads it.
   await page.key("m");
   await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "idle"`, { label: "Main's reply read" });
   await page.key("Escape");
   await page.waitFor(`!document.querySelector("[data-cow-pane]")`, { label: "Main's chat closed" });
+  // bb may draw the page afresh after the window changed size just before; the lines are waited for again.
+  await page.waitFor(`${stateOf(ids.phead)} === "idle" && ${stateOf(ids.reader)} === "done"`, { label: "the lines drawn again" });
   check("Main is a project: at rest its heading reads idle", (await page.eval(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState`)) === "idle");
+  check(
+    "a group head is a project without being marked: at rest it is idle, in the tree, with its member under it",
+    (await page.eval(stateOf(ids.phead))) === "idle" && (await page.eval(inTree(ids.phead))) && (await page.eval(projectOf(ids.phead))) === "head" && (await page.eval(`${lineEl(ids.pkid)}?.dataset.cowDepth`)) === "1",
+    JSON.stringify([await page.eval(stateOf(ids.phead)), await page.eval(projectOf(ids.phead))]),
+  );
   await select(ids.reader);
   await page.key("P");
   await page.waitFor(`${stateOf(ids.reader)} === "idle"`, { label: "the line marked as a project" });
@@ -1182,7 +1187,7 @@ async function readingChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`!${sheet}`, { label: "the brief closed" });
 
   // -- an ask's proof, and files opened one from another -----------------------
-  const withProof = JSON.parse((await cowAs(ids.reader, "ask", "--question", "Are the notes right?", "--option", "yes", "--option", "no", "--proof", "notes.md", "--json")).stdout).ask;
+  const withProof = JSON.parse((await cowAs(ids.reader, "ask", "--question", "Are the notes right?", "--option", "yes", "--option", "no", "--proof", "notes.md", "--proof", "pixel.png", "--proof", "blob.bin", "--json")).stdout).ask;
   const second = JSON.parse((await cowAs(ids.reader, "ask", "--question", "Ship it on Friday?", "--json")).stdout).ask;
   await page.waitFor(`${stateOf(ids.reader)} === "wants" && ${lineEl(ids.reader)}.dataset.cowAsks === "2"`, { label: "the fixture's asks" });
   const card = `document.querySelector("[data-cow-ask-card]")`;
@@ -1210,6 +1215,21 @@ async function readingChecks(page, ids, shot, chooseMain) {
   await page.key("q");
   await closed();
   check("q from the first file returns to the ask's card, still open", (await page.eval(mode)) === "ask" && (await page.eval(`${card}?.dataset.cowAsk`)) === withProof.id);
+  await clickOn(`${card}.querySelector('[data-cow-ask-proof="pixel.png"]')`, "the picture");
+  await page.waitFor(`${rdPath} === "pixel.png" && ${rd("Kind")} === "image" && ${reader}.querySelector("[data-cow-rd-image]")?.naturalWidth === 8`, { label: "the picture in the reader", timeout: 20_000 });
+  check("a picture is shown as a picture, with its size in the heading", /\d+ B/.test(await page.eval(`${reader}.querySelector(".cow-rd-head").textContent`)));
+  await shot("reader-image");
+  await page.key("q");
+  await closed();
+  await clickOn(`${card}.querySelector('[data-cow-ask-proof="blob.bin"]')`, "the file that is not text");
+  await page.waitFor(`${rdPath} === "blob.bin" && ${rd("Kind")} === "binary"`, { label: "the file that is not text in the reader", timeout: 20_000 });
+  const binaryText = await page.eval(`${reader}.querySelector(".cow-rd-msg").textContent`);
+  check("a file that is neither text nor a picture says so, with its size and what can still be done", binaryText.includes("not a text file (600 B)") && binaryText.includes("bb's own panel") && binaryText.includes("copies its"), binaryText);
+  await page.key("y");
+  check("y still copies its path", (await page.eval(rd("Copied")) ?? "").endsWith("/blob.bin"));
+  await page.key("q");
+  await closed();
+  check("q returns to the card from each", (await page.eval(mode)) === "ask");
   await page.key("Escape");
   await page.waitFor(`!${card}`, { label: "the card closed" });
 

@@ -27,6 +27,9 @@ const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const text = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
 
+/** How many pages of a thread's timeline are read to find one change: 40 rows or so each. */
+const MAX_TIMELINE_PAGES = 40;
+
 const NO_ROOTS: Roots = { hostId: null, workspace: null, storage: null };
 
 /** Reads files for the reader, remembering where each thread's files are. */
@@ -112,9 +115,12 @@ export class FileSource {
     return { type: "text", content: cut ? got.content.slice(0, got.content.lastIndexOf("\n", CUT_ABOVE) + 1 || CUT_ABOVE) : got.content, sha, size, cut };
   }
 
-  /** The change a timeline row made to a file, as a patch. Null when the row is not among the rows bb gives. */
+  /**
+   * The change a timeline row made to a file, as a patch. bb gives a
+   * timeline a page at a time, newest first, so older pages are read until
+   * the row turns up. Null when it is on none of them.
+   */
   async change(threadId: string, rowId: string, relPath: string): Promise<Loaded | null> {
-    const timeline = record(await this.sdk.threads.timeline({ threadId }));
     let found: Record<string, unknown> | null = null;
     const walk = (rows: unknown) => {
       if (!Array.isArray(rows)) return;
@@ -128,7 +134,15 @@ export class FileSource {
         }
       }
     };
-    walk(timeline?.rows);
+    let before = null as { beforeAnchorId: string; beforeAnchorSeq: string } | null;
+    for (let page = 0; page < MAX_TIMELINE_PAGES && !found; page += 1) {
+      const timeline = record(await this.sdk.threads.timeline({ threadId, ...(before ?? {}) }));
+      walk(timeline?.rows);
+      const older = record(record(timeline?.timelinePage)?.olderCursor);
+      const anchorId = text(older?.anchorId);
+      if (anchorId === null || typeof older?.anchorSeq !== "number" || anchorId === before?.beforeAnchorId) break;
+      before = { beforeAnchorId: anchorId, beforeAnchorSeq: String(older.anchorSeq) };
+    }
     const change = record((found as Record<string, unknown> | null)?.change);
     const diff = text(change?.diff);
     if (!change || diff === null) return null;

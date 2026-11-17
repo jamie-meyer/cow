@@ -3,7 +3,7 @@
 
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { type ThreadReader, listThreads, readActivity, toFacts } from "./activity.ts";
-import type { Activity, ThreadFacts } from "./state.ts";
+import { type Activity, type ThreadFacts, isBusy } from "./state.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
@@ -13,6 +13,8 @@ const BATCH_MS = 150;
 /** One thread's activity is refreshed at most this often. */
 const ACTIVITY_MIN_INTERVAL_MS = 1500;
 const ACTIVITY_CONCURRENCY = 4;
+/** A thread that just stopped is shown as it was for at most this long while its events are read. */
+const SETTLE_MS = 5000;
 
 export interface Snapshot {
   status: "loading" | "ready" | "error";
@@ -54,6 +56,13 @@ export class ThreadStore {
   private readonly activityQueue: string[] = [];
   private readonly activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activityInFlight = 0;
+  /**
+   * Threads bb says have just come to rest, whose events have not been read
+   * since. Until they are, what the turn came to is not known, so the page
+   * keeps showing the thread as running instead of as whatever its older
+   * events say. The facts held back are applied when the read finishes.
+   */
+  private readonly settling = new Map<string, { facts: ThreadFacts; since: number; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(sdk: Sdk) {
     this.sdk = sdk;
@@ -103,6 +112,8 @@ export class ThreadStore {
       this.batchTimer = null;
       for (const timer of this.activityTimers.values()) clearTimeout(timer);
       this.activityTimers.clear();
+      for (const held of this.settling.values()) clearTimeout(held.timer);
+      this.settling.clear();
       this.activityQueue.length = 0;
     };
   }
@@ -118,6 +129,8 @@ export class ThreadStore {
       const { threads: all, truncated } = await listThreads(this.reader);
       if (this.stopped || seq !== this.loadSeq) return;
       this.threads.clear();
+      for (const held of this.settling.values()) clearTimeout(held.timer);
+      this.settling.clear();
       for (const facts of all) this.threads.set(facts.id, facts);
       this.status = "ready";
       this.error = null;
@@ -165,12 +178,16 @@ export class ThreadStore {
         const facts = toFacts(raw);
         if (!facts) continue;
         found.add(facts.id);
-        this.threads.set(facts.id, facts);
+        this.store(facts);
         // What it asks is read from the facts just stored.
         this.requestActivity(facts.id);
       }
       // bb leaves deleted threads out of the answer.
-      for (const id of ids) if (!found.has(id)) this.threads.delete(id);
+      for (const id of ids) {
+        if (found.has(id)) continue;
+        this.release(id, false);
+        this.threads.delete(id);
+      }
       this.publish();
     } catch {
       // A missed update is repaired by the next change or reconnect; a full
@@ -179,9 +196,47 @@ export class ThreadStore {
     }
   }
 
-  private requestActivity(id: string): void {
-    if (!this.watched.has(id) || this.activityTimers.has(id)) return;
-    const wait = Math.max(
+  /** Take a thread's new facts; one that has just stopped keeps its running status until its events are read. */
+  private store(facts: ThreadFacts): void {
+    const before = this.threads.get(facts.id);
+    const held = this.settling.get(facts.id);
+    const stopped = !isBusy(facts) && facts.status !== "error" && facts.archivedAt === null;
+    if (held) {
+      // Still being read: the newer facts wait in place of the older, or it is running again.
+      if (stopped) {
+        held.facts = facts;
+        return;
+      }
+      this.release(facts.id, false);
+    } else if (before && isBusy(before) && stopped && this.watched.has(facts.id)) {
+      const timer = setTimeout(() => this.release(facts.id, true), SETTLE_MS);
+      this.settling.set(facts.id, { facts, since: Date.now(), timer });
+      this.threads.set(facts.id, { ...facts, status: before.status });
+      this.requestActivity(facts.id, true);
+      return;
+    }
+    this.threads.set(facts.id, facts);
+  }
+
+  /** Stop holding a thread's facts back; with `apply`, show them. */
+  private release(id: string, apply: boolean): void {
+    const held = this.settling.get(id);
+    if (!held) return;
+    clearTimeout(held.timer);
+    this.settling.delete(id);
+    if (!apply || !this.threads.has(id)) return;
+    this.threads.set(id, held.facts);
+    this.publish();
+  }
+
+  private requestActivity(id: string, now = false): void {
+    if (!this.watched.has(id)) return;
+    if (now) {
+      const pending = this.activityTimers.get(id);
+      if (pending) clearTimeout(pending);
+      this.activityTimers.delete(id);
+    } else if (this.activityTimers.has(id)) return;
+    const wait = now ? 0 : Math.max(
       0,
       (this.activityFetchedAt.get(id) ?? 0) + ACTIVITY_MIN_INTERVAL_MS - Date.now(),
     );
@@ -199,11 +254,19 @@ export class ThreadStore {
     while (this.activityInFlight < ACTIVITY_CONCURRENCY && this.activityQueue.length > 0) {
       const id = this.activityQueue.shift()!;
       this.activityInFlight += 1;
-      this.activityFetchedAt.set(id, Date.now());
+      const startedAt = Date.now();
+      this.activityFetchedAt.set(id, startedAt);
       void this.fetchActivity(id)
         .then((activity) => {
           if (this.stopped) return;
           this.activity.set(id, activity);
+          // Its events were read after it stopped: what its turn came to is known now.
+          const held = this.settling.get(id);
+          if (held && startedAt >= held.since) {
+            clearTimeout(held.timer);
+            this.settling.delete(id);
+            if (this.threads.has(id)) this.threads.set(id, held.facts);
+          } else if (held) this.requestActivity(id, true);
           this.publish();
         })
         // Activity only enriches a line; without it the line still shows its
