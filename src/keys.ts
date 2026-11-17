@@ -25,6 +25,10 @@ export type Command =
   | { kind: "reorder"; by: 1 | -1 }
   /** Narrow the page to the lines that match what is typed. */
   | { kind: "filter" }
+  /** Inside an open brief: run its check again. */
+  | { kind: "recheck" }
+  /** Close what is open over the page. */
+  | { kind: "close" }
   | { kind: "help" }
   | { kind: "choose-main" };
 
@@ -40,7 +44,8 @@ export const KEY_MAP: readonly { keys: string; does: string }[] = [
   { keys: "m", does: "open Main's chat the same way" },
   { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
   { keys: "I", does: "say something to the selected thread" },
-  { keys: "a", does: "answer the line's question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms" },
+  { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed" },
+  { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
   { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
   { keys: "r", does: "resume a parked line: back into the tree" },
   { keys: "Space", does: "mark a reply as seen: the line stops waiting on you" },
@@ -113,6 +118,12 @@ export class KeyReader {
         return { kind: "verb", verb: "stop" };
       case "e":
         return { kind: "verb", verb: "archive" };
+      case "b":
+        return { kind: "verb", verb: "brief" };
+      case "c":
+        return { kind: "recheck" };
+      case "q":
+        return { kind: "close" };
       case "u":
         return { kind: "undo" };
       case "Tab":
@@ -303,7 +314,9 @@ function reachable(element: HTMLElement, rect: DOMRect): boolean {
  * While a menu or dialog of bb's is open outside the page, only what it
  * offers takes a hint: that is where the next click goes.
  */
-export function collectHintTargets(root: HTMLElement): HintTarget[] {
+export function collectHintTargets(page: HTMLElement): HintTarget[] {
+  // A sheet open over the page covers it: only what is in the sheet can be used.
+  const root = page.querySelector<HTMLElement>("[data-cow-sheet]") ?? page;
   const popups = hostPopups();
   const lines: HintTarget[] = [];
   const own: HintTarget[] = [];
@@ -324,7 +337,8 @@ export function collectHintTargets(root: HTMLElement): HintTarget[] {
       if (rect.width === 0 || rect.height === 0) continue;
       const clip = (element.closest("[data-cow-scroll]") ?? root).getBoundingClientRect();
       if (rect.top < clip.top - 1 || rect.bottom > clip.bottom + 1) continue;
-      add(element.dataset.cowLine === undefined && element.dataset.cowTodo === undefined ? own : lines, element, rect);
+      const isLine = element.dataset.cowLine !== undefined || element.dataset.cowTodo !== undefined || element.dataset.cowBriefItem !== undefined;
+      add(isLine ? lines : own, element, rect);
     }
   }
   for (const scope of popups.length > 0 ? popups : [root]) {

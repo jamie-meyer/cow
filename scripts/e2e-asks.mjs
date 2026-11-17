@@ -181,7 +181,7 @@ async function main() {
     const listed = JSON.parse((await cow(null, "asks", "--thread", ids.asker, "--json")).stdout);
     check("`bb cow asks` lists it", listed.asks.length === 1 && listed.asks[0].id === ask.id);
     const status = JSON.parse((await cow(null, "status", "--main", ids.asker, "--json")).stdout);
-    check("`bb cow status` puts it under what is waiting on the user", status.queue.some((entry) => entry.id === ids.asker && entry.doing.includes(ask.id)));
+    check("`bb cow status` puts it under what is waiting on the user", status.queue.some((entry) => entry.id === ids.asker && entry.doing.startsWith("asks you: Which colour?")) && status.asks.some((entry) => entry.id === ask.id));
     check("the asking thread reads as wanting the user", status.main.state === "wants", status.main.state);
 
     const stranger = await cow(ids.briefer, "ask", "--question", "Not mine to ask?", "--thread", ids.asker);
@@ -223,7 +223,7 @@ async function main() {
     check("`brief show` puts the dispute first", text.indexOf("CONTRADICTED  tests") > 0 && text.indexOf("CONTRADICTED  tests") < text.indexOf("Judgement calls") && text.indexOf("Judgement calls") < text.indexOf("Other claims"));
     console.log(text.split("\n").map((line) => `      | ${line}`).join("\n"));
     const marked = JSON.parse((await cow(null, "status", "--main", ids.asker, "--json")).stdout);
-    check("`bb cow status` marks the thread whose brief is disputed", marked.threads.some((entry) => entry.id === ids.briefer && /brief disputed: 1 contradicted/.test(entry.doing)), marked.threads.map((entry) => entry.doing).join(" | "));
+    check("`bb cow status` marks the thread whose brief is disputed", marked.threads.some((entry) => entry.id === ids.briefer && /brief disputed: 1 contradicted|brief: 1 disputed/.test(entry.doing)), marked.threads.map((entry) => entry.doing).join(" | "));
 
     const checker = await thread([...checkers][0]);
     check("the checker's thread is hidden, has no parent, and is archived", checker?.visibility === "hidden" && !checker.parentThreadId && checker.archivedAt != null, JSON.stringify({ visibility: checker?.visibility, parent: checker?.parentThreadId, archived: checker?.archivedAt != null }));

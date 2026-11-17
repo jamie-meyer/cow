@@ -34,3 +34,11 @@ test("the key map lists every new key", () => {
   const keys = KEY_MAP.map((entry) => entry.keys);
   for (const key of ["h l", "Space", "J K"]) assert.ok(keys.includes(key), key);
 });
+
+test("b opens a brief, and c and q are the brief's own keys", () => {
+  const reader = new KeyReader();
+  assert.deepEqual(reader.read("b", false, 0), { kind: "verb", verb: "brief" });
+  assert.deepEqual(reader.read("c", false, 0), { kind: "recheck" });
+  assert.deepEqual(reader.read("q", false, 0), { kind: "close" });
+  assert.ok(KEY_MAP.some((entry) => entry.keys === "b"));
+});

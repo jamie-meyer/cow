@@ -11,9 +11,9 @@ import { createAsks } from "./asks/service.ts";
 import type { Attention } from "./raised-cli.ts";
 import { type CheckerSight, type CheckerSettings, MAX_RUNS, briefRecordSchema, createBriefs } from "./briefs/service.ts";
 import { Refusal } from "./kv.ts";
+import { RAISED_CHANGED } from "./raised.ts";
 
-/** Realtime channel: published whenever an ask or a brief changes. */
-export const ATTENTION_CHANGED = "attention-changed";
+export { RAISED_CHANGED } from "./raised.ts";
 export const CHECKER_TITLE = "cow check";
 /** The largest brief file read from the machine the command ran on. */
 const MAX_BRIEF_FILE = 400_000;
@@ -27,6 +27,8 @@ const markSchema = z.object({
   contradicted: z.number(),
   notEstablished: z.number(),
   judgementCalls: z.number(),
+  at: z.number(),
+  read: z.boolean(),
 });
 
 /** What the page calls. Answering an ask is here and nowhere in the CLI: it is the user's to do. */
@@ -50,6 +52,11 @@ export const attentionRpcContract = defineRpcContract({
   brief_marks: {
     input: z.object({ threadIds: z.array(id).max(5000) }),
     output: z.object({ marks: z.record(z.string(), markSchema) }),
+  },
+  /** Record that the user opened this version of a thread's brief: it stops waiting on them. With `read` false, it waits again. */
+  brief_read: {
+    input: z.object({ threadId: id, version: z.number().int().min(1), read: z.boolean().optional() }),
+    output: z.null(),
   },
   /** Start a new check of a thread's latest brief. */
   brief_check: {
@@ -117,7 +124,7 @@ export function registerAttention(bb: BbPluginApi): Attention {
     },
   });
 
-  const changed = () => bb.realtime.publish(ATTENTION_CHANGED, {});
+  const changed = () => bb.realtime.publish(RAISED_CHANGED, {});
   const thread = async (threadId: string) => {
     const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
     return found ? { projectId: found.projectId, environmentId: found.environmentId ?? null } : null;
@@ -219,6 +226,10 @@ export function registerAttention(bb: BbPluginApi): Attention {
       return { record: await refusing(() => briefs.get(threadId, version)), versions };
     },
     brief_marks: async ({ threadIds }) => ({ marks: Object.fromEntries(await briefs.marks(threadIds)) }),
+    brief_read: async ({ threadId, version, read }) => {
+      await refusing(() => briefs.read(threadId, version, read ?? true));
+      return null;
+    },
     brief_check: async ({ threadId, ...overrides }) => ({
       record: await refusing(() => briefs.check({ caller: null, threadId, ...overrides })),
     }),

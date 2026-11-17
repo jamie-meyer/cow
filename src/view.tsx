@@ -19,6 +19,9 @@ import {
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import type { MainState, rpcContract } from "../server.ts";
+import { type BriefSheetControl, useBriefSheet } from "./BriefSheet.tsx";
+import { type BriefMark, disputeCount } from "./briefs/review.ts";
+import { type RaisedData, useRaised } from "./raisedData.ts";
 import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
 import { filterOverview } from "./filter.ts";
@@ -130,8 +133,8 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
 const LEGEND: readonly { state: LineState; name?: string; short: string; long: string }[] = [
   {
     state: "wants",
-    short: "it asked, or replied to you",
-    long: "It asked you a question or for permission, or it finished with a reply that is yours to read: Main, a thread with threads under it, or any thread you sent the message to. Enter opens it; Space marks it seen. Listed in the queue.",
+    short: "it asks, or replied to you",
+    long: "It has an ask open for you (“asks you: …”, press a), it asked a question or for permission in its chat, its brief has disputes or judgement calls you have not read (press b), or it finished with a reply that is yours to read: Main, a thread with threads under it, or any thread you sent the message to. Enter opens its chat; Space marks a reply seen. Listed in the queue.",
   },
   {
     state: "blocked",
@@ -195,6 +198,66 @@ function Age({ derived, now }: { derived: Derived; now: number }) {
     <span className={`cow-ag cow-a${weight} cow-s-${derived.state}`} title="time in this state">
       <Pips count={calm ? 0 : Math.floor(ms / WEEK)} />
       <b>{formatAge(ms)}</b>
+    </span>
+  );
+}
+
+/** The two marks a brief adds: the brief itself, and "disputed". */
+const BRIEF_GLYPH = (
+  <svg className="cow-g" viewBox="0 0 12 12" aria-hidden="true">
+    <path d="M2.6 1.1h4.6l2.2 2.2v7.6H2.6z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M4.4 5.4h3.2M4.4 7.6h3.2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+  </svg>
+);
+const DISPUTED_GLYPH = (
+  <svg className="cow-g" viewBox="0 0 12 12" aria-hidden="true">
+    <path d="M2 4.3h8M2 7.7h8M8.2 1.6 3.8 10.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
+
+type BriefKind = "disputed" | "clean" | "failed" | "checking" | "unchecked";
+export function briefKind(mark: BriefMark): BriefKind {
+  if (mark.state === "running") return "checking";
+  if (mark.state === "failed") return "failed";
+  if (mark.state === "unchecked") return "unchecked";
+  return disputeCount(mark) > 0 ? "disputed" : "clean";
+}
+
+/** What a thread's latest brief came to, in a few marks. Only a checker's answer is ever shown as a result. */
+function BriefMarks({ mark }: { mark: BriefMark }) {
+  const kind = briefKind(mark);
+  const disputed = disputeCount(mark);
+  const calls = mark.judgementCalls;
+  const words: Record<BriefKind, string> = {
+    disputed: `the checker disputes ${disputed} ${disputed === 1 ? "claim" : "claims"}${mark.contradicted > 0 ? `: ${mark.contradicted} contradicted` : ""}${mark.notEstablished > 0 ? `${mark.contradicted > 0 ? "," : ":"} ${mark.notEstablished} not established` : ""}`,
+    clean: "the checker disputed none of its claims; that is one audit of the evidence attached, not proof",
+    failed: "the check failed: nothing in the brief is verified",
+    checking: "a checker is auditing it now",
+    unchecked: "no checker has audited it",
+  };
+  return (
+    <span
+      className={`cow-brief cow-b-${kind}${mark.read ? " cow-b-read" : ""}`}
+      data-cow-brief={kind}
+      data-cow-brief-count={disputed}
+      data-cow-brief-read={mark.read || undefined}
+      title={`brief v${mark.version}: ${words[kind]}${calls > 0 ? `; ${calls} ${calls === 1 ? "judgement call" : "judgement calls"} for you` : ""} · b opens it`}
+    >
+      {BRIEF_GLYPH}
+      {kind === "disputed" ? (
+        <>
+          {DISPUTED_GLYPH}
+          {disputed}
+        </>
+      ) : kind === "clean" ? (
+        <Glyph state="done" />
+      ) : kind === "failed" ? (
+        <Glyph state="failed" />
+      ) : kind === "checking" ? (
+        <Glyph state="running" />
+      ) : (
+        <small>unchecked</small>
+      )}
     </span>
   );
 }
@@ -291,6 +354,7 @@ function LineRow({
       data-cow-depth={flat ? undefined : line.depth}
       data-cow-fold={fold ?? undefined}
       data-cow-reply={derived.reply ? "" : undefined}
+      data-cow-asks={derived.asks?.length}
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
       data-cow-returned={returned || undefined}
@@ -341,6 +405,7 @@ function LineRow({
             </small>
           ) : null}
         </span>
+        {derived.brief ? <BriefMarks mark={derived.brief} /> : null}
         {!flat && line.rollup ? <RollupMarks rollup={line.rollup} older={line.olderUnder} /> : null}
       </span>
       <span className="cow-wh">
@@ -509,6 +574,28 @@ function Help({ onClose }: { onClose: () => void }) {
             <span>“ ”</span>
             <span>
               <b>next, in its own words.</b> What the thread itself says happens next, set with bb cow next.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>
+              {BRIEF_GLYPH}
+              <Glyph state="done" />
+            </span>
+            <span>
+              <b>a brief.</b> The thread submitted its finished job as claims with evidence. Beside it, what a
+              separate checker made of it: <Glyph state="done" /> it disputed nothing, <Glyph state="running" /> it is
+              checking, <Glyph state="failed" /> the check failed, so nothing is verified. <kbd>b</kbd> opens it.
+              A check is one model's audit of the evidence the agent attached, not proof.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>
+              {BRIEF_GLYPH}
+              {DISPUTED_GLYPH}2
+            </span>
+            <span>
+              <b>disputed.</b> The checker's verdict on that many claims is weaker than the agent's own label:
+              contradicted by the evidence, or not established by it.
             </span>
           </div>
           <div className="cow-row">
@@ -870,6 +957,7 @@ function OverviewScreen({
   now,
   truncated,
   parks,
+  raised,
   threads,
   onChooseMain,
 }: {
@@ -878,6 +966,7 @@ function OverviewScreen({
   now: number;
   truncated: boolean;
   parks: Parks;
+  raised: RaisedData;
   threads: readonly ThreadFacts[];
   onChooseMain: () => void;
 }) {
@@ -1082,12 +1171,15 @@ function OverviewScreen({
   const selectedLine =
     [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
   const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
+  const sheetRef = useRef<BriefSheetControl | null>(null);
   const verbs = useVerbs({
     sdk,
     overview,
     main,
     selected: selectedLine,
     parks,
+    raised,
+    openBrief: (id) => sheetRef.current?.open(id),
     now,
     folded,
     under: (id) => descendantIds(threads, id),
@@ -1096,6 +1188,20 @@ function OverviewScreen({
     openChat,
     focusOverview,
   });
+
+  const sheet = useBriefSheet({
+    raised,
+    titleOf: (id) => titles.get(id) ?? "a thread that is no longer listed",
+    now,
+    say: setMessage,
+    startAsk: verbs.startAsk,
+    askCard: (askId) => (verbs.card?.askId === askId ? verbs.card.node : null),
+    onClose: (id) => {
+      setCursor(id);
+      focusOverview();
+    },
+  });
+  sheetRef.current = sheet;
 
   // A reply showing in the pane has been seen. Each is marked once, so that
   // undoing a mark made with Space is not undone again by the open pane.
@@ -1120,8 +1226,14 @@ function OverviewScreen({
     });
 
   const run = (command: Command) => {
+    // An open brief covers the page, and the keys are its own.
+    if (sheet.threadId !== null && sheet.onCommand(command)) return;
     if (moveInList({ order, cursor: selected, setCursor }, command)) return;
     switch (command.kind) {
+      case "recheck":
+        return setMessage("c runs a brief's check again from inside the brief: b opens one");
+      case "close":
+        return;
       case "open":
         // What is not started has no chat of its own; its thread's is the nearest thing.
         return openChat(selectedTodo ? selectedTodo.ownerId : selected);
@@ -1188,6 +1300,8 @@ function OverviewScreen({
         }
       : verbs.onKey
         ? (key) => {
+            // An ask's proof files are links: f still labels them while its card is open.
+            if (key === "f" && verbs.mode === "ASK") return false;
             verbs.onKey?.(key);
             return true;
           }
@@ -1202,7 +1316,12 @@ function OverviewScreen({
                 filterRef.current?.focus();
                 return true;
               }
-            : null,
+            : sheet.onKey
+              ? (key) => {
+                  sheet.onKey?.(key);
+                  return true;
+                }
+              : null,
     (element) => {
       // A hint on a field in the chat is the user asking for the caret there.
       if (takesCaret(element) && element.closest("[data-cow-chat]")) chatMayFocus.current = true;
@@ -1247,7 +1366,8 @@ function OverviewScreen({
     );
   };
   const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
-  const card = (id: string) => (verbs.card?.threadId === id ? verbs.card.node : null);
+  // A card opened for one ask from inside a brief is drawn there, not under the line.
+  const card = (id: string) => (verbs.card?.threadId === id && verbs.card.askId === undefined ? verbs.card.node : null);
   const row = (line: Line, flat: boolean) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
@@ -1289,7 +1409,7 @@ function OverviewScreen({
             ? "say"
             : help
               ? "help"
-              : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : "normal"))
+              : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : sheet.threadId !== null ? "brief" : "normal"))
       }
       tabIndex={-1}
       ref={rootRef}
@@ -1317,6 +1437,7 @@ function OverviewScreen({
               {STATE_LABEL[main.derived.state]} <Age derived={main.derived} now={now} />
             </span>
             <span className="cow-maindoing">
+              {main.derived.brief ? <BriefMarks mark={main.derived.brief} /> : null}
               {main.derived.doing}
               {main.note !== null ? (
                 <span className="cow-own" data-cow-note="" title="what is next, in Main's own words">
@@ -1404,8 +1525,8 @@ function OverviewScreen({
                 Waiting on you <b>{overview.queue.length}</b>
               </h2>
               <p className="cow-sub">
-                Questions, permission requests, refused permissions, failures, replies addressed to you
-                and parked work that came back, oldest first.
+                Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
+                replies addressed to you and parked work that came back, oldest first.
               </p>
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
@@ -1550,7 +1671,7 @@ function OverviewScreen({
                     <Verb keys="J" label="down" off={selectedTodo.number === selectedTodo.of} onRun={() => verbs.moveTodo(selectedTodo, 1)} />
                   </>
                 ) : (
-                  (["answer", "park", "resume", "stop", "archive"] as const).map(verbButton)
+                  (["answer", "brief", "park", "resume", "stop", "archive"] as const).map(verbButton)
                 )}
                 {selectedLine?.derived.reply ? (
                   <Verb keys="␣" label="seen" name="seen" onRun={() => verbs.markSeen(selectedLine, true)} />
@@ -1581,6 +1702,7 @@ function OverviewScreen({
           )}
         </footer>
       </div>
+      {sheet.node}
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
     </div>
@@ -1626,6 +1748,7 @@ export function CowPage() {
   );
   const parks = useParks(underMain);
   const notes = parks.notes;
+  const raised = useRaised(underMain);
 
   const heads = useMemo(() => headIds(snapshot.threads), [snapshot.threads]);
   const overview = useMemo(
@@ -1645,6 +1768,7 @@ export function CowPage() {
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
                 { head: heads.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
+                { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null },
               ),
             now,
             {
@@ -1652,7 +1776,7 @@ export function CowPage() {
               todos: (id) => parks.todos.get(id) ?? [],
             },
           ),
-    [snapshot, mainId, heads, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, now],
+    [snapshot, mainId, heads, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, now],
   );
 
   useEffect(() => {
@@ -1743,6 +1867,7 @@ export function CowPage() {
       now={now}
       truncated={snapshot.truncated}
       parks={parks}
+      raised={raised}
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
     />

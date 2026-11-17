@@ -8,6 +8,11 @@
 // It also runs `bb cow` against the same fixtures, and leaves and removes
 // notes of what is next on them.
 //
+// For asks and briefs it uses three more fixtures under a Main of their own,
+// and cow starts two hidden checker threads, titled "cow check", the first
+// time: the briefs they audit are kept and used again. While it runs it sets
+// cow's checker model and provider, and puts both back as they were.
+//
 // Choosing a Main records it on the server as where a new cow window starts.
 // The check puts that record back at once, each time, for the fixtures'
 // project only, and no window that is already open is moved by it. A Main
@@ -26,6 +31,7 @@
 //   --keep              leave the fixtures unarchived (use with --state)
 //   --shots <dir>       save screenshots here (never commit them)
 //   --model <id>        fixture model (default claude-haiku-5-5)
+//   --only-raised       only the asks and briefs checks
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -145,13 +151,24 @@ async function spawn({ prompt, parent, model = MODEL, permissionMode }) {
   return thread.id;
 }
 
-const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms"];
+const ASKER = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
+From then on:
+- when you receive the message "ask", run this shell command once, exactly as written, and reply with exactly the first line it printed:
+  bb cow ask --question "Which colour?" --option red --option "blue::the colder one"
+- when you receive a message that starts with "Answer to your question", reply with exactly: GOT <the last line of that message>
+- reply to anything else with exactly: ok
+Never run anything else, and never ask again by yourself.`;
+
+const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer"];
+/** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
+const RAISED = ["amain", "asker", "briefer"];
 
 /**
  * Seven threads on three levels under Main: a quiet child, which heads a
  * group; under it a grandchild that fails, which heads a group of its own;
  * under that a quiet leaf. Then a child that asks a question, a child that
- * can be made to run, and a child that asks for permission.
+ * can be made to run, and a child that asks for permission. Apart from
+ * those, a second Main with two children, for asks and briefs.
  * With --state, fixtures made by an earlier run are used again.
  */
 async function fixtures() {
@@ -171,6 +188,9 @@ async function fixtures() {
   await make("leaf", { prompt: QUIET, parent: ids.fails });
   await make("runs", { prompt: RUNS, parent: ids.main });
   await make("perms", { prompt: PERMS, parent: ids.main, permissionMode: "accept-edits" });
+  await make("amain", { prompt: QUIET });
+  await make("asker", { prompt: ASKER, parent: ids.amain });
+  await make("briefer", { prompt: QUIET, parent: ids.amain });
   return ids;
 }
 
@@ -208,6 +228,418 @@ async function assertOurs(ids) {
     if (!thread || thread.title !== TITLE) throw new Error(`${id} is not a "${TITLE}" fixture`);
     PROJECT_OF[name] = thread.projectId;
   }
+}
+
+// ---- asks and briefs ----------------------------------------------------
+
+/** Puts cow's checker settings back as they were before this run. */
+let restoreSettings = async () => undefined;
+const plain = async (...argv) => (await run("bb", argv, { env: (({ BB_THREAD_ID: _own, ...rest }) => rest)(process.env) })).stdout;
+/** Call cow's RPC; a refusal is an answer here, not an error. */
+async function rpcSoft(method, input) {
+  const response = await fetch(`${BB}/api/v1/plugins/cow/rpc/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return response.json();
+}
+const openAsksOf = async (id) => (await rpc("asks_list", { threadId: id })).asks;
+const briefOf = async (id) => (await rpc("brief_get", { threadId: id })).record;
+
+const DISPUTED_BRIEF = {
+  summary: "Raised the request timeout and ran the test suite.",
+  claims: [
+    { id: "timeout", text: "The config sets the request timeout to 30 seconds.", label: "checked", evidence: [{ description: "the config file after the change", path: "config.txt" }] },
+    {
+      id: "tests",
+      text: "All 12 tests pass.",
+      label: "checked",
+      evidence: [{ description: "the last lines of the test run", text: "Ran 12 tests in 3.1s\n11 passed, 1 failed\nFAIL test_login_redirect: expected 302, got 500" }],
+    },
+  ],
+  judgementCalls: [{ text: "Is 30 seconds acceptable for the slowest endpoint?" }],
+  notDone: ["The change was not tried against production traffic."],
+};
+const CLEAN_BRIEF = {
+  summary: "Set the retry count.",
+  claims: [{ id: "retries", text: "The config sets retries to 2.", label: "checked", evidence: [{ description: "the config file after the change", text: "# service config\nrequest_timeout_seconds = 30\nretries = 2" }] }],
+};
+
+/**
+ * Bring the three fixtures to where these checks start: no ask open; a brief
+ * on `briefer` that a checker disputed and one on `asker` that it did not,
+ * both made once and kept; and on the Main a new brief whose check failed,
+ * with a judgement call that is open as an ask. A check on a provider that
+ * does not exist fails at once and starts no thread.
+ */
+async function prepareRaised(ids) {
+  const dataDir = /Data dir:\s*(\S+)/.exec(await plain("status"))?.[1];
+  if (!dataDir) throw new Error("could not find bb's data directory in `bb status`");
+  const before = JSON.parse(await plain("plugin", "config", "cow", "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", "cow", ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  restoreSettings = async () => {
+    await set("checkerModel", before.checkerModel);
+    await set("checkerProvider", before.checkerProvider);
+  };
+  await set("checkerModel", MODEL);
+  await set("checkerProvider", "claude-code");
+
+  for (const name of RAISED) {
+    await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+    for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
+  }
+  const storage = (id) => {
+    const dir = join(dataDir, "thread-storage", id);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+  const submit = async (id, brief) => {
+    const file = join(storage(id), "brief.json");
+    writeFileSync(file, JSON.stringify(brief, null, 2));
+    const done = await cowAs(id, "brief", "submit", file, "--wait", "--json");
+    if (done.code !== 0) throw new Error(`could not submit a brief for ${id}: ${done.stderr}`);
+    return JSON.parse(done.stdout);
+  };
+  writeFileSync(join(storage(ids.briefer), "config.txt"), "# service config\nrequest_timeout_seconds = 30\nretries = 2\n");
+  writeFileSync(join(storage(ids.asker), "proof.txt"), "the plan: ship tonight, roll back by redeploying the previous build\n");
+  const checkers = [];
+  for (const [id, brief] of [[ids.briefer, DISPUTED_BRIEF], [ids.asker, CLEAN_BRIEF]]) {
+    const stored = await briefOf(id);
+    if (stored?.check?.runs.some((entry) => entry.status === "done")) continue;
+    await submit(id, brief);
+    checkers.push(...(await briefOf(id)).check.runs.map((entry) => entry.threadId));
+  }
+  // Every run starts with both unread.
+  for (const id of [ids.briefer, ids.asker]) await rpc("brief_read", { threadId: id, version: (await briefOf(id)).version, read: false });
+
+  const call = JSON.parse((await cowAs(ids.amain, "ask", "--question", "Keep the old endpoint for a week?", "--option", "keep it", "--option", "remove it now", "--json")).stdout).ask;
+  await set("checkerProvider", "cow-test-no-such-provider");
+  await submit(ids.amain, { summary: "Moved the endpoint.", claims: [{ id: "moved", text: "The endpoint answers at its new path.", label: "inferred" }], judgementCalls: [{ text: "Keep the old endpoint for a week?", askId: call.id }] });
+  await set("checkerProvider", "claude-code");
+  if (checkers.length > 0) console.log(`checker threads started for the briefs: ${checkers.join(", ")}`);
+  return { call };
+}
+
+async function raisedChecks(page, ids, shot, chooseMain) {
+  const { call } = await prepareRaised(ids);
+  const mainLine = `document.querySelector(".cow-mainline")`;
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const doing = (id) =>
+    `(() => { const cell = ${lineEl(id)}?.querySelector(".cow-wh")?.cloneNode(true); cell?.querySelector(".cow-nx2")?.remove(); return cell?.textContent ?? ""; })()`;
+  const briefMark = (id) => `(${lineEl(id)}?.querySelector("[data-cow-brief]")?.dataset.cowBrief ?? null)`;
+  const queued = (id) => `(document.querySelector('[data-cow-queue="${id}"] p')?.textContent ?? null)`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const card = `document.querySelector("[data-cow-ask-card]")`;
+  const cardAsk = `(${card}?.dataset.cowAsk ?? null)`;
+  const stage = `(${card}?.dataset.cowAskStage ?? null)`;
+  const note = `(document.querySelector("[data-cow-answer-note]")?.textContent ?? "").trim()`;
+  const chosen = `JSON.stringify([...document.querySelectorAll("[data-cow-ask-card] [data-cow-chosen]")].map((o) => o.dataset.cowAnswerOption))`;
+  const sheet = `document.querySelector("[data-cow-sheet]")`;
+  const sheetCursor = `(${sheet}?.querySelector(".cow-bf-item.cow-cur")?.dataset.cowBriefItem ?? null)`;
+  const select = async (id) => {
+    await page.key("g");
+    await page.key("g");
+    for (let i = 0; i < 20 && !(await page.eval(isCursor(id))); i += 1) await page.key("j");
+    if (!(await page.eval(isCursor(id)))) throw new Error(`could not select ${id}`);
+  };
+  const said = async (id) => (await api(`/threads/${id}/output`)).output ?? "";
+  /** What the fixture said last, once it contains `text` (or after two minutes, whatever it is). */
+  const got = async (id, text) => {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const out = await said(id);
+      if (out.includes(text) || Date.now() > deadline) return out;
+      await sleep(1000);
+    }
+  };
+
+  // -- an ask raised by the fixture itself, and two more on the same thread --
+  await tellAs(ids.amain, ids.asker, "ask");
+  const deadline = Date.now() + 120_000;
+  let first = null;
+  while (first === null && Date.now() < deadline) {
+    [first = null] = await openAsksOf(ids.asker);
+    if (first === null) await sleep(1000);
+  }
+  if (first === null) throw new Error("the fixture never asked");
+  await waitForThread(ids.asker, (t) => t.status === "idle", "idle after asking");
+  const raise = async (...argv) => JSON.parse((await cowAs(ids.asker, "ask", ...argv, "--json")).stdout).ask;
+  const medium = await raise("--question", "Ship it tonight?", "--option", "yes::the launch is unblocked", "--option", "no::it slips a day", "--risk", "medium", "--context", "The migration cannot be rolled back.", "--proof", "proof.txt");
+  const high = await raise("--question", "Delete the old table?", "--risk", "high");
+
+  await chooseMain(page, ids.amain);
+  await page.waitFor(`!!${lineEl(ids.asker)} && !!${lineEl(ids.briefer)}`, { label: "the asking fixtures' lines" });
+  await page.waitFor(`${lineEl(ids.asker)}?.dataset.cowAsks === "3"`, { label: "the three asks on one line" });
+  check(
+    "a thread with open asks reads as asking you: the oldest question and how many more",
+    (await page.eval(lineState(ids.asker))) === "wants" && (await page.eval(doing(ids.asker))) === "asks you: Which colour? (and 2 more)",
+    await page.eval(doing(ids.asker)),
+  );
+  check("an ask raised by a fixture is in the queue", (await page.eval(queued(ids.asker))) === "asks you: Which colour? (and 2 more)", String(await page.eval(queued(ids.asker))));
+  check(
+    "an ask outranks the brief on the same line, which keeps its mark: the checker disputed nothing",
+    (await page.eval(briefMark(ids.asker))) === "clean",
+    String(await page.eval(briefMark(ids.asker))),
+  );
+
+  // -- briefs on the lines --
+  check(
+    "a brief with a contradicted claim shows as disputed on its line, with the count",
+    (await page.eval(briefMark(ids.briefer))) === "disputed" && (await page.eval(`${lineEl(ids.briefer)}.querySelector("[data-cow-brief]").dataset.cowBriefCount`)) === "1",
+    String(await page.eval(briefMark(ids.briefer))),
+  );
+  check(
+    "a finished thread whose brief has a dispute wants you, and is in the queue",
+    (await page.eval(lineState(ids.briefer))) === "wants" && (await page.eval(queued(ids.briefer))) === "brief: 1 disputed, 1 judgement call",
+    `${await page.eval(lineState(ids.briefer))} / ${await page.eval(queued(ids.briefer))}`,
+  );
+  check(
+    "a failed check shows as failed on the heading, never as clean",
+    (await page.eval(`${mainLine}.querySelector("[data-cow-brief]")?.dataset.cowBrief ?? null`)) === "failed",
+  );
+  await shot("raised-overview");
+
+  // -- answering: the first ask, sent on Enter --
+  await select(ids.asker);
+  check("the verb bar offers a and b on a line with an ask and a brief", await page.eval(`!document.querySelector('[data-cow-verb="answer"]').classList.contains("cow-off") && !document.querySelector('[data-cow-verb="brief"]').classList.contains("cow-off")`));
+  await page.key("a");
+  await page.waitFor(`${cardAsk} === "${first.id}"`, { label: "the ask card" });
+  const cardText = await page.eval(`${card}.textContent`);
+  check(
+    "a opens the oldest ask under its line: the question, its options with their detail, and the others listed",
+    (await page.eval(`${lineEl(ids.asker)}.nextElementSibling === ${card}`)) &&
+      cardText.includes("Which colour?") &&
+      cardText.includes("the colder one") &&
+      (await page.eval(`${card}.dataset.cowAskCount`)) === "3" &&
+      (await page.eval(`${card}.querySelector("[data-cow-ask-others]")?.dataset.cowAskOthers`)) === "2" &&
+      cardText.includes("Ship it tonight?"),
+    cardText.slice(0, 200),
+  );
+  check("the ask card is its own mode", (await page.eval(mode)) === "ask");
+  await page.key("2");
+  check("a digit only marks an option", (await page.eval(chosen)) === '["2"]' && (await openAsksOf(ids.asker)).length === 3);
+  await shot("ask-card");
+  await page.key("Enter");
+  const afterFirst = await got(ids.asker, "GOT");
+  check("Enter sends a low-risk answer; the idle fixture receives it and continues", /GOT\s+blue \(option 2\)/.test(afterFirst), JSON.stringify(afterFirst));
+  await page.waitFor(`${cardAsk} === "${medium.id}"`, { label: "the next ask in the card" });
+  const sentLine = await page.eval(`${card}.querySelector("[data-cow-ask-sent]")?.textContent ?? ""`);
+  check(
+    "after answering, the card says what was sent, to which thread, and that it cannot be undone; then moves to the next ask",
+    sentLine.includes("sent to “cow test”: blue (option 2)") && sentLine.includes("cannot be undone"),
+    sentLine,
+  );
+
+  // -- the medium-risk ask: restated, then a second Enter --
+  const mediumText = await page.eval(`${card}.textContent`);
+  const proofHref = await page.eval(`${card}.querySelector('[data-cow-ask-proof="proof.txt"]')?.getAttribute("href") ?? null`);
+  check(
+    "the card shows the ask's context, its risk, and its proof file as a link",
+    mediumText.includes("The migration cannot be rolled back.") && (await page.eval(`${card}.querySelector("[data-cow-ask-risk]")?.dataset.cowAskRisk`)) === "medium" && typeof proofHref === "string" && proofHref.length > 0,
+    String(proofHref),
+  );
+  await page.key("f");
+  const proofHint = await page.eval(`[...document.querySelectorAll("[data-cow-hint-label]")].some((tag) => (tag.dataset.cowHintFor ?? "").startsWith("a:") && tag.dataset.cowHintIn === "page")`);
+  await page.key("Escape");
+  check("f puts a hint on the proof link", proofHint);
+  await page.key("1");
+  await page.key("Enter");
+  check(
+    "medium risk: the first Enter sends nothing and restates what will be sent, and to whom",
+    (await page.eval(stage)) === "restate" &&
+      (await page.eval(`${card}.querySelector("[data-cow-ask-said]")?.textContent`)) === "yes (option 1)" &&
+      (await page.eval(`${card}.querySelector("[data-cow-ask-restate]")?.textContent ?? ""`)).includes("cow test") &&
+      (await openAsksOf(ids.asker)).some((ask) => ask.id === medium.id),
+  );
+  await shot("ask-restate");
+  await page.key("2");
+  check("while it is restated, a digit changes nothing", (await page.eval(chosen)) === '["1"]');
+  await page.key("Escape");
+  check("Escape goes back to the choices, and still sends nothing", (await page.eval(stage)) === "choose" && (await page.eval(chosen)) === '["1"]' && (await openAsksOf(ids.asker)).length === 2);
+  await page.key("Enter");
+  await page.key("Enter");
+  check("the second Enter sends it", /GOT\s+yes \(option 1\)/.test(await got(ids.asker, "GOT yes")), JSON.stringify(await said(ids.asker)));
+
+  // -- the high-risk ask: a word typed --
+  await page.waitFor(`${cardAsk} === "${high.id}"`, { label: "the high-risk ask in the card" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "ask-answer"`, { label: "the caret in the answer field" });
+  check("an ask with no options puts the caret in its answer field", true);
+  await page.key("Enter");
+  check("an empty answer is not sent", (await page.eval(note)).includes("type your answer first"), await page.eval(note));
+  await page.type("keep it one more week");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "word" && document.activeElement?.dataset.cowInput === "ask-word"`, { label: "the field for the word" });
+  await page.key("Enter");
+  check("high risk: Enter without the word sends nothing", (await page.eval(note)).includes("type the word send") && (await openAsksOf(ids.asker)).length === 1, await page.eval(note));
+  await page.type("send");
+  await shot("ask-word");
+  await page.key("Enter");
+  check("with the word typed, it is sent", /GOT\s+keep it one more week/.test(await got(ids.asker, "GOT keep")), JSON.stringify(await said(ids.asker)));
+  await page.waitFor(`!${card}`, { label: "the card closing after the last ask" });
+  check(
+    "after the last ask the card closes and the page says what was sent",
+    (await page.eval(message)).includes("sent to “cow test”: keep it one more week") && (await page.eval(mode)) === "normal",
+    await page.eval(message),
+  );
+  const asked = (await api(`/threads/${ids.asker}/timeline`)).rows.filter((row) => row.kind === "conversation" && row.role === "user").at(-1);
+  check("the answer went as a message from the user that quotes the question", asked?.initiator === "user" && asked.text.includes("> Delete the old table?") && asked.text.includes(`(${high.id})`), JSON.stringify(asked?.text));
+  await page.waitFor(`${lineEl(ids.asker)}?.dataset.cowAsks === undefined`, { label: "the asks leaving the line" });
+
+  // -- a withdrawn ask disappears live --
+  const passing = await raise("--question", "Never mind this one?");
+  await page.waitFor(`${doing(ids.asker)} === "asks you: Never mind this one?"`, { label: "a new ask on the line" });
+  await select(ids.asker);
+  await page.key("a");
+  await page.waitFor(`${cardAsk} === "${passing.id}"`, { label: "the card for the passing ask" });
+  await cowAs(ids.asker, "ask", "withdraw", passing.id);
+  await page.waitFor(`!${card} && ${lineEl(ids.asker)}?.dataset.cowAsks === undefined`, { label: "the withdrawn ask leaving the page" });
+  check("a withdrawn ask leaves the line, the queue and its open card at once", (await page.eval(message)).includes("no longer open") && !(await page.eval(doing(ids.asker))).startsWith("asks you"), await page.eval(message));
+
+  // -- a clean brief does not enter the queue --
+  await page.waitFor(`${lineEl(ids.asker)}?.dataset.cowReply === ""`, { label: "the fixture's reply on its line", timeout: 60_000 });
+  await select(ids.asker);
+  await page.key(" ");
+  await page.waitFor(`${lineState(ids.asker)} === "done"`, { label: "the asker at rest" });
+  check(
+    "a thread whose brief checked clean is done, with the mark, and not in the queue",
+    (await page.eval(briefMark(ids.asker))) === "clean" && (await page.eval(queued(ids.asker))) === null,
+    `${await page.eval(briefMark(ids.asker))} / ${await page.eval(queued(ids.asker))}`,
+  );
+
+  // -- the brief, as a sheet --
+  await select(ids.briefer);
+  const checkedAt = (await briefOf(ids.briefer)).check.startedAt;
+  await page.key("b");
+  await page.waitFor(`${sheet}?.querySelectorAll("[data-cow-brief-item]").length === 3`, { label: "the brief sheet" });
+  const laid = JSON.parse(
+    await page.eval(`JSON.stringify({
+      covers: ${sheet}.getBoundingClientRect().height >= ${ROOT}.clientHeight - 1 && ${sheet}.getBoundingClientRect().width >= ${ROOT}.clientWidth - 1,
+      items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefKind + ":" + item.dataset.cowBriefItem),
+      sections: [...${sheet}.querySelectorAll("[data-cow-brief-section]")].map((head) => head.dataset.cowBriefSection),
+      cursor: ${sheetCursor},
+      first: ${sheet}.querySelector("[data-cow-brief-item]").textContent,
+      tag: ${sheet}.querySelector("[data-cow-brief-tag]")?.textContent,
+      label: ${sheet}.querySelector("[data-cow-brief-item] [data-cow-brief-label]")?.dataset.cowBriefLabel,
+      check: ${sheet}.querySelector("[data-cow-brief-check]").dataset.cowBriefCheck,
+      checkText: ${sheet}.querySelector("[data-cow-brief-check]").textContent,
+      inPanel: !!document.querySelector("[data-cow-pane]"),
+    })`),
+  );
+  check("b opens the brief as a sheet over the whole page, not in a side panel", laid.covers && !laid.inPanel && (await page.eval(mode)) === "brief", JSON.stringify({ covers: laid.covers }));
+  check(
+    "the sheet is in order: the dispute first, then judgement calls, the other claims, what was left undone, the summary",
+    JSON.stringify(laid.items) === '["dispute:claim:tests","call:call:0","claim:claim:timeout"]' && JSON.stringify(laid.sections) === '["disputes","calls","claims","not-done","summary"]' && laid.cursor === "claim:tests",
+    JSON.stringify(laid.items),
+  );
+  check(
+    "a dispute shows the claim, the agent's own label as the agent's words, what the evidence shows, and the checker's verdict",
+    laid.tag === "contradicted" && laid.label === "checked" && laid.first.includes("the agent says“checked”") && laid.first.includes("its own word, not a check") && laid.first.includes("the evidence shows") && laid.first.includes("not supported"),
+    laid.first.slice(0, 260),
+  );
+  check("the sheet says what the check was: how many runs, of which model, on what", laid.check === "checked" && laid.checkText.startsWith(`Audited by 1 run of ${MODEL}.`), laid.checkText);
+  await shot("brief-sheet");
+  await page.key("l");
+  const evidence = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:tests"] [data-cow-brief-evidence]')?.textContent ?? ""`);
+  check("l opens a claim's evidence in place", evidence.includes("11 passed, 1 failed") && evidence.includes("an excerpt chosen by the agent"), evidence.slice(0, 120));
+  await page.key("h");
+  check("h closes it", !(await page.eval(`!!${sheet}.querySelector("[data-cow-brief-evidence]")`)));
+  await page.key("j");
+  check("j moves to the judgement call, which says it was not raised as an ask", (await page.eval(sheetCursor)) === "call:0" && (await page.eval(`${sheet}.querySelector(".cow-cur").textContent`)).includes("not raised as an ask"));
+  await page.key("G");
+  await page.key("Enter");
+  const supported = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:timeout"]').textContent`);
+  const fileHref = await page.eval(`${sheet}.querySelector('[data-cow-brief-file="config.txt"]')?.getAttribute("href") ?? null`);
+  check(
+    "a claim the checker supported says only that, and its file evidence is shown as submitted with a link to the file",
+    (await page.eval(sheetCursor)) === "claim:timeout" && supported.includes("found it supported") && !/verified/i.test(supported) && supported.includes("request_timeout_seconds = 30") && typeof fileHref === "string" && fileHref.length > 0,
+    supported.slice(0, 200),
+  );
+  await page.key("g");
+  await page.key("g");
+  check("gg goes back to the first stop", (await page.eval(sheetCursor)) === "claim:tests");
+  await page.key("f");
+  const hints = JSON.parse(await page.eval(`JSON.stringify([...document.querySelectorAll("[data-cow-hint-label]")].map((tag) => tag.dataset.cowHintFor))`));
+  check("f labels what is in the sheet, and nothing under it", hints.length >= 3 && !hints.includes(ids.briefer) && !hints.includes(ids.asker), JSON.stringify(hints));
+  await page.key("Escape");
+  await page.key("c");
+  const asksFirst = await page.eval(`${sheet}.querySelector("[data-cow-sheet-confirm]")?.textContent ?? ""`);
+  check("c asks before checking again, and says it costs a model run", asksFirst.includes("costs a model run") && (await briefOf(ids.briefer)).check.startedAt === checkedAt, asksFirst);
+  await page.key("n");
+  check(
+    "any key but y cancels it: no check was started",
+    (await page.eval(`${sheet}.querySelector("[data-cow-sheet-note]")?.textContent`)) === "not checked again" && (await briefOf(ids.briefer)).check.startedAt === checkedAt,
+  );
+  await page.colorScheme("dark");
+  await shot("brief-sheet-dark");
+  await page.colorScheme("light");
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closing" });
+  check("q closes the sheet and the cursor is back on its line", (await page.eval(isCursor(ids.briefer))) && (await page.eval(mode)) === "normal");
+  await page.waitFor(`${queued(ids.briefer)} === null`, { label: "the read brief leaving the queue" });
+  check(
+    "read, the brief stops waiting on you and keeps its disputed mark",
+    (await page.eval(lineState(ids.briefer))) === "done" && (await page.eval(briefMark(ids.briefer))) === "disputed" && (await briefOf(ids.briefer)).readAt !== null,
+    await page.eval(lineState(ids.briefer)),
+  );
+
+  // -- a failed check, and a judgement call answered in place --
+  await page.key("g");
+  await page.key("g");
+  check("the heading asks you too", (await page.eval(`${mainLine}.querySelector(".cow-maindoing")?.textContent ?? ""`)).includes("asks you: Keep the old endpoint for a week?"));
+  await page.key("b");
+  await page.waitFor(`${sheet}?.dataset.cowSheet === "${ids.amain}" && !!${sheet}.querySelector("[data-cow-brief-check]")`, { label: "the Main's brief" });
+  const failedSheet = JSON.parse(
+    await page.eval(`JSON.stringify({
+      check: ${sheet}.querySelector("[data-cow-brief-check]").dataset.cowBriefCheck,
+      text: ${sheet}.querySelector("[data-cow-brief-check]").textContent,
+      failure: ${sheet}.querySelector("[data-cow-brief-failure]")?.textContent ?? "",
+      verdicts: [...${sheet}.querySelectorAll("[data-cow-brief-item][data-cow-brief-verdict]")].map((item) => item.dataset.cowBriefVerdict),
+      disputes: ${sheet}.querySelector('[data-cow-brief-section="disputes"]').nextElementSibling.textContent,
+    })`),
+  );
+  check(
+    "a failed check is shown as failed, with the reason, and no claim carries a verdict",
+    failedSheet.check === "failed" && failedSheet.text.startsWith("Check failed") && failedSheet.failure.includes("could not be started") && failedSheet.verdicts.every((verdict) => verdict === "none") && failedSheet.disputes.startsWith("Unknown"),
+    JSON.stringify(failedSheet),
+  );
+  await shot("brief-failed");
+  check("its judgement call is the first stop, and says it is open as an ask", (await page.eval(sheetCursor)) === "call:0" && (await page.eval(`${sheet}.querySelector(".cow-cur").dataset.cowBriefAsk`)) === call.id);
+  await page.key("a");
+  await page.waitFor(`${sheet}.querySelector('[data-cow-brief-item="call:0"] [data-cow-ask-card]')?.dataset.cowAsk === "${call.id}"`, { label: "the ask card inside the sheet" });
+  check("a answers a judgement call in place: its ask opens inside the brief", true);
+  await page.key("1");
+  await page.key("Enter");
+  await page.waitFor(`!${card}`, { label: "the in-place card closing" });
+  const answeredCall = (await rpc("asks_list", { threadId: ids.amain, all: true })).asks.find((ask) => ask.id === call.id);
+  await page.waitFor(`(${sheet}.querySelector('[data-cow-brief-item="call:0"]')?.textContent ?? "").includes("answered or withdrawn")`, { label: "the call showing as answered" });
+  check("the answer is sent, and the brief shows the call as answered while it stays open", answeredCall?.status === "answered" && answeredCall.answer.option === 1 && (await page.eval(`!!${sheet}`)));
+  await waitForThread(ids.amain, (t) => t.status === "idle", "the Main at rest after the answer", 60_000);
+
+  // -- a narrow window --
+  await page.resize(700, 800);
+  await sleep(1500);
+  const narrowOpen = await page.eval(`!!${sheet}`);
+  if (!narrowOpen) {
+    // bb remounts the page when its layout changes; the brief is opened again.
+    await page.waitFor(`${screen} === "overview"`, { label: "the page back in a narrow window" });
+    await page.key("g");
+    await page.key("g");
+    await page.key("b");
+    await page.waitFor(`!!${sheet}?.querySelector("[data-cow-brief-check]")`, { label: "the brief in a narrow window" });
+  }
+  check("in a narrow window the sheet fits without scrolling sideways", await page.eval(`${sheet}.scrollWidth <= ${sheet}.clientWidth + 1 && ${ROOT}.scrollWidth <= ${ROOT}.clientWidth`));
+  await shot("brief-narrow");
+  await page.key("Escape");
+  await page.waitFor(`!${sheet}`, { label: "Escape closing the sheet" });
+  check("Escape closes the sheet too", true);
+  await page.resize(1440, 900);
+  await sleep(1500);
+  await page.waitFor(`${screen} === "overview"`, { label: "the page at full width again" });
+  await page.key("?");
+  const legend = await page.eval(`document.querySelector("[data-cow-help]")?.textContent ?? ""`);
+  await page.key("Escape");
+  check("the legend explains the brief marks and lists b", legend.includes("a brief.") && legend.includes("disputed.") && legend.includes("open the line's brief"), legend.slice(0, 80));
 }
 
 // ---- the page ---------------------------------------------------------
@@ -326,6 +758,10 @@ async function main() {
     "Main is the page heading",
     (await page.eval(`document.querySelector(".cow-crumbs b")?.textContent`)) === TITLE,
   );
+  if (flag("only-raised")) {
+    await raisedChecks(page, ids, shot, chooseMain);
+    return finish();
+  }
 
   // -- each window keeps its own Main --
   const other = await newTab(PORT);
@@ -2368,6 +2804,8 @@ async function main() {
   check("Escape closes it there too", await page.eval(`!document.querySelector("[data-cow-pane]")`));
   await page.resize(1440, 900);
 
+  await raisedChecks(page, ids, shot, chooseMain);
+
   // -- changing Main --
   await page.key("M");
   await page.waitFor(`${screen} === "picker"`, { label: "the picker again" });
@@ -2375,6 +2813,9 @@ async function main() {
   await page.key("Escape");
   check("Escape keeps the current Main", (await page.eval(screen)) === "overview");
 
+  return finish();
+
+  async function finish() {
   check("no console errors", page.consoleErrors.length === 0, page.consoleErrors.join(" | "));
   // bb polls services of its own that may be down; only cow's requests count.
   const failedRequests = page.networkErrors.filter((entry) => entry.includes("/plugins/cow"));
@@ -2385,6 +2826,8 @@ async function main() {
   page.close();
 
   // -- put things back --
+  await restoreSettings();
+  for (const name of RAISED) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   await restoreStored();
   const after = await rpc("main_state", null);
   check("what the run changed in the stored Mains is still as it was", ours(after) === ours(before), JSON.stringify(after));
@@ -2408,11 +2851,13 @@ async function main() {
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length} of ${results.length} checks passed`);
   process.exit(failed.length ? 1 : 0);
+  }
 }
 
 main().catch(async (error) => {
   console.error(error);
   // Whatever went wrong, the next cow window must start where it did before.
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
+  await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   process.exit(1);
 });

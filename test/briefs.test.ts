@@ -95,7 +95,7 @@ test("a review puts contradicted claims first, then not established, and leaves 
   assert.equal(seen.disputes[1]?.verdict?.needs, "the full log");
   const reordered = review(BRIEF, check(run(verdicts("cannot-tell", "supported", "not-supported", "supported"))));
   assert.deepEqual(reordered.disputes.map((entry) => entry.claim.id), ["c3", "c1"]);
-  assert.deepEqual(markOf(2, seen), { version: 2, state: "checked", contradicted: 1, notEstablished: 1, judgementCalls: 1 });
+  assert.deepEqual(markOf(2, seen, NOW, true), { version: 2, state: "checked", contradicted: 1, notEstablished: 1, judgementCalls: 1, at: NOW, read: true });
   assert.equal(markText(markOf(2, seen)), "brief disputed: 1 contradicted, 1 not established");
 });
 
@@ -281,7 +281,7 @@ test("the checker's answer settles the check: a contradicted claim is disputed, 
   assert.deepEqual(view.review.claims.map((entry) => [entry.claim.id, entry.verdict?.verdict]), [["c1", "supported"], ["c3", "cannot-tell"]]);
   assert.deepEqual(w.discarded, ["chk_1"]);
   assert.deepEqual(await w.kv.list("check-run:"), []);
-  assert.deepEqual([...(await w.briefs.marks(["child", "main"]))], [["child", { version: 1, state: "checked", contradicted: 1, notEstablished: 0, judgementCalls: 1 }]]);
+  assert.deepEqual([...(await w.briefs.marks(["child", "main"]))], [["child", { version: 1, state: "checked", contradicted: 1, notEstablished: 0, judgementCalls: 1, at: NOW, read: false }]]);
 });
 
 test("a malformed answer, a tool call, an error and silence are each a failed check, never a pass", async () => {
@@ -305,6 +305,30 @@ test("a malformed answer, a tool call, an error and silence are each a failed ch
     assert.ok(view.review.claims.every((entry) => entry.verdict === null), name);
     assert.deepEqual(w.discarded, ["chk_1"], name);
   }
+});
+
+test("reading a brief is recorded once, and a new check makes it unread again", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  w.reply("chk_1", answerAll("not-supported"));
+  assert.equal(briefView(await w.briefs.get("child")).mark.read, false);
+  w.clock.now += 5000;
+  const read = await w.briefs.read("child", 1);
+  assert.equal(read.readAt, w.clock.now);
+  w.clock.now += 5000;
+  assert.equal((await w.briefs.read("child", 1)).readAt, read.readAt);
+  assert.equal(briefView(await w.briefs.get("child")).mark.read, true);
+  await refused(w.briefs.read("child", 4), "brief_not_found");
+  assert.equal((await w.briefs.read("child", 1, false)).readAt, null);
+  await w.briefs.read("child", 1);
+  const again = await w.briefs.check({ caller: "main", threadId: "child" });
+  assert.equal(again.readAt, null);
+  // A record stored before reads were kept is unread, not broken.
+  const stored = (await w.kv.get<Record<string, unknown>>("brief:child:0001")) ?? {};
+  delete stored.readAt;
+  await w.kv.set("brief:child:0001", stored);
+  assert.equal((await w.briefs.get("child")).readAt, null);
 });
 
 test("a checker that bb reports idle before its turn began is still running", async () => {

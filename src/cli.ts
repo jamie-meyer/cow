@@ -161,8 +161,8 @@ export function cowCli(actions: CliActions, attention?: Attention) {
         async run(input, ctx) {
           const main = input.options.main === undefined ? null : threadId(input.options.main);
           const plain = await acting(() => actions.status(main, ctx.projectId ?? null));
-          // Asks and briefs are put on the overview: an open ask is a place in the queue.
-          const attended = attention ? await attend(attention, plain, ctx.projectId ?? null, Date.now()) : null;
+          // The asks themselves, and what each brief came to, are added to the overview.
+          const attended = attention ? await attend(attention, plain, ctx.projectId ?? null) : null;
           const report = attended ?? plain;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }

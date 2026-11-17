@@ -1111,3 +1111,286 @@
 .cow .cow-blk-msg textarea:focus {
   border-color: var(--cow-needs);
 }
+
+/* a brief's marks on a line: the brief, and what the checker made of it */
+.cow-brief {
+  flex: none;
+  padding-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: 10.5px var(--cow-mono);
+  color: var(--cow-muted);
+}
+.cow-brief .cow-g {
+  width: 9px;
+  height: 9px;
+  color: inherit;
+}
+.cow-brief small {
+  font: 10px var(--cow-sans);
+  color: var(--cow-faint);
+}
+.cow-b-disputed {
+  color: var(--cow-needs);
+  font-weight: 700;
+}
+.cow-b-failed {
+  color: var(--cow-fail);
+}
+.cow-b-disputed.cow-b-read {
+  color: var(--cow-muted);
+  font-weight: 400;
+}
+.cow-maindoing .cow-brief {
+  padding: 0 8px 0 0;
+}
+
+/* an ask, opened under its line */
+.cow-ask {
+  max-width: 860px;
+}
+.cow-risk-medium.cow-ask,
+.cow-risk-high.cow-ask {
+  border-left-color: var(--cow-fail);
+}
+.cow-risk.cow-risk-medium,
+.cow-risk.cow-risk-high {
+  color: var(--cow-fail);
+}
+.cow-ask-context {
+  white-space: pre-wrap;
+}
+.cow-ask-proofs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.cow a.cow-filelink {
+  font: 12px/18px var(--cow-mono);
+  color: var(--cow-unread);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.cow-ask-sent {
+  font: 12px/18px var(--cow-sans);
+  color: var(--cow-run);
+}
+.cow-ask-said {
+  font: 600 14px/20px var(--cow-serif);
+  white-space: pre-wrap;
+}
+.cow-ask-word {
+  display: block;
+  margin-top: 3px;
+  font: 12px/20px var(--cow-sans);
+}
+.cow .cow-ask-word input {
+  width: 90px;
+  background: var(--cow-paper);
+  color: var(--cow-ink);
+  border: 0;
+  border-bottom: 1.5px solid var(--cow-fail);
+  padding: 0 4px;
+  font: 13px/20px var(--cow-mono);
+  outline: 0;
+}
+.cow-ask-others {
+  margin-top: 5px;
+  padding-top: 3px;
+  border-top: 1px dashed var(--cow-rule);
+}
+.cow-ask-others .cow-perm-kind {
+  color: var(--cow-muted);
+}
+.cow-ask-other {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--cow-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a brief, opened as a sheet over the page */
+.cow-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: var(--cow-paper);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 0 20px;
+}
+.cow-sheet-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+  padding: 7px 0 5px;
+  border-bottom: 1px solid var(--cow-rule);
+  font: 11px/18px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow-sheet-head b {
+  font: 600 17px/22px var(--cow-serif);
+  color: var(--cow-ink);
+}
+.cow-sheet-what {
+  margin-left: auto;
+  font-style: italic;
+}
+.cow-sheet-body {
+  overflow: auto;
+  padding: 4px 0 24px;
+  max-width: 980px;
+  width: 100%;
+}
+.cow-sheet-body h3 {
+  font: 600 9.5px/17px var(--cow-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cow-faint);
+  margin: 12px 0 2px;
+  border-bottom: 1px solid var(--cow-rule);
+}
+.cow-sheet-body h3 b {
+  color: var(--cow-ink);
+  margin-left: 4px;
+}
+.cow-sheet-body p {
+  margin: 0;
+}
+.cow-bf-check {
+  margin-top: 6px;
+  font: 13px/20px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow-sheet-body .cow-bf-check-failed {
+  color: var(--cow-fail);
+  font-weight: 700;
+}
+.cow-bf-failure {
+  font: 12px/18px var(--cow-mono);
+  color: var(--cow-fail);
+}
+.cow-bf-lede,
+.cow-bf-none {
+  font-size: 13px;
+  line-height: 21px;
+  color: var(--cow-muted);
+}
+.cow-bf-item {
+  padding: 4px 10px 5px 12px;
+  border-left: 3px solid transparent;
+  border-radius: 0 4px 4px 0;
+}
+.cow-bf-item + .cow-bf-item {
+  margin-top: 2px;
+}
+.cow-bf-item.cow-cur {
+  background: var(--cow-paper2);
+  box-shadow: inset 3px 0 0 var(--cow-ink);
+}
+.cow-bf-contradicted {
+  border-left-color: var(--cow-fail);
+}
+.cow-bf-not-established {
+  border-left-color: var(--cow-needs);
+}
+.cow-bf-claim {
+  font: 600 14.5px/21px var(--cow-serif);
+}
+.cow-bf-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font: 700 9.5px/16px var(--cow-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: 2px;
+}
+.cow-bf-contradicted .cow-bf-tag {
+  background: var(--cow-fail);
+  color: var(--cow-paper);
+}
+/* not established: an outline, where contradicted is filled */
+.cow-bf-not-established .cow-bf-tag {
+  box-shadow: inset 0 0 0 1.5px var(--cow-needs);
+  color: var(--cow-needs);
+}
+.cow-bf-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  column-gap: 10px;
+  font-size: 13.5px;
+  line-height: 20px;
+}
+.cow-bf-row > span:first-child {
+  font: 10.5px/20px var(--cow-sans);
+  color: var(--cow-faint);
+  text-align: right;
+}
+.cow-bf-row small {
+  color: var(--cow-faint);
+  font-size: 12px;
+}
+/* the agent's own word, set as a quotation and never as a result */
+.cow-bf-agent > span:last-child {
+  font-style: italic;
+  color: var(--cow-muted);
+}
+.cow-bf-contradicted .cow-bf-verdict b {
+  color: var(--cow-fail);
+}
+.cow-bf-not-established .cow-bf-verdict b {
+  color: var(--cow-needs);
+}
+.cow-bf-piece {
+  margin: 3px 0 2px 138px;
+}
+.cow-bf-piece p {
+  font-size: 12.5px;
+  line-height: 18px;
+}
+.cow-bf-piece small {
+  color: var(--cow-muted);
+}
+.cow .cow-bf-piece pre.cow-perm-diff {
+  max-height: 320px;
+}
+.cow-bf-undone,
+.cow-bf-summary {
+  font-size: 13.5px;
+  line-height: 20px;
+  padding-left: 15px;
+}
+.cow-bf-undone::before {
+  content: "– ";
+  color: var(--cow-faint);
+}
+.cow-sheet-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 14px;
+  padding: 3px 0 4px;
+  border-top: 1px solid var(--cow-rule);
+  font: 11px/18px var(--cow-sans);
+  color: var(--cow-muted);
+}
+@container (max-width: 900px) {
+  .cow-sheet {
+    padding: 0 10px;
+  }
+  .cow-sheet-what {
+    display: none;
+  }
+  .cow-bf-row {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+  .cow-bf-piece {
+    margin-left: 12px;
+  }
+}

@@ -13,17 +13,19 @@ question, grant or deny a permission request, deal with a permission bb
 refused without asking, park work and get it back, stop a turn, archive with
 a reason, and undo. A thread with threads under it is drawn as a group that
 folds. An agent can leave the same notes with the `bb cow` CLI, and say what
-is next for it. A state comes from what bb knows about a thread plus cow's
+is next for it. An agent can also put a question to you as an ask that stays
+on the page until you answer it, and report a finished job as a brief that a
+separate checker audits before you read it. A state comes from what bb knows about a thread plus cow's
 own notes on it. Nothing tells cow yet that a thread is waiting on something
 other than you.
 
 A worker that finishes reports to the thread that started it, so it is that
 thread's to deal with: its line turns done and still shows the first line of
 what it reported. A thread you talk to yourself replies to you: see
-"Replies addressed to you". The queue holds only what is yours: questions,
-permission requests, permissions bb refused without asking, failures,
-replies addressed to you that you have not seen, and parked work that has
-come back.
+"Replies addressed to you". The queue holds only what is yours: asks,
+questions, permission requests, permissions bb refused without asking,
+failures, briefs with disputes or judgement calls you have not read, replies
+addressed to you that you have not seen, and parked work that has come back.
 
 ## Install for development
 
@@ -74,6 +76,8 @@ verb takes no hint, and its key says why it does not apply.
 
 | Key | On | Does |
 | --- | --- | --- |
+| `a` | a line with an open ask | opens the ask under the line: digits choose, `Enter` confirms; see "Asks" |
+| `b` | a line with a brief | opens the brief over the page, disputes first; see "Briefs and the checker" |
 | `a` | a line with a pending question | opens the question under the line: digits choose, `Enter` sends, `Esc` cancels |
 | `a` | a line with a permission request | opens the request under the line: digits choose, `Enter` confirms, `Esc` cancels |
 | `a` | a line blocked on a permission | opens what bb refused: ask again as you, tell it to carry on, or dismiss |
@@ -396,8 +400,8 @@ without one.
 
 `u` takes back the last park, resume, archive (it unarchives), dismissal of
 a refused permission, or mark as seen made with `Space`, then the one
-before, for as long as the page stays open. Four things cannot be undone, and they say so: stopping a turn,
-answering a question, deciding a permission request, and sending a message.
+before, for as long as the page stays open. Five things cannot be undone, and they say so: stopping a turn,
+answering a question, answering an ask, deciding a permission request, and sending a message.
 Undoing a park that stopped a turn, or a drop, restores the line but the turn
 stays stopped. bb archives the threads under a thread along with it; undo
 brings those back too.
@@ -425,7 +429,7 @@ colours and font alone.
 
 | Mark | State | Means |
 | --- | --- | --- |
-| ● | wants you | it asked you a question or for permission, or it finished with a reply addressed to you that you have not seen |
+| ● | wants you | it has an ask open for you, it asked a question or for permission, its brief has disputes or judgement calls you have not read, or it finished with a reply addressed to you that you have not seen |
 | ⊘ | blocked on a permission | bb refused it a command or a file change without asking you; `a` asks again as you |
 | ▶ | running | a turn is in progress |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
@@ -433,6 +437,19 @@ colours and font alone.
 | ✕ | failed | its last turn ended in an error; stays in the queue |
 | ✓ | done | finished, or archived, in the last 2 days; older ones are only counted |
 | ◌ | not started | not a thread: work a thread has listed for later |
+
+Two more marks sit beside a title, and say nothing about the thread's state:
+
+| Mark | Means |
+| --- | --- |
+| ▤ and ✓, ▶ or ✕ | the thread submitted a brief, and a checker disputed none of its claims (✓), is auditing it now (▶), or failed to give a usable answer (✕: nothing in it is verified) |
+| ▤ ≠ 2 | the checker disputes that many of the brief's claims |
+
+When several things wait on you at once, a line shows the first of: a
+failure; a question or permission request raised in its chat, which holds a
+running turn; an open ask; a permission bb refused; a brief with disputes or
+judgement calls; a reply addressed to you. The others are still there when
+that one is dealt with.
 
 The limits live in one place, `LIMITS` in `src/state.ts`.
 
@@ -455,13 +472,13 @@ bb cow ask withdraw <id>
 - Up to 9 options. You can answer in your own words as well, unless the ask
   was made with `--options-only`. `--proof` names files in the thread's
   storage for you to look at.
-- `bb cow status` lists every open ask under "Waiting on the user", oldest
-  first, and a thread with an open ask reads as `wants`. The page does not
-  show asks yet.
-- **Only you answer.** There is no `bb cow answer`: a command cannot tell
-  your terminal from an agent's, because an agent can clear the variable that
-  names its thread. Answers go through the plugin's RPC (`ask_answer`), which
-  the page will call.
+- A thread with an open ask reads "asks you: …" with its oldest question,
+  and "(and 2 more)" when it has several. It is in the queue, on the page and
+  in `bb cow status`, whatever else it is doing: still running, finished, or
+  parked. Only an archived thread's asks are left out.
+- **Only you answer**, on the page. There is no `bb cow answer`: a command
+  cannot tell your terminal from an agent's, because an agent can clear the
+  variable that names its thread.
 - The answer reaches the asking thread as a message from you that quotes the
   question and gives the answer, and starts its next turn if it had gone
   idle.
@@ -470,6 +487,32 @@ Asks are kept in the plugin's own storage, not on the thread, so the thread
 that asked cannot edit the record of what you answered. They survive a
 plugin reload and a restart of bb. An answer is recorded before it is sent:
 if sending fails, cow sends it again the next time it loads.
+
+### Answering an ask
+
+`a` on the line opens the ask under it: the question, its context, how much
+is at stake, the options numbered with what each means, a field for an
+answer in your own words (unless the ask takes only its options), and its
+proof files as links that open in bb's file preview. `f` puts a hint on each
+link.
+
+A digit marks an option; the same digit again unmarks it. With an option
+marked, what you type in the field goes with it as a note. `Enter` confirms,
+and how much it takes depends on the risk the agent gave:
+
+| Risk | `Enter` |
+| --- | --- |
+| none, or low | sends the answer |
+| medium | shows the answer back to you, and the thread it goes to; a second `Enter` sends it, `Esc` returns to the choices |
+| high | shows it the same way and asks for the word `send`; `Enter` then sends it |
+
+Nothing is sent on one key. An answer cannot be undone, and the card says
+so. When it is sent the card says what was sent and to which thread.
+
+A thread with several asks shows the oldest. The card lists the others and
+answers them one at a time, oldest first, moving to the next after each;
+`Tab` skips to the next without answering. An ask the thread withdraws
+leaves the line, the queue and an open card at once.
 
 cow does not use bb's own question forms for this. A form takes over the
 thread's composer until it is answered, expires after seven days at most, and
@@ -550,6 +593,49 @@ label warrants:
 | `checked` | contradicted | not established |
 | `inferred` | contradicted | agreement, no dispute |
 | `not-checked` | agreement, no dispute | agreement, no dispute |
+
+### Reading a brief on the page
+
+A line whose thread has submitted a brief carries its mark (see "States").
+A finished thread whose brief has disputes, or lists judgement calls, wants
+you and is in the queue ("brief: 2 disputed, 1 judgement call") until you
+have opened it. A brief the checker did not dispute, and that leaves you no
+decision, puts nothing in the queue.
+
+`b` opens the brief as a sheet over the whole page:
+
+1. what the check was: how many runs, of which model, or that it failed and
+   why, or that none has run;
+2. the disputed claims, contradicted ones first. Each shows the claim, the
+   agent's own label as the agent's words, what the evidence literally
+   shows, and the checker's verdict. "Contradicted" is filled in red; "not
+   established" is outlined, and says what evidence would settle it;
+3. the judgement calls. One that was raised as an ask and is still open is
+   answered in place with `a`;
+4. the other claims. One the checker supported says "found it supported" and
+   nothing more;
+5. what the agent lists as left undone, then its summary.
+
+| Key in the sheet | Does |
+| --- | --- |
+| `j` `k`, `g g`, `G` | move between claims and judgement calls |
+| `l`, `Enter` | open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link to the file |
+| `h` | close it |
+| `a` | answer the judgement call under the cursor, when it is open as an ask |
+| `c` | run the check again, after `y`: it costs a model run for each run in the settings and replaces the verdicts |
+| `f` | hints on what is in the sheet |
+| `q`, `Esc` | close; the cursor returns to the line |
+
+The sheet updates by itself when a check finishes. Opening a brief is what
+marks it read; a new check, or a new version, makes it yours to read again.
+
+**What a check is, and is not.** It is one model's reading of the evidence
+the agent chose to attach, done without the agent's conversation. "Supported"
+means that reader found the evidence shows the claim. It does not mean the
+claim was verified against the world, and the checker cannot see what was
+left out of the evidence. A failed check, or none, means nothing in the
+brief has been looked at by anyone but its author; the page says so and
+never shows it as clean.
 
 `bb cow brief show` prints the disputes first (the claim, what the agent
 says, what the evidence literally shows, the verdict), contradicted before
@@ -636,10 +722,11 @@ the cheapest model. It sets cow's checker model while it runs and puts it
 back. See the top of `scripts/e2e-asks.mjs`.
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
-seven cheap fixture threads titled "cow test", acts only on those (it answers,
+ten cheap fixture threads titled "cow test", and the first time cow starts
+two hidden checker threads for the briefs it submits. It acts only on those (it answers,
 stops and archives them for real, grants them permission to run `echo` and to
 write one file under `/tmp`, and runs `bb cow` on them), and archives them
-afterwards. See the top of `scripts/e2e.mjs` for how to run it.
+afterwards. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it.
 
 ## Turn it off
 

@@ -1,7 +1,9 @@
 // What state a thread is in, derived from what bb knows about it and from
 // cow's own note on it when the user has parked it.
 
+import type { Ask } from "./asks/ask.ts";
 import { type Replies, unreadReply } from "./attention.ts";
+import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
@@ -90,6 +92,14 @@ export interface Attention {
   seenSeq: number | null;
 }
 
+/** What the thread has put in front of the person with `bb cow`: its open asks and its latest brief. */
+export interface Raised {
+  /** Its open asks, oldest first. */
+  asks: readonly Ask[];
+  /** What its latest brief came to, or null when it has submitted none. */
+  brief: BriefMark | null;
+}
+
 export interface Derived {
   state: LineState;
   /** When it entered this state; for stuck, when it went quiet. */
@@ -117,6 +127,12 @@ export interface Derived {
    * what "seen" records.
    */
   reply?: { seq: number };
+  /** Set when it has open asks, whatever state the line shows: oldest first. */
+  asks?: readonly Ask[];
+  /** Set when it has submitted a brief, whatever state the line shows. */
+  brief?: BriefMark;
+  /** Set when the line waits on the person because of its brief: disputes or judgement calls not yet read. */
+  briefWaits?: true;
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -154,6 +170,19 @@ export function waitingSince(derived: Derived): number {
   return derived.park?.due?.at ?? derived.since;
 }
 
+/** One question in a line: the oldest ask, and how many more there are. */
+export function asksText(asks: readonly Ask[]): string {
+  const first = asks[0];
+  if (!first) return "";
+  return `asks you: ${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}`;
+}
+
+/**
+ * What a line shows. Where several things wait on the person at once, the
+ * line shows the first of: a failure; a question or permission request of
+ * bb's own, which holds a running turn; an open ask; a permission bb refused;
+ * a brief with disputes or judgement calls; a reply addressed to them.
+ */
 export function derive(
   thread: ThreadFacts,
   activity: Activity | undefined,
@@ -165,6 +194,24 @@ export function derive(
   dismissedThroughSeq?: number | null,
   /** Whether its replies are the person's, and which they have seen. Without it, a thread with a parent reports to that parent. */
   attention?: Attention | null,
+  /** Its open asks and its latest brief. */
+  raised?: Raised | null,
+): Derived {
+  const asks = thread.archivedAt === null ? (raised?.asks ?? []) : [];
+  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null);
+  return { ...derived, ...(asks.length > 0 ? { asks } : {}), ...(raised?.brief ? { brief: raised.brief } : {}) };
+}
+
+function deriveLine(
+  thread: ThreadFacts,
+  activity: Activity | undefined,
+  now: number,
+  park: ParkRecord | null | undefined,
+  archivedWhy: string | null | undefined,
+  dismissedThroughSeq: number | null | undefined,
+  attention: Attention | null | undefined,
+  asks: readonly Ask[],
+  brief: BriefMark | null,
 ): Derived {
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
@@ -184,12 +231,14 @@ export function derive(
   // until the thread is resumed.
   if (park) {
     const due = parkDue(park, now, LIMITS.parkCheckMs);
+    // A question it asked before it was parked is still the person's to answer.
+    const asking = asks.length > 0;
     return {
       state: "parked",
       since: park.at,
-      doing: park.reason,
-      next: due ? dueShort(due, now) : pickUpText(park, now, LIMITS.parkCheckMs),
-      waitingOnYou: due !== null,
+      doing: asking ? `${park.reason} · ${asksText(asks)}` : park.reason,
+      next: due ? dueShort(due, now) : asking ? "answer it: press a" : pickUpText(park, now, LIMITS.parkCheckMs),
+      waitingOnYou: due !== null || asking,
       park: { record: park, due },
     };
   }
@@ -216,6 +265,36 @@ export function derive(
   // reply keeps, and only the user can unblock the work.
   const refusals = undismissed(activity?.refusals ?? [], dismissedThroughSeq);
   const blocked = refusals.length > 0;
+
+  // An open ask outranks everything but a failure and a request of bb's own
+  // that holds a turn: it was put to the person on purpose, and it stays
+  // until they answer, whatever the thread goes on to do.
+  if (!asked && asks.length > 0) {
+    const since = asks[0]!.createdAt;
+    const stuck = now - since > LIMITS.waitingOnUserMs;
+    return {
+      state: stuck ? "stuck" : "wants",
+      since,
+      doing: asksText(asks),
+      next: stuck ? `it has waited ${formatAge(now - since)} on you: press a` : "answer it: press a",
+      waitingOnYou: true,
+      ...(blocked ? { blocked: { refusals } } : {}),
+    };
+  }
+
+  // A finished job whose brief the checker disputed, or that leaves the
+  // person a decision, is theirs to read before its reply is.
+  if (!asked && !blocked && !isBusy(thread) && brief !== null && briefWaits(brief)) {
+    return {
+      state: "wants",
+      since: Math.max(settled, brief.at),
+      doing: briefWaitText(brief),
+      next: "read it: press b",
+      waitingOnYou: true,
+      briefWaits: true,
+    };
+  }
+
   if (asked || hasUnreadReply(thread) || (reply && !blocked)) {
     const ask = asked ? (activity?.ask ?? null) : null;
     const since = ask?.at ?? reply?.at ?? settled;

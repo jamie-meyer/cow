@@ -44,6 +44,8 @@ export const briefRecordSchema = z.object({
   check: checkSchema.nullable(),
   /** How many checks of this version came before the latest. */
   earlierChecks: z.number().int().min(0),
+  /** When the person opened this version with its latest check; null until they have. */
+  readAt: z.number().nullable().default(null),
 });
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
 
@@ -99,6 +101,8 @@ export interface Briefs {
   versions(threadId: string): Promise<number[]>;
   /** Thread id to what its latest brief says, for the threads that have one. */
   marks(threadIds: readonly string[]): Promise<Map<string, BriefMark>>;
+  /** Record that the person opened a version of a thread's brief, or with `read` false, that it is theirs to read again. Never call this for an agent. */
+  read(threadId: string, version: number, read?: boolean): Promise<BriefRecord>;
   /** Move along the check a checker thread belongs to. For when bb says that thread stopped. */
   checkerStopped(checkerThreadId: string): Promise<void>;
   /** Move along every check that is still running. For when the plugin loads. */
@@ -196,7 +200,8 @@ export function createBriefs(deps: BriefDeps): Briefs {
           runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), error: `the checker could not be started: ${cause instanceof Error ? cause.message : String(cause)}` });
         }
       }
-      const next = { ...record, check: { model, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0) };
+      // A new check may say something new, so the brief is the person's to read again.
+      const next = { ...record, check: { model, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null };
       await write(next);
       return next;
     });
@@ -271,6 +276,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
           brief: { ...valid.brief, claims },
           check: null,
           earlierChecks: 0,
+          readAt: null,
         };
         await write(made);
         return made;
@@ -291,6 +297,15 @@ export function createBriefs(deps: BriefDeps): Briefs {
       return startCheck(threadId, overrides);
     },
 
+    read: (threadId, version, isRead = true) =>
+      locked(threadId, async () => {
+        const record = await read(threadId, version);
+        if ((record.readAt !== null) === isRead) return record;
+        const next = { ...record, readAt: isRead ? deps.now() : null };
+        await write(next);
+        return next;
+      }),
+
     async settled(threadId, timeoutMs, signal) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -307,7 +322,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
       for (const threadId of threadIds) {
         if (!have.has(threadId)) continue;
         const record = await settle(threadId).catch(() => null);
-        if (record) found.set(threadId, markOf(record.version, review(record.brief, record.check)));
+        if (record) found.set(threadId, briefView(record).mark);
       }
       return found;
     },
@@ -332,5 +347,6 @@ export function createBriefs(deps: BriefDeps): Briefs {
 /** A stored brief as the page and `--json` get it: the record and how to read it. */
 export function briefView(record: BriefRecord): { record: BriefRecord; review: Review; mark: BriefMark } {
   const seen = review(record.brief, record.check);
-  return { record, review: seen, mark: markOf(record.version, seen) };
+  const at = Math.max(record.submittedAt, ...(record.check?.runs ?? []).map((run) => run.finishedAt ?? 0));
+  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null) };
 }

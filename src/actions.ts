@@ -2,6 +2,8 @@
 // rules the verbs follow. The page's RPCs and the CLI both act through here.
 
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { type Ask, asksByThread } from "./asks/ask.ts";
+import type { BriefMark } from "./briefs/review.ts";
 import { type ThreadReader, listThreads, readActivity } from "./activity.ts";
 import { parkNow, reparkNow } from "./park.ts";
 import { parsePickUp } from "./pickup.ts";
@@ -96,7 +98,13 @@ export interface Actions {
   status(mainId: string | null, projectId: string | null): Promise<StatusReport>;
 }
 
-export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>): Actions {
+/** Where the actions read what threads have put in front of the user. */
+export interface RaisedSource {
+  openAsks(): Promise<readonly Ask[]>;
+  marks(threadIds: readonly string[]): Promise<ReadonlyMap<string, BriefMark>>;
+}
+
+export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource): Actions {
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
@@ -217,6 +225,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     const heads = headIds(threads);
     const wanted = new Set([rootId, ...under]);
     const activity = await activities(threads.filter((thread) => wanted.has(thread.id) && thread.archivedAt === null));
+    const asks = asksByThread(raised ? await raised.openAsks() : []);
+    const briefs = raised ? await raised.marks([...wanted]) : new Map<string, BriefMark>();
     const deriveThread = (isRoot: (id: string) => boolean) => (thread: ThreadFacts) =>
       derive(
         thread,
@@ -227,6 +237,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         noted.archives[thread.id]?.reason,
         noted.dismissals[thread.id]?.throughSeq,
         { head: heads.has(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
+        { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null },
       );
     const plans = {
       note: (id: string) => noted.nexts[id]?.text ?? null,

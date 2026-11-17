@@ -3,11 +3,11 @@ import { test } from "node:test";
 import type { Ask } from "../src/asks/ask.ts";
 import { toolsUsed } from "../src/raised-backend.ts";
 import { type Attention, absolutePath } from "../src/raised-cli.ts";
-import { withAttention } from "../src/raised.ts";
+import { withRaised } from "../src/raised.ts";
 import type { BriefMark } from "../src/briefs/review.ts";
 import { type CliActions, cowCli } from "../src/cli.ts";
-import { type StatusLine, type StatusReport, statusText } from "../src/status.ts";
-import { HOUR, MINUTE } from "./fixtures.ts";
+import type { StatusLine, StatusReport } from "../src/status.ts";
+import { MINUTE } from "./fixtures.ts";
 import { world } from "./memory.ts";
 
 const NOW = Date.now();
@@ -55,82 +55,30 @@ const ask = (id: string, threadId: string, minutesAgo: number, overrides: Partia
   withdrawnAt: null,
   ...overrides,
 });
-const NO_BRIEFS = new Map<string, BriefMark>();
 
-test("a thread with an open ask reads as wanting the user, and each ask is a place in the queue", () => {
-  const out = withAttention(report(), [ask("ask_b", "child", 5), ask("ask_a", "child", 90, { risk: "high" }), ask("ask_c", "grandchild", 30)], NO_BRIEFS, NOW, "proj_1");
-  const child = out.threads.find((entry) => entry.id === "child");
-  assert.equal(child?.state, "wants");
-  assert.equal(child?.label, "wants you");
-  assert.equal(child?.doing, "asks: Question ask_a? (and 1 more)");
-  assert.equal(child?.inState, "1h");
-  assert.equal(child?.queue, 1);
-  assert.deepEqual(out.queue.map((entry) => [entry.queue, entry.id, entry.doing, entry.waiting]), [
-    [1, "child", "asks (ask_a, risk high): Question ask_a?", "1h"],
-    [2, "grandchild", "asks (ask_c): Question ask_c?", "30m"],
-    [3, "child", "asks (ask_b): Question ask_b?", "5m"],
+test("the overview lists its asks, and each line says what its brief came to", () => {
+  const mark = (overrides: Partial<BriefMark>): BriefMark => ({ version: 1, state: "checked", contradicted: 0, notEstablished: 0, judgementCalls: 0, at: NOW, read: false, ...overrides });
+  const briefs = new Map<string, BriefMark>([
+    ["child", mark({ version: 2, contradicted: 1, notEstablished: 2 })],
+    ["grandchild", mark({ state: "failed" })],
+    ["main", mark({ judgementCalls: 1 })],
+    ["unlisted", mark({ state: "unchecked" })],
   ]);
-  assert.equal(out.threads.find((entry) => entry.id === "grandchild")?.queue, 2);
-  assert.equal(out.main.state, "running");
-  assert.deepEqual(out.asks.map((entry) => entry.id), ["ask_a", "ask_c", "ask_b"]);
-  const text = statusText(out);
-  assert.match(text, /Waiting on the user \(3\)\n 1  child \(child\)  asks \(ask_a, risk high\): Question ask_a\? · waiting 1h/);
-  assert.match(text, / 1  wants {5}1h  child \(child\)  asks: Question ask_a\? \(and 1 more\) → answer it on cow's page/);
-});
-
-test("asks join what was already waiting, oldest first", () => {
-  const waiting = { ...line("grandchild", { state: "failed", label: "failed", inStateMs: HOUR, inState: "1h", doing: "its turn failed", queue: 1 }), waiting: "1h" };
-  const out = withAttention(report({ queue: [waiting] }), [ask("ask_old", "child", 180), ask("ask_new", "child", 1)], NO_BRIEFS, NOW, "proj_1");
-  assert.deepEqual(out.queue.map((entry) => [entry.queue, entry.id, entry.doing]), [
-    [1, "child", "asks (ask_old): Question ask_old?"],
-    [2, "grandchild", "its turn failed"],
-    [3, "child", "asks (ask_new): Question ask_new?"],
-  ]);
-});
-
-test("a finished thread with an open ask is not done; a parked one stays parked and still asks", () => {
-  const out = withAttention(
-    report({ threads: [], done: [line("child", { state: "done", label: "done", doing: "finished" }), line("other", { state: "done", label: "done" })], parked: [line("grandchild", { state: "parked", label: "parked", doing: "waiting on review" })] }),
-    [ask("ask_a", "child", 10), ask("ask_b", "grandchild", 20)],
-    NO_BRIEFS,
-    NOW,
+  const waiting = { ...line("child", { state: "wants", doing: "brief: 3 disputed", queue: 1 }), waiting: "1m" };
+  const out = withRaised(
+    report({ threads: [line("child", { state: "wants", doing: "brief: 3 disputed", queue: 1 }), line("grandchild", { depth: 1 })], queue: [waiting] }),
+    [ask("ask_b", "child", 5), ask("ask_a", "child", 90), ask("ask_x", "elsewhere", 5), ask("ask_y", "far", 5, { projectId: "proj_2" })],
+    briefs,
     "proj_1",
   );
-  assert.deepEqual(out.threads.map((entry) => [entry.id, entry.state]), [["child", "wants"]]);
-  assert.deepEqual(out.done.map((entry) => entry.id), ["other"]);
-  assert.equal(out.parked[0]?.state, "parked");
-  assert.equal(out.parked[0]?.doing, "waiting on review · asks: Question ask_b?");
-  assert.equal(out.queue.length, 2);
-});
-
-test("asks on threads the overview does not list are counted, for this project only", () => {
-  const out = withAttention(report(), [ask("ask_a", "elsewhere", 5), ask("ask_b", "far", 5, { projectId: "proj_2" }), ask("ask_c", "child", 5)], NO_BRIEFS, NOW, "proj_1");
-  assert.equal(out.asksElsewhere, 1);
-  assert.deepEqual(out.asks.map((entry) => entry.id), ["ask_c"]);
-});
-
-test("the queue stays bounded and counts what it leaves out", () => {
-  const many = Array.from({ length: 25 }, (_, n) => ask(`ask_${n}`, "child", n + 1));
-  const out = withAttention(report(), many, NO_BRIEFS, NOW, "proj_1");
-  assert.equal(out.queue.length, 20);
-  assert.equal(out.omitted.queue, 5);
-  assert.match(statusText(out), /Waiting on the user \(25\)/);
-});
-
-test("a thread's line says what the checker made of its latest brief", () => {
-  const briefs = new Map<string, BriefMark>([
-    ["child", { version: 2, state: "checked", contradicted: 1, notEstablished: 2, judgementCalls: 0 }],
-    ["grandchild", { version: 1, state: "failed", contradicted: 0, notEstablished: 0, judgementCalls: 0 }],
-    ["main", { version: 1, state: "checked", contradicted: 0, notEstablished: 0, judgementCalls: 1 }],
-    ["unlisted", { version: 1, state: "unchecked", contradicted: 0, notEstablished: 0, judgementCalls: 0 }],
-  ]);
-  const out = withAttention(report(), [], briefs, NOW, "proj_1");
-  assert.equal(out.threads[0]?.doing, "working · brief disputed: 1 contradicted, 2 not established");
+  // A line that already waits on its brief is not told twice.
+  assert.equal(out.threads[0]?.doing, "brief: 3 disputed");
+  assert.equal(out.queue[0]?.doing, "brief: 3 disputed");
   assert.equal(out.threads[1]?.doing, "working · brief: the check failed");
   assert.equal(out.main.doing, "working · brief checked, no disputes");
   assert.deepEqual(Object.keys(out.briefs).sort(), ["child", "grandchild", "main"]);
-  // A brief alone does not put a thread in the queue.
-  assert.deepEqual(out.queue, []);
+  assert.deepEqual(out.asks.map((entry) => entry.id), ["ask_a", "ask_b"]);
+  assert.equal(out.asksElsewhere, 1);
 });
 
 test("every tool a checker used is found in its timeline, however nested", () => {
@@ -291,6 +239,7 @@ test("brief submit reads the file, stores the brief and starts the check; show p
 
   const status = await run(["status"], "main");
   assert.match(status.stdout ?? "", /child \(child\)  working · brief disputed: 1 contradicted/);
+  assert.equal(JSON.parse((await run(["status", "--json"], "main")).stdout ?? "").briefs.child.contradicted, 1);
 });
 
 test("brief submit says what is wrong with a file it cannot take", async () => {
@@ -325,14 +274,12 @@ test("brief check is refused for the audited thread and runs for the one above i
   assert.match((await run(["brief", "show", "main"])).stderr ?? "", /main has submitted no brief/);
 });
 
-test("status lists open asks under what is waiting on the user", async () => {
+test("status carries the open asks of the threads it lists", async () => {
   const { run } = cli();
   await run(["ask", "--question", "Which colour?"]);
-  const status = await run(["status"], "main");
-  assert.match(status.stdout ?? "", /Waiting on the user \(1\)\n 1  child \(child\)  asks \(ask_\w+\): Which colour\? · waiting 1m/);
   const body = JSON.parse((await run(["status", "--json"], "main")).stdout ?? "");
-  assert.equal(body.threads[0].state, "wants");
   assert.equal(body.asks.length, 1);
+  assert.equal(body.asks[0].question, "Which colour?");
   assert.equal(body.asksElsewhere, 0);
 });
 

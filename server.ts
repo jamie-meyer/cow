@@ -89,7 +89,8 @@ export default async function plugin(bb: BbPluginApi) {
     return stored.success ? stored.data : { mains: {}, currentProjectId: null };
   }
 
-  const actions = createActions(bb, readState);
+  const attention = registerAttention(bb);
+  const actions = createActions(bb, readState, { openAsks: () => attention.asks.list(), marks: (ids) => attention.briefs.marks(ids) });
 
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
@@ -134,5 +135,5 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(cowCli(actions, registerAttention(bb)));
+  bb.cli.register(cowCli(actions, attention));
 }

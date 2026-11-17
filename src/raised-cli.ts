@@ -6,7 +6,7 @@
 import { PluginCliError, cliCommand } from "@get-bb/plugin-sdk";
 import { type Ask, RISKS, askText } from "./asks/ask.ts";
 import type { Asks } from "./asks/service.ts";
-import { withAttention } from "./raised.ts";
+import { withRaised } from "./raised.ts";
 import { BRIEF_SHAPE } from "./briefs/brief.ts";
 import { markText, reviewText } from "./briefs/review.ts";
 import { type BriefRecord, type Briefs, MAX_RUNS, briefView } from "./briefs/service.ts";
@@ -86,10 +86,10 @@ const briefText = (record: BriefRecord): string =>
   reviewText({ threadId: record.threadId, version: record.version, summary: record.brief.summary }, briefView(record).review);
 
 /** The overview with asks and briefs on it. */
-export async function attend(attention: Attention, report: StatusReport, projectId: string | null, now: number) {
+export async function attend(attention: Attention, report: StatusReport, projectId: string | null) {
   const open = await attention.asks.list();
   const ids = [report.main, ...report.threads, ...report.parked, ...report.done].map((line) => line.id);
-  return withAttention(report, open, await attention.briefs.marks(ids), now, projectId);
+  return withRaised(report, open, await attention.briefs.marks(ids), projectId);
 }
 
 /** What `status` adds under its text when asks are open on threads it does not list. */

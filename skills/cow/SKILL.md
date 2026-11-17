@@ -142,9 +142,11 @@ moves it next. Then the Parked shelf and what finished in the last 2 days.
 - Main defaults to the one last chosen on cow's page for the project you are
   in. Pass `--main <thread>` (your own id is in `$BB_THREAD_ID`) when that is
   not the one you mean.
-- An open ask is an entry under "Waiting on the user", and its thread reads as
-  `wants`. A thread's line also says what its latest brief came to, such as
-  "brief disputed: 1 contradicted".
+- A thread with an open ask reads `wants`, "asks you: …", and is under
+  "Waiting on the user". So is a finished thread whose brief has disputes or
+  judgement calls the user has not read ("brief: 2 disputed"). A thread's
+  line also says what its latest brief came to, such as "brief disputed: 1
+  contradicted" or "brief: the check failed".
 - States: `wants` (it asked the user something, or it finished with a reply
   addressed to the user that they have not seen: a thread with threads
   under it, or one the user messaged), `blocked` (bb refused it
@@ -155,7 +157,8 @@ moves it next. Then the Parked shelf and what finished in the last 2 days.
 
 ### `bb cow archive <thread> [--reason <text>]`
 
-Archives the thread in bb, recording why. Refused unless the thread is done
+Archives the thread in bb, recording why. Refused while the thread has an
+open ask: the user answers it, or the thread withdraws it. Refused unless the thread is done
 or failed (or blocked on a permission with no turn running), and refused
 while threads under it are still open: archive or park those first. bb
 archives the threads under it along with it.
@@ -204,6 +207,7 @@ the page. `bb cow status` shows each thread's note and list.
 ## Limits
 
 - Only the user can answer a question or an ask, grant a permission, deal
-  with a refused permission, or mark a reply as seen.
+  with a refused permission, or mark a reply or a brief as seen; those are
+  done on cow's page.
 - There is no undo from the CLI. `bb cow resume` reverses a park;
   `bb thread unarchive <thread>` reverses an archive (the reason is kept).

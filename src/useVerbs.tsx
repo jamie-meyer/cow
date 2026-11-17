@@ -9,6 +9,9 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { AnswerCard, type AnswerState } from "./AnswerCard.tsx";
+import { AskCard, type AskState } from "./AskCard.tsx";
+import { backOut, confirmAsk, emptyAskDraft, markOption, nextAsk, writeAnswer, writeWord } from "./asks/card.ts";
+import type { RaisedData } from "./raisedData.ts";
 import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
 import { BlockedCard, type BlockedState } from "./BlockedCard.tsx";
 import { clockNow } from "./clock.ts";
@@ -43,6 +46,7 @@ type Modal =
   | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
   | ({ kind: "answer" } & AnswerState)
+  | ({ kind: "ask" } & AskState)
   | ({ kind: "blocked" } & BlockedState);
 
 export interface VerbHost {
@@ -51,6 +55,10 @@ export interface VerbHost {
   main: Line;
   selected: Line | null;
   parks: Parks;
+  /** Open asks and briefs, and the calls that answer and read them. */
+  raised: RaisedData;
+  /** Open a thread's brief over the page. */
+  openBrief: (threadId: string) => void;
   now: number;
   /** The groups folded in this window: the cursor skips their members. */
   folded: ReadonlySet<string>;
@@ -66,6 +74,8 @@ export interface Verbs {
   /** The mode shown at the left of the status line, or null in normal mode. */
   mode: string | null;
   start: (verb: Verb) => void;
+  /** Open the ask card for one ask, wherever its thread's line is. */
+  startAsk: (threadId: string, askId: string) => void;
   startUndo: () => void;
   /** Mark the line's reply as seen. Quietly when the person opened or answered it; `u` takes back only a marking they asked for. */
   markSeen: (line: Line, asked: boolean) => void;
@@ -78,8 +88,8 @@ export interface Verbs {
   onKey: ((key: string) => void) | null;
   /** The status line's content while a prompt is open. */
   footer: ReactNode | null;
-  /** The question card, and the thread whose line it belongs under. */
-  card: { threadId: string; node: ReactNode } | null;
+  /** The question card, and the thread whose line it belongs under; `askId` when it answers one ask alone. */
+  card: { threadId: string; askId?: string; node: ReactNode } | null;
 }
 
 const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
@@ -91,6 +101,7 @@ export function useVerbs(host: VerbHost): Verbs {
   const promptRef = useRef<HTMLInputElement | null>(null);
   const answerRef = useRef<HTMLInputElement | null>(null);
   const blockedRef = useRef<HTMLTextAreaElement | null>(null);
+  const askWordRef = useRef<HTMLInputElement | null>(null);
 
   const lineOf = (id: string): Line | null =>
     [main, ...listed(overview)].find((line) => line.thread.id === id) ?? null;
@@ -124,6 +135,29 @@ export function useVerbs(host: VerbHost): Verbs {
     if (answerStep && answerStep.options.length === 0) answerRef.current?.focus();
     else if (answerStep) focusOverview();
   }, [answerStep, focusOverview]);
+
+  // An ask with nothing to choose from goes straight to its text field, and
+  // a high-risk answer to the field for its word.
+  const openAsks = modal?.kind === "ask" ? (host.raised.asks.get(modal.threadId) ?? []) : [];
+  const currentAsk = modal?.kind === "ask" ? (openAsks.find((ask) => ask.id === modal.askId) ?? null) : null;
+  const askFocus = modal?.kind !== "ask" || currentAsk === null ? null : modal.draft.stage === "word" ? "word" : modal.draft.stage === "choose" && currentAsk.options.length === 0 ? "text" : "none";
+  const askKey = modal?.kind === "ask" ? modal.askId : null;
+  useEffect(() => {
+    if (askFocus === "word") askWordRef.current?.focus();
+    else if (askFocus === "text") answerRef.current?.focus();
+    else if (askFocus === "none") focusOverview();
+  }, [askFocus, askKey, focusOverview]);
+
+  // An ask that was withdrawn, or answered somewhere else, leaves the card:
+  // the next one takes its place, or the card closes.
+  const askGone = modal?.kind === "ask" && !modal.sending && currentAsk === null;
+  useEffect(() => {
+    if (!askGone || modal?.kind !== "ask") return;
+    const next = modal.single ? null : (openAsks[0] ?? null);
+    if (next) setModal({ ...modal, askId: next.id, draft: emptyAskDraft, note: "that ask is no longer open; this is the next one" });
+    else close(modal.sent.length > 0 ? modal.sent[modal.sent.length - 1] : "that ask is no longer open: it was withdrawn or answered");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askGone]);
 
   // A prompt about a line that has gone, or a question answered elsewhere, closes.
   const target = modal === null ? null : lineOf(modal.threadId);
@@ -380,6 +414,31 @@ export function useVerbs(host: VerbHost): Verbs {
       );
   };
 
+  const startAsk = (threadId: string, askId: string, single = true) => {
+    say("");
+    setModal({ kind: "ask", threadId, askId, draft: emptyAskDraft, sending: false, note: "", sent: [], single });
+  };
+
+  const confirmAskAnswer = () => {
+    if (modal?.kind !== "ask" || modal.sending || currentAsk === null) return;
+    const step = confirmAsk(modal.draft, currentAsk);
+    if (step.kind === "incomplete") return setModal({ ...modal, note: step.why });
+    if (step.kind === "stage") return setModal({ ...modal, draft: step.draft, note: "" });
+    const title = lineOf(modal.threadId)?.thread.title ?? "the thread";
+    const left = openAsks.filter((ask) => ask.id !== currentAsk.id);
+    setModal({ ...modal, sending: true, note: "" });
+    host.raised.answer(currentAsk.id, step.option, step.text).then(
+      () => {
+        const line = `sent to “${title}”: ${step.said} · it cannot be undone`;
+        const next = modal.single ? null : (left[0] ?? null);
+        if (next === null) return close(line);
+        setModal({ ...modal, askId: next.id, draft: emptyAskDraft, sending: false, note: "", sent: [...modal.sent, line] });
+      },
+      (cause: unknown) =>
+        setModal((current) => (current?.kind === "ask" ? { ...current, sending: false, note: `not sent: ${errorText(cause)}` } : current)),
+    );
+  };
+
   const confirmBlockedChoice = () => {
     if (modal?.kind !== "blocked" || modal.sending) return;
     const { threadId, refusals } = modal;
@@ -422,8 +481,13 @@ export function useVerbs(host: VerbHost): Verbs {
     const returned = line.derived.park?.due != null;
     say("");
     switch (verb) {
+      case "brief":
+        return host.openBrief(threadId);
       case "answer": {
-        // A real request comes first; a refusal has no request to answer.
+        // A request of bb's own comes first: it holds a turn. Then the thread's asks, oldest first.
+        const oldest = line.derived.asks?.[0];
+        if (!line.thread.hasPendingInteraction && oldest) return startAsk(threadId, oldest.id, false);
+        // A refusal has no request to answer.
         const refusals = line.derived.blocked?.refusals;
         if (line.thread.hasPendingInteraction || !refusals) return openAnswer(line);
         return setModal({
@@ -485,7 +549,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startUndo, markSeen, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -564,6 +628,63 @@ export function useVerbs(host: VerbHost): Verbs {
             onCancel={() =>
               close(modal.ask?.kind === "permission" ? "not decided: it is still waiting" : "not answered")
             }
+          />
+        ),
+      },
+    };
+  }
+
+  if (modal.kind === "ask") {
+    const back = () => {
+      if (modal.sending) return;
+      const draft = backOut(modal.draft);
+      if (draft) return setModal({ ...modal, draft, note: "" });
+      close(modal.sent.length > 0 ? modal.sent[modal.sent.length - 1] : "not answered: the ask is still open");
+    };
+    return {
+      mode: "ASK",
+      ...common,
+      onKey: (key) => {
+        if (key === "Escape") return back();
+        if (key === "Enter") return confirmAskAnswer();
+        if (modal.sending || currentAsk === null || modal.draft.stage !== "choose") return;
+        if (key === "Tab") {
+          const next = modal.single ? null : nextAsk(openAsks, currentAsk.id);
+          if (next) setModal({ ...modal, askId: next.id, draft: emptyAskDraft, note: "" });
+          return;
+        }
+        if (!/^[1-9]$/.test(key)) return;
+        const number = Number(key);
+        if (!currentAsk.optionsOnly && number === currentAsk.options.length + 1) return answerRef.current?.focus();
+        setModal({ ...modal, draft: markOption(modal.draft, currentAsk, number), note: "" });
+      },
+      footer: (
+        <>
+          <span className="cow-mode cow-m-prompt">ASK</span>
+          <span className="cow-noun">{title}</span>
+          <span className="cow-sep">▸</span>
+          <span>{openAsks.length > 1 && !modal.single ? `its ${openAsks.length} asks are open under its line, one at a time` : "its ask is open under its line"}</span>
+        </>
+      ),
+      card: {
+        threadId: modal.threadId,
+        ...(modal.single ? { askId: modal.askId } : {}),
+        node: (
+          <AskCard
+            state={modal}
+            asks={openAsks}
+            title={title}
+            now={host.now}
+            textRef={answerRef}
+            wordRef={askWordRef}
+            onText={(value) => setModal({ ...modal, draft: writeAnswer(modal.draft, value), note: "" })}
+            onWord={(value) => setModal({ ...modal, draft: writeWord(modal.draft, value), note: "" })}
+            onConfirm={confirmAskAnswer}
+            onBack={() => {
+              // Escape in the answer field leaves the field; in the word field it goes back a step.
+              if (modal.draft.stage === "choose" && currentAsk !== null && currentAsk.options.length > 0) return focusOverview();
+              back();
+            }}
           />
         ),
       },

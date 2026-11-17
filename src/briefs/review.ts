@@ -132,16 +132,46 @@ export interface BriefMark {
   contradicted: number;
   notEstablished: number;
   judgementCalls: number;
+  /** When the brief was submitted, or its latest check finished. */
+  at: number;
+  /** The person has opened this version with this check. */
+  read: boolean;
 }
 
-export function markOf(version: number, seen: Review): BriefMark {
+export function markOf(version: number, seen: Review, at = 0, read = false): BriefMark {
   return {
     version,
     state: seen.state,
     contradicted: seen.disputes.filter((entry) => entry.dispute === "contradicted").length,
     notEstablished: seen.disputes.filter((entry) => entry.dispute === "not-established").length,
     judgementCalls: seen.judgementCalls.length,
+    at,
+    read,
   };
+}
+
+/** How many claims the checker disputes. */
+export const disputeCount = (mark: BriefMark): number => mark.contradicted + mark.notEstablished;
+
+/**
+ * Whether a brief is the person's to read: the checker disputes a claim, or
+ * the agent left them a decision, and they have not opened it yet. A brief
+ * that checked clean waits on nobody. Disputes exist only once a check has
+ * answered, so a failed check adds nothing here; while one runs, the brief
+ * waits for it.
+ */
+export function briefWaits(mark: BriefMark): boolean {
+  if (mark.read || mark.state === "running") return false;
+  return disputeCount(mark) > 0 || mark.judgementCalls > 0;
+}
+
+/** What a waiting brief's line says. */
+export function briefWaitText(mark: BriefMark): string {
+  const parts: string[] = [];
+  const disputed = disputeCount(mark);
+  if (disputed > 0) parts.push(`${disputed} disputed`);
+  if (mark.judgementCalls > 0) parts.push(`${mark.judgementCalls} ${mark.judgementCalls === 1 ? "judgement call" : "judgement calls"}`);
+  return `brief: ${parts.join(", ")}`;
 }
 
 /** The mark in a few words, for a line of the overview. */
