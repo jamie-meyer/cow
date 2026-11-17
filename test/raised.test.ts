@@ -180,7 +180,7 @@ test("a thread above asks for a thread under it", async () => {
 
 test("asks lists open asks oldest first; --all includes the rest", async () => {
   const { run, asks, clock } = cli();
-  assert.equal((await run(["asks"])).stdout, "no open asks\n");
+  assert.match((await run(["asks"])).stdout ?? "", /^no open asks: /);
   await run(["ask", "--question", "First?", "--option", "a", "--option", "b"]);
   clock.now += MINUTE;
   await run(["ask", "--question", "Second?", "--thread", "grandchild"], "main");

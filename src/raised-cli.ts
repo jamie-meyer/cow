@@ -176,7 +176,7 @@ export function attentionCommands(attention: Attention) {
         const now = Date.now();
         const text =
           found.length === 0
-            ? "no open asks"
+            ? o.all ? "no asks" : "no open asks: `bb cow ask --question <text>` raises one, and --all lists those that have ended"
             : [...listed.map((ask) => askText(ask, now, formatAge)), ...(found.length > listed.length ? [`… and ${found.length - listed.length} more, not listed`] : [])].join("\n");
         return print(o.json, { asks: listed, omitted: found.length - listed.length }, text);
       },

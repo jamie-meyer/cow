@@ -33,6 +33,7 @@ import type { Use } from "./caps/service.ts";
 import type { Refusal } from "./refusal.ts";
 import { type Signer, useSigner } from "./signing/page.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
+import { Asides } from "./Asides.tsx";
 import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
 import { filterOverview } from "./filter.ts";
@@ -50,7 +51,7 @@ import {
 import {
   type Command,
   type HintTarget,
-  KEY_MAP,
+  KEY_GROUPS,
   KeyReader,
   activate,
   attachKeys,
@@ -624,6 +625,24 @@ function Help({ onClose }: { onClose: () => void }) {
   return (
     <div className="cow-help" data-cow-help="" onClick={onClose}>
       <div className="cow-card" onClick={(event) => event.stopPropagation()}>
+        <div className="cow-about" data-cow-about="">
+          <h3>What this page is · j k scroll this legend, ? or Esc closes it</h3>
+          <p>
+            <b>Main</b> is the one long-lived thread you run your work through: the heading. Each line under it is a thread Main
+            started, with the threads that one started indented under it. A line says what state its thread is in, for how long,
+            what it is doing or waiting on, and what moves it next.
+          </p>
+          <p>
+            <b>The queue</b> at the side holds only what waits on you, oldest first. <b>Parked</b> is work you set aside; it comes
+            back by itself. <b>Done</b> is what ended in the last 2 days. Select a line, then press a verb: the bar at the bottom
+            shows which apply, and a greyed-out one says why when pressed.
+          </p>
+          <p>
+            What only you may do here (answering, granting, sending as you, capabilities) is signed with a key this browser holds, so
+            an agent cannot do it through cow. The first page to open cow is enrolled; any other browser asks, and an enrolled page
+            approves it. <kbd>C</kbd> lists the keys. Agents use the <code>bb cow</code> commands instead: asks, briefs, notes.
+          </p>
+        </div>
         <div>
           <h3>Legend: every mark on the page</h3>
           {LEGEND.map((entry) => (
@@ -732,17 +751,35 @@ function Help({ onClose }: { onClose: () => void }) {
           </div>
         </div>
         <div className="cow-keys">
-          <h3>Keys</h3>
-          {KEY_MAP.map((entry) => (
-            <div className="cow-row" key={entry.keys}>
-              <span>{entry.keys}</span>
-              <span>{entry.does}</span>
-            </div>
+          {KEY_GROUPS.map((group) => (
+            <Fragment key={group.title}>
+              <h3 data-cow-keygroup="">Keys: {group.title.toLowerCase()}</h3>
+              {group.keys.map((entry) => (
+                <div className="cow-row" key={entry.keys}>
+                  <span>{entry.keys}</span>
+                  <span>{entry.does}</span>
+                </div>
+              ))}
+            </Fragment>
           ))}
         </div>
       </div>
     </div>
   );
+}
+
+/** The legend's own keys: it closes, and it scrolls when it is taller than the window. Every other key does nothing. */
+function helpKey(key: string, close: () => void): true {
+  if (key === "Escape" || key === "?" || key === "q") close();
+  const card = document.querySelector<HTMLElement>("[data-cow-help] .cow-card");
+  if (card) {
+    if (key === "j" || key === "ArrowDown") card.scrollBy({ top: 60 });
+    else if (key === "k" || key === "ArrowUp") card.scrollBy({ top: -60 });
+    else if (key === "G") card.scrollTo({ top: card.scrollHeight });
+    else if (key === "g") card.scrollTo({ top: 0 });
+    else if (key === " ") card.scrollBy({ top: card.clientHeight * 0.8 });
+  }
+  return true;
 }
 
 interface HintState {
@@ -998,12 +1035,7 @@ function Picker({
       else if (command.kind === "back" && canCancel) onCancel();
     },
     () => undefined,
-    help
-      ? (key) => {
-          if (key === "Escape" || key === "?" || key === "q") setHelp(false);
-          return true;
-        }
-      : null,
+    help ? (key) => helpKey(key, () => setHelp(false)) : null,
   );
   useLayoutEffect(() => {
     rootRef.current?.querySelector(".cow-cur")?.scrollIntoView({ block: "nearest" });
@@ -1018,16 +1050,36 @@ function Picker({
             <b>Choose your Main thread</b>
           </h1>
         </header>
+        <Asides />
         <div className="cow-main cow-picker" data-cow-scroll="">
+          {canCancel ? null : (
+            <div className="cow-intro" data-cow-intro="">
+              <p>
+                <b>cow shows all the work you have handed to agents on one page, and lets you deal with it from the keyboard.</b>
+              </p>
+              <p>
+                A <b>Main</b> is the one long-lived thread you talk to. It hands jobs to other threads; cow then lists every thread
+                Main has started, and every thread those have started, each with its state and what it is waiting for, and
+                collects what waits on you in one queue.
+              </p>
+              <p>
+                <b>Now:</b> choose the thread that is your Main with <kbd>j</kbd> <kbd>k</kbd> and <kbd>Enter</kbd>. You can change
+                it later with <kbd>M</kbd>, and <kbd>?</kbd> explains every mark and key.
+              </p>
+            </div>
+          )}
           <p className="cow-lede">
             {notice ? <b>{notice} </b> : null}
-            Main is the one long-lived thread you run your work through. This page then shows every
-            thread Main has started, and every thread those have started.
+            {canCancel ? "Main is the one long-lived thread you run your work through. This page then shows every thread Main has started, and every thread those have started." : ""}
             {scopedToProject ? " Listed: this project's threads, most recent first." : " Listed: all threads, most recent first."}
           </p>
           {candidates.length === 0 ? (
             <Notice title="There are no threads to choose from">
-              <p>Start a thread in bb first, then come back here and pick it as Main.</p>
+              <p>
+                {scopedToProject ? "This project has no open thread. " : "bb has no open thread. "}
+                Start one in bb (it will be your Main: the thread you ask to do things and to hand work to others), then come back
+                here and choose it.
+              </p>
             </Notice>
           ) : (
             candidates.map((thread) => {
@@ -1069,7 +1121,7 @@ function Picker({
           </span>
           <span className="cow-sep">·</span>
           <span>
-            <kbd>j</kbd> <kbd>k</kbd> move
+            <kbd>j</kbd> <kbd>k</kbd> move · <kbd>?</kbd> what this is
           </span>
         </footer>
       </div>
@@ -1607,10 +1659,7 @@ function OverviewScreen({
           return true;
         }
       : help
-      ? (key) => {
-          if (key === "Escape" || key === "?" || key === "q") setHelp(false);
-          return true;
-        }
+      ? (key) => helpKey(key, () => setHelp(false))
       : capSteps.onKey
         ? (key) => {
             // The steps that make a capability hold the keyboard until they are saved or left.
@@ -1807,6 +1856,7 @@ function OverviewScreen({
             on you
           </span>
         </header>
+        <Asides />
         {signer.status !== "enrolled" && signer.status !== "loading" ? (
           <p className="cow-keybanner cow-keybanner-off" data-cow-key-status={signer.status} data-cow-key-fingerprint={signer.fingerprint ?? ""} role="alert">
             <b>
@@ -1822,7 +1872,9 @@ function OverviewScreen({
           </p>
         ) : signer.firstUse ? (
           <p className="cow-keybanner" data-cow-key-status="first" data-cow-key-fingerprint={signer.fingerprint ?? ""} role="status">
-            <b>This page's key {signer.fingerprint} is now enrolled, by first use.</b> No key was enrolled, so the first page to open cow holds what only you may do: making and deleting capabilities, acknowledging, deciding permission requests, answering asks, and sending as you. Any other browser has to be approved from a page that is enrolled.{" "}
+            <b>This page's key {signer.fingerprint} is now enrolled, by first use.</b> It signs what only you may do here, so an agent
+            cannot do those things through cow; any other browser has to be approved from this one. <kbd>C</kbd> lists the keys
+            later, and <kbd>?</kbd> says more.{" "}
             <button type="button" className="cow-vb" data-cow-hint="" data-cow-key-dismiss="" tabIndex={-1} onClick={signer.dismissFirstUse}>
               understood
             </button>
@@ -2107,7 +2159,7 @@ function OverviewScreen({
                 />
                 <Verb keys="/" label="filter" onRun={startFilter} />
                 <Verb keys="m" label="Main's chat" onRun={() => openChat(main.thread.id)} />
-                <Verb keys="⇥" label="next ask" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
+                <Verb keys="⇥" label="next in queue" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
                 <Verb name="caps" keys="C" why="how many capabilities are in force, and how many notices wait: C opens them" label={`capabilities ${inForce}${caps.notices.length > 0 ? ` · ${caps.notices.length} to acknowledge` : ""}`} onRun={() => run({ kind: "caps" })} />
                 <Verb keys="f" label="hints" onRun={startHints} />
                 <Verb keys="?" label="legend" onRun={() => setHelp(true)} />

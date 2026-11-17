@@ -197,7 +197,7 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
   if (record === null) {
     body = <p className="cow-bf-lede">{open.error ? <span className="cow-err">could not read the brief: {open.error}</span> : "Reading the brief…"}</p>;
   } else if (record === "none") {
-    body = <p className="cow-bf-lede">This thread has submitted no brief.</p>;
+    body = <p className="cow-bf-lede">This thread has submitted no brief. Its agent submits one with bb cow brief submit when it finishes a job.</p>;
   } else {
     const seen = review(record.brief, record.check);
     const check = checkLine(seen);
@@ -241,15 +241,15 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <h3 data-cow-brief-section="calls">
           Judgement calls for you <b>{calls.length}</b>
         </h3>
-        {calls.length === 0 ? <p className="cow-bf-none">None listed.</p> : calls.map(draw)}
+        {calls.length === 0 ? <p className="cow-bf-none">None listed: the agent left no decision to you.</p> : calls.map(draw)}
         <h3 data-cow-brief-section="claims">
           Other claims <b>{claims.length}</b>
         </h3>
-        {claims.length === 0 ? <p className="cow-bf-none">None.</p> : claims.map(draw)}
+        {claims.length === 0 ? <p className="cow-bf-none">None: every claim is among the disputed ones above.</p> : claims.map(draw)}
         <h3 data-cow-brief-section="not-done">
           Left undone, as the agent lists it <b>{seen.notDone.length}</b>
         </h3>
-        {seen.notDone.length === 0 ? <p className="cow-bf-none">Nothing listed.</p> : seen.notDone.map((entry, index) => <p key={index} className="cow-bf-undone">{entry}</p>)}
+        {seen.notDone.length === 0 ? <p className="cow-bf-none">Nothing listed: the agent says it left nothing undone.</p> : seen.notDone.map((entry, index) => <p key={index} className="cow-bf-undone">{entry}</p>)}
         <h3 data-cow-brief-section="summary">The agent's summary</h3>
         <p className="cow-bf-summary">{record.brief.summary}</p>
         {asks.length > 0 ? <p className="cow-bf-none">This thread also has {asks.length === 1 ? "an ask" : `${asks.length} asks`} open: q, then a on its line.</p> : null}

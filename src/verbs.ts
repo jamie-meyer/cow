@@ -59,6 +59,34 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
   }
 }
 
+/** For each reason a verb is refused: what to do instead, on the page and from the CLI. */
+const INSTEAD: Record<string, { page: string; cli: string }> = {
+  "select a line first": { page: "j and k move to one", cli: "" },
+  "it is archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
+  "it is parked: resume it first": { page: "r resumes it", cli: "`bb cow resume <thread>` resumes it." },
+  "it has not asked anything": { page: "I says something to it", cli: "" },
+  "it has submitted no brief": { page: "its agent submits one with bb cow brief submit", cli: "" },
+  "Main cannot be parked": { page: "M chooses another Main", cli: "Park the threads under it instead." },
+  "it is already parked": { page: "r resumes it", cli: "`bb cow resume <thread>` takes it off the shelf; parking again is for work that has come back." },
+  "it is not parked": { page: "p parks it", cli: "`bb cow park <thread> --reason <text>` parks it." },
+  "it is parked: resume it, or wait until it comes back": { page: "r resumes it", cli: "" },
+  "no turn is running": { page: "there is nothing to stop", cli: "" },
+  "Main cannot be archived from here": { page: "archive it in bb, then choose another Main with M", cli: "Archive it with `bb thread archive <thread>` if you mean to; cow then asks for another Main." },
+  "it is already archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
+  "threads under it are still open": { page: "archive or park those first", cli: "Archive or park those first: `bb cow status` lists them." },
+  "it has an open ask: answer it, or have it withdrawn": { page: "a answers it", cli: "The user answers it on cow's page, or its thread runs `bb cow ask withdraw <id>` or `bb cow ask close <id> --answered <text>`." },
+  "only done, idle or failed lines can be archived": { page: "x stops a running turn, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
+};
+
+/** What to do instead of a refused verb, in the page's keys; empty when the reason already says. */
+export function insteadOnPage(why: string): string {
+  const instead = INSTEAD[why]?.page ?? "";
+  return instead === "" || why.includes(instead) ? "" : instead;
+}
+
+/** The same for a refused command; empty when there is nothing to add. */
+export const insteadFromCli = (why: string): string => INSTEAD[why]?.cli ?? "";
+
 /** What each verb is called on this line; parked work that came back reads differently. */
 export function verbLabel(verb: Verb, line: Line | null): string {
   const returned = line?.derived.park?.due != null;

@@ -52,9 +52,34 @@
 
 .cow-app {
   height: 100%;
+  min-height: 0;
   padding: 0 20px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+}
+/* Only the list takes the free height. Whatever sits above it (a notice, a
+   card opened on Main) is as tall as its content and no taller than its cap,
+   and scrolls inside itself beyond that. */
+.cow-app > * {
+  flex: none;
+  min-height: 0;
+}
+.cow-app > .cow-body,
+.cow-app > .cow-main {
+  flex: 1 1 0;
+}
+.cow-app > .cow-keybanner,
+.cow-app > .cow-aside {
+  max-height: min(22%, 132px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.cow-app > .cow-ans,
+.cow-app > .cow-held,
+.cow-app > .cow-steps {
+  max-height: 55%;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 /* running head: Main, and its own state */
@@ -992,6 +1017,7 @@
   line-height: 20px;
 }
 .cow-card .cow-row > span:first-child {
+  align-self: start;
   font: 11.5px/20px var(--cow-mono);
   display: flex;
   align-items: center;
@@ -1000,6 +1026,36 @@
 }
 .cow-card .cow-row b {
   font-weight: 600;
+}
+.cow-card .cow-about {
+  grid-column: 1 / -1;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--cow-rule);
+}
+.cow-card .cow-about p {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+  line-height: 20px;
+  max-width: 820px;
+}
+.cow-card .cow-about code {
+  font: 12px/20px var(--cow-mono);
+}
+.cow-card .cow-keys h3:not(:first-child) {
+  margin-top: 10px;
+}
+.cow-intro {
+  margin: 14px 0 6px 35px;
+  max-width: 640px;
+  padding: 8px 14px;
+  border-left: 3px solid var(--cow-run);
+  background: var(--cow-tint-run);
+}
+.cow-intro p {
+  margin: 0 0 4px;
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--cow-ink);
 }
 .cow-card .cow-keys .cow-row {
   grid-template-columns: 62px minmax(0, 1fr);
@@ -1071,7 +1127,8 @@
     border-left: 0;
   }
   .cow-notice,
-  .cow-lede {
+  .cow-lede,
+  .cow-intro {
     margin-left: 8px;
   }
 }
@@ -1716,6 +1773,22 @@
   background: var(--cow-tint-run);
   font: 12.5px/19px var(--cow-sans);
   color: var(--cow-ink);
+}
+/* An aside: something worth saying once, quietly, with a way to put it away. */
+.cow-aside {
+  margin: 4px 0 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--cow-rule);
+  font: 12px/18px var(--cow-sans);
+  color: var(--cow-muted);
+  overflow-wrap: anywhere;
+}
+.cow-aside code {
+  font: 11.5px/18px var(--cow-mono);
+  color: var(--cow-ink);
+}
+.cow-keybanner {
+  overflow-wrap: anywhere;
 }
 .cow-keybanner-off {
   border-left-color: var(--cow-fail);

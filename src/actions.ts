@@ -34,7 +34,7 @@ import {
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
-import { verbBlocked } from "./verbs.ts";
+import { insteadFromCli, verbBlocked } from "./verbs.ts";
 
 /** bb reads plugin metadata for at most this many threads per request. */
 const METADATA_PAGE = 200;
@@ -309,7 +309,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   };
 
   const refuse = (verb: string, line: Line, why: string): never => {
-    throw new CowError(`cannot_${verb}`, `cannot ${verb} “${line.thread.title}” (${line.thread.id}): ${why}`);
+    throw new CowError(`cannot_${verb}`, `cannot ${verb} “${line.thread.title}” (${line.thread.id}): ${why}`, insteadFromCli(why) || undefined);
   };
 
   return {
@@ -406,7 +406,14 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         throw new CowError("no_main", "no Main thread is chosen", "Pass --main <thread>, or choose a Main on cow's page.");
       }
       const seen = await look(id);
-      if (seen.root.archivedAt !== null) throw new CowError("main_archived", `the Main thread ${id} is archived`, "Pass --main <thread>.");
+      if (seen.root.archivedAt !== null) {
+        const title = seen.root.title.trim() || id;
+        throw new CowError(
+          "main_archived",
+          mainId === null ? `the Main chosen for this project, “${title}” (${id}), is archived, so there is no overview to give` : `“${title}” (${id}) is archived, so it cannot be read as Main`,
+          `Choose another Main on cow's page (M), or pass --main <thread>; \`bb thread unarchive ${id}\` brings this one back.`,
+        );
+      }
       const overview = buildOverview(seen.threads, id, seen.deriveThread((other) => other === id), seen.now, seen.plans);
       return statusReport(overview, seen.now, seen.truncated);
     },

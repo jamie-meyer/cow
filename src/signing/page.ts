@@ -7,6 +7,7 @@ import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Ask } from "../asks/ask.ts";
 import { CAPS_CHANGED, type Capability } from "../caps/cap.ts";
 import type { ActionArgs, signingRpcContract } from "./backend.ts";
+import { FIRST_USE_SHOWN_MS, readDismissed, rememberDismissed } from "../support.ts";
 import { type EnrolledKey, type KeysState, type PersonAction, type PublicKey, fingerprintText, formatFingerprint, notEnrolledText, signedText } from "./envelope.ts";
 
 /** What each of the person's actions gives back. */
@@ -108,7 +109,7 @@ export function useSigner(): Signer {
   const [held, setHeld] = useState<Held | null>(null);
   const [status, setStatus] = useState<SignerStatus>("loading");
   const [keys, setKeys] = useState<KeysState | null>(null);
-  const [firstUse, setFirstUse] = useState(false);
+  const [understood, setUnderstood] = useState<string[]>(readDismissed);
   /** The backend's clock minus this page's. */
   const offset = useRef(0);
   const live = useRef({ held, status });
@@ -138,9 +139,9 @@ export function useSigner(): Signer {
     if (mine === null) return;
     if (state.keys.some((entry) => entry.fingerprint === mine.fingerprint)) return setStatus("enrolled");
     const asked = await rpc.call("key_enrol", { key: mine.publicKey, label: pageLabel() });
-    if (asked.outcome === "enrolled-first") setFirstUse(true);
     setStatus(asked.outcome === "pending" ? "pending" : asked.outcome === "refused" ? "refused" : "enrolled");
-    if (asked.outcome !== "enrolled") setKeys(await rpc.call("keys_state"));
+    // Read again whatever came of it: enrolled by first use, the page says so from what is stored.
+    setKeys(await rpc.call("keys_state"));
   }, [rpc]);
   const refreshing = useRef<Promise<void> | null>(null);
   const reload = useCallback(() => {
@@ -182,8 +183,17 @@ export function useSigner(): Signer {
     [rpc, reload],
   );
 
+  // Said from what is stored, not from this page's memory, so a reload or a resized window does not lose it:
+  // this page's key was the first enrolled, lately, and the notice has not been put away in this browser.
+  const mine = status === "enrolled" ? keys?.keys.find((entry) => entry.fingerprint === held?.fingerprint) : undefined;
+  const firstUseId = mine?.how === "first" ? `first-use:${mine.fingerprint}:${mine.enrolledAt}` : null;
+  const firstUse = firstUseId !== null && mine !== undefined && keys !== null && keys.now - mine.enrolledAt < FIRST_USE_SHOWN_MS && !understood.includes(firstUseId);
+  const dismissFirstUse = useCallback(() => {
+    if (firstUseId !== null) setUnderstood((current) => rememberDismissed(current, firstUseId));
+  }, [firstUseId]);
+
   return useMemo(
-    () => ({ status, fingerprint: held?.fingerprint ?? null, firstUse, dismissFirstUse: () => setFirstUse(false), keys, why, call }),
-    [status, held, firstUse, keys, why, call],
+    () => ({ status, fingerprint: held?.fingerprint ?? null, firstUse, dismissFirstUse, keys, why, call }),
+    [status, held, firstUse, dismissFirstUse, keys, why, call],
   );
 }

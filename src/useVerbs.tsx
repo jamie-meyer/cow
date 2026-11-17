@@ -35,7 +35,7 @@ import type { ParkRecord } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
-import { type Verb, verbBlocked } from "./verbs.ts";
+import { type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
@@ -305,7 +305,7 @@ export function useVerbs(host: VerbHost): Verbs {
   const toggleProject = (line: Line) => {
     const id = line.thread.id;
     if (id === main.thread.id) return say("Main is a project already, and always");
-    if (line.thread.archivedAt !== null) return say("it is archived: a project is marked while it is open");
+    if (line.thread.archivedAt !== null) return say("it is archived: a project is marked while it is open · u takes back an archive made on this page");
     const before = parks.projects.get(id) ?? null;
     const project = before === null ? { at: clockNow(), by: null } : null;
     parks.setProject(id, project).then(
@@ -550,7 +550,10 @@ export function useVerbs(host: VerbHost): Verbs {
   const start = (verb: Verb) => {
     const line = host.selected;
     const blocked = verbBlocked(verb, line, line?.thread.id === main.thread.id);
-    if (line === null || blocked !== null) return say(`cannot ${verb}: ${blocked}`);
+    if (line === null || blocked !== null) {
+      const instead = insteadOnPage(blocked ?? "");
+      return say(`cannot ${verb}: ${blocked}${instead ? ` · ${instead}` : ""}`);
+    }
     const threadId = line.thread.id;
     const returned = line.derived.park?.due != null;
     say("");

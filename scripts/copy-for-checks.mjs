@@ -37,7 +37,7 @@ if (existsSync(to) && readdirSync(to).length > 0) {
 }
 mkdirSync(to, { recursive: true });
 // The skill is left out: two plugins would otherwise both tell agents about `bb cow`.
-for (const name of ["app.tsx", "server.ts", "src", "assets", "themes", "tsconfig.json", "package-lock.json", "node_modules"]) {
+for (const name of ["app.tsx", "server.ts", "src", "assets", "themes", "tsconfig.json", "package-lock.json", ".gitignore", "node_modules"]) {
   if (existsSync(join(from, name))) cpSync(join(from, name), join(to, name), { recursive: true });
 }
 const manifest = JSON.parse(readFileSync(join(from, "package.json"), "utf8"));
@@ -45,6 +45,14 @@ manifest.name = `bb-plugin-${id}`;
 manifest.bb.name = id;
 manifest.bb.description = `A copy of cow for its end-to-end checks. Remove it with: bb plugin remove ${id}`;
 writeFileSync(join(to, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+// The lockfile names the package too; a Git install reads it.
+const lock = join(to, "package-lock.json");
+if (existsSync(lock)) {
+  const locked = JSON.parse(readFileSync(lock, "utf8"));
+  locked.name = manifest.name;
+  if (locked.packages?.[""]) locked.packages[""].name = manifest.name;
+  writeFileSync(lock, `${JSON.stringify(locked, null, 2)}\n`);
+}
 const app = join(to, "app.tsx");
 writeFileSync(app, readFileSync(app, "utf8").replace('title: "cow"', `title: "${id}"`).replace("🐄 cow: choose the Main thread", `${id}: choose the Main thread`));
 console.log(`${id} is in ${to}\n  bb plugin install ${to} --yes\n  npm run e2e -- ${id === "cow-check" ? "" : `--plugin ${id} `}--project … --environment …\n  bb plugin remove ${id}`);

@@ -40,37 +40,75 @@ export type Command =
   | { kind: "help" }
   | { kind: "choose-main" };
 
-/** The key map, in the order the legend lists it. */
-export const KEY_MAP: readonly { keys: string; does: string }[] = [
-  { keys: "j k", does: "next, previous line (arrows work too); the heading, Main, is the line above the first" },
-  { keys: "gg G", does: "the heading, the last line" },
-  { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
-  { keys: "h l", does: "fold, unfold a group; on a member, h goes to its group's head (left, right arrows too)" },
-  { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader" },
-  { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat" },
-  { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
-  { keys: "m", does: "open Main's chat the same way" },
-  { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
-  { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
-  { keys: "I", does: "say something to the selected thread" },
-  { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card" },
-  { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
-  { keys: "c", does: "show the capabilities the line's thread holds, and where each comes from: itself, a thread above it, or Main; c or Esc closes" },
-  { keys: "C", does: "the capabilities sheet over the page: n makes one, x deletes (y confirms), u undoes a delete, Enter shows its history, Space acknowledges a new one or a decision made outside cow, Tab shows the log, q or Esc closes" },
-  { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
-  { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
-  { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
-  { keys: "r", does: "resume a parked line: back into the tree" },
-  { keys: "Space", does: "mark a reply as seen: the line stops waiting on you; on a line whose request was decided outside cow, acknowledge that" },
-  { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
-  { keys: "J K", does: "move a not-started item down, up its list" },
-  { keys: "e", does: "archive a done, idle or failed line: a reason or nothing, then Enter" },
-  { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen or project mark (y confirms)" },
-  { keys: "Tab", does: "next ask in the queue (Shift+Tab previous)" },
-  { keys: "1 to 9", does: "jump to that ask" },
-  { keys: "M", does: "choose a different Main" },
-  { keys: "?", does: "this legend" },
+/** The key map as the legend shows it: grouped by what the person is doing. */
+export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
+  {
+    title: "Moving around",
+    keys: [
+      { keys: "j k", does: "next, previous line (arrows work too); the heading, Main, is the line above the first" },
+      { keys: "gg G", does: "the heading, the last line" },
+      { keys: "h l", does: "fold, unfold a group; on a member, h goes to its group's head (left, right arrows too)" },
+      { keys: "Tab", does: "next entry in the queue of what waits on you (Shift+Tab previous)" },
+      { keys: "1 to 9", does: "jump to that entry in the queue" },
+      { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
+      { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader" },
+    ],
+  },
+  {
+    title: "Reading a thread and talking to it",
+    keys: [
+      { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat" },
+      { keys: "m", does: "open Main's chat the same way" },
+      { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
+      { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
+      { keys: "I", does: "say something to the selected thread" },
+      { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
+    ],
+  },
+  {
+    title: "Dealing with what waits on you",
+    keys: [
+      { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card" },
+      { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
+      { keys: "Space", does: "mark a reply as seen: the line stops waiting on you; on a line whose request was decided outside cow, acknowledge that" },
+    ],
+  },
+  {
+    title: "Setting work aside, ending it, taking it back",
+    keys: [
+      { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
+      { keys: "r", does: "resume a parked line: back into the tree" },
+      { keys: "e", does: "archive a done, idle or failed line: a reason or nothing, then Enter" },
+      { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
+      { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen or project mark (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
+      { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
+      { keys: "J K", does: "move a not-started item down, up its list" },
+    ],
+  },
+  {
+    title: "Capabilities and this page's key",
+    keys: [
+      { keys: "c", does: "show the capabilities the line's thread holds, and where each comes from: itself, a thread above it, or Main; c or Esc closes" },
+      { keys: "C", does: "the capabilities sheet over the page: n makes one, x deletes (y confirms), u undoes a delete, Enter shows its history, Space acknowledges a new one or a decision made outside cow, Tab shows the log, q or Esc closes. It also lists the keys enrolled to act as you, this page's among them: Enter approves a page that asks, x refuses or removes one" },
+    ],
+  },
+  {
+    title: "Reading a file",
+    keys: [
+      { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
+    ],
+  },
+  {
+    title: "The page itself",
+    keys: [
+      { keys: "M", does: "choose a different Main for this window" },
+      { keys: "?", does: "this legend; ?, q or Esc closes it" },
+    ],
+  },
 ];
+
+/** Every entry of the key map, in the legend's order. */
+export const KEY_MAP: readonly { keys: string; does: string }[] = KEY_GROUPS.flatMap((group) => group.keys);
 
 /** How long after `g` a second `g` still means "top". */
 const CHORD_MS = 800;

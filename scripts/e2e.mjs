@@ -1552,6 +1552,23 @@ async function capsChecks(page, ids, shot, chooseMain) {
   );
   check("the reset and the enrollment are both in the log", JSON.stringify(await keyKinds(2)) === JSON.stringify([["key-enrolled", null], ["enrollment-reset", null]]), JSON.stringify(await keyKinds(2)));
   await shot("keys-first-use");
+  // -- a notice above the list never takes the list's room ----------------------
+  /** The height of the page, of the notice above the list, and of the list (with the queue beside or above it), in two window sizes. */
+  const roomAt = async (tab) => {
+    const seen = {};
+    for (const [width, height] of [[1280, 800], [700, 800]]) {
+      await tab.resize(width, height);
+      await sleep(1200);
+      seen[width] = JSON.parse(await tab.eval(`(() => { const app = document.querySelector(".cow-app"), body = document.querySelector(".cow-app > .cow-body"), note = ${banner}; return JSON.stringify({ app: app?.clientHeight ?? 0, list: Math.round(body?.getBoundingClientRect().height ?? 0), notice: Math.round(note?.getBoundingClientRect().height ?? 0), sentences: (note?.textContent ?? "").split(/[.:] /).length }); })()`));
+    }
+    await tab.resize(1440, 900);
+    await sleep(1200);
+    return seen;
+  };
+  const roomy = (seen) => Object.values(seen).every((at) => at.notice > 0 && at.app > 500 && at.list >= at.app * 0.7);
+  const firstRoom = await roomAt(page);
+  check("with the first-use notice showing, the list keeps most of the page's height, at 1280x800 and at 700 wide", roomy(firstRoom), JSON.stringify(firstRoom));
+  check("the first-use notice is short: the fingerprint, two sentences, and where to look later", firstUse.text.length < 330 && firstUse.text.includes("C lists the keys") && firstUse.text.includes("?"), `${firstUse.text.length} characters`);
   await page.eval(`document.querySelector("[data-cow-key-dismiss]").click(); true`);
   await page.waitFor(`!${banner}`, { label: "the notice put away" });
 
@@ -1613,6 +1630,8 @@ async function capsChecks(page, ids, shot, chooseMain) {
     waitingPage.text.slice(0, 200),
   );
   await shot("keys-unenrolled", otherTab);
+  const waitingRoom = await roomAt(otherTab);
+  check("with the not-enrolled notice showing, the list keeps most of the page's height, at 1280x800 and at 700 wide", roomy(waitingRoom), JSON.stringify(waitingRoom));
   const refusedSay = await sayFrom(otherTab, "this must not be sent");
   await otherTab.key("Escape");
   check("its verbs explain themselves instead of acting: saying something to Main is not sent, and says why and how to get enrolled", /^not sent: this page's key .* is not enrolled, so this page can only read\. Approve it from a page that is enrolled/.test(refusedSay) && (await userRows(ids.cmain)).length === mainRows, refusedSay);
@@ -4323,6 +4342,64 @@ async function main() {
   await shot("cli-archived");
   const twice = await cow("archive", ids.fails);
   check("archiving it twice is refused", twice.code !== 0 && /already archived/.test(twice.stderr), twice.stderr);
+  // -- a Main that is archived: the CLI says so, and a new window starts over --
+  const namedArchived = await cow("status", "--main", ids.fails);
+  await rpc("main_choose", { projectId: PROJECT_OF.main, threadId: ids.fails });
+  const storedArchived = await cow("status");
+  check(
+    "bb cow status on an archived Main, named or stored, gives no overview: it says the Main is archived and what to do",
+    namedArchived.code !== 0 && /is archived, so it cannot be read as Main/.test(namedArchived.stderr) && storedArchived.code !== 0 && /The Main chosen|the Main chosen/.test(storedArchived.stderr) && /is archived/.test(storedArchived.stderr) && /choose another Main|Choose another Main/.test(storedArchived.stderr) && storedArchived.stderr.includes(`bb thread unarchive ${ids.fails}`) && !/Waiting on the user/.test(storedArchived.stdout + namedArchived.stdout),
+    `${namedArchived.stderr.trim()} | ${storedArchived.stderr.trim()}`,
+  );
+  // A new window starts from the stored Main; with that one archived it has none, as on a first run.
+  const fresh = await newTab(PORT);
+  // In this window alone: bb reports another version and another theme, so both asides have something to say.
+  await fresh.send("Page.enable");
+  await fresh.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const real = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await real(...args);
+        const url = String(args[0]?.url ?? args[0]);
+        const swap = url.includes("/api/v1/system/version") ? (text) => text.replace(/"currentVersion":"[^"]*"/, '"currentVersion":"0.51.2"') : url.includes("/api/v1/system/config") ? (text) => text.replace(/"themeId":"[^"]*"/g, '"themeId":"default"') : null;
+        if (!swap || !response.ok) return response;
+        return new Response(swap(await response.text()), { status: response.status, headers: response.headers });
+      };
+    })()`,
+  });
+  await fresh.resize(1440, 900);
+  await fresh.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await fresh.eval(`localStorage.removeItem("cow:dismissed"); true`);
+  await fresh.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await fresh.waitFor(`${screen} === "picker"`, { label: "the picker in a window whose stored Main is archived", timeout: 60_000 });
+  const intro = await fresh.eval(`document.querySelector("[data-cow-intro]")?.textContent ?? ""`);
+  const lede = await fresh.eval(`document.querySelector(".cow-lede")?.textContent ?? ""`);
+  check(
+    "with no Main, the page says what cow is, what a Main is and what to do now, before the list to choose from",
+    intro.includes("cow shows all the work you have handed to agents on one page") && intro.includes("A Main is the one long-lived thread you talk to") && intro.includes("Now: choose the thread that is your Main") && lede.includes("The thread that was Main has been archived or deleted.") &&
+      (await fresh.eval(`(() => { const intro = document.querySelector("[data-cow-intro]"), first = document.querySelector("[data-cow-screen='picker'] [data-cow-line]"); return !!intro && !!first && intro.getBoundingClientRect().bottom <= first.getBoundingClientRect().top; })()`)),
+    intro.slice(0, 90),
+  );
+  const asideTexts = async () => JSON.parse(await fresh.eval(`JSON.stringify(Object.fromEntries([...document.querySelectorAll("[data-cow-aside]")].map((el) => [el.dataset.cowAside, el.textContent])))`));
+  await fresh.waitFor(`document.querySelectorAll("[data-cow-aside]").length === 2`, { label: "the two asides", timeout: 20_000 }).catch(() => undefined);
+  const asides = await asideTexts();
+  check(
+    "on a bb outside the tested range the page says so, quietly, naming both versions; with another theme active it mentions cow's own and how to turn it on",
+    /This is bb 0\.51\.2\. cow was tested on bb 0\.49/.test(asides["bb:0.51.2"] ?? "") && (asides.theme ?? "").includes(`bb theme set plugin:${PLUGIN}:cow`) && (asides.theme ?? "").includes("bb theme reset"),
+    JSON.stringify(asides).slice(0, 300),
+  );
+  await fresh.eval(`document.querySelectorAll("[data-cow-aside-dismiss]").forEach((button) => button.click()); true`);
+  await sleep(400);
+  const afterDismiss = Object.keys(await asideTexts()).length;
+  await fresh.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await fresh.waitFor(`${screen} === "picker"`, { label: "the picker again", timeout: 60_000 });
+  await sleep(2500);
+  check("each is said once: dismissed, it is gone, and stays gone after a reload", afterDismiss === 0 && Object.keys(await asideTexts()).length === 0);
+  await fresh.eval(`localStorage.removeItem("cow:dismissed"); true`);
+  await fresh.close();
+  check("on the tested bb, with cow's theme or on a page that was not told otherwise, the first window showed no version aside", !(await page.eval(`!!document.querySelector('[data-cow-aside^="bb:"]')`)));
+  await rpc("main_choose", { projectId: PROJECT_OF.main, threadId: ids.main });
+  await restoreStored();
   // Back to where the page's own checks left things.
   await bb("thread", "unarchive", ids.fails);
   // bb archived the thread under it with it, and brings back only the one asked for.
