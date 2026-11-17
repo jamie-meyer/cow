@@ -14,11 +14,16 @@
 // model, so that a brief submitted by a fixture is checked on the cheap
 // model, and puts both settings back as they were afterwards.
 //
+//   node scripts/copy-for-checks.mjs <empty folder> && bb plugin install <that folder> --yes
 //   npm run e2e:asks -- --project <bb project id> --environment <environment id>
+//   bb plugin remove cow-check
 //
 // Options:
 //   --bb <url>        bb's address (default http://127.0.0.1:38886)
-//   --plugin <id>     the plugin to check (default cow); see scripts/copy-for-checks.mjs
+//   --plugin <id>     the plugin to check (default cow-check, the copy made with
+//                     scripts/copy-for-checks.mjs); its enrollment is reset
+//   --reset-the-installed-cow
+//                     needed, with --plugin cow, to run against the installed cow
 //   --model <id>      fixture and checker model (default claude-haiku-5-5)
 //   --provider <id>   fixture and checker provider (default claude-code)
 //   --keep            leave the fixtures unarchived
@@ -27,7 +32,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createSigner } from "./sign.mjs";
+import { COPY_ID, createSigner, guardPlugin } from "./sign.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,8 +48,8 @@ const PROJECT = option("project", "");
 const ENVIRONMENT = option("environment", "");
 const MODEL = option("model", "claude-haiku-5-5");
 const PROVIDER = option("provider", "claude-code");
-/** The plugin the checks run against: cow, or a copy of it installed under another id (see scripts/copy-for-checks.mjs). */
-const PLUGIN = option("plugin", "cow");
+/** The plugin the checks run against: the copy made by scripts/copy-for-checks.mjs, unless another is named. The installed cow needs a second flag: see guardPlugin. */
+const PLUGIN = option("plugin", COPY_ID);
 const TITLE = "cow test";
 
 const results = [];
@@ -160,6 +165,7 @@ const HOSTILE = {
 
 async function main() {
   if (!PROJECT || !ENVIRONMENT) throw new Error("--project and --environment are required");
+  await guardPlugin(BB, PLUGIN, args);
   const dataDir = /Data dir:\s*(\S+)/.exec((await bbAs(null, "status")).stdout)?.[1];
   if (!dataDir) throw new Error("could not find bb's data directory in `bb status`");
 

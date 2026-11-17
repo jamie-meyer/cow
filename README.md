@@ -801,7 +801,7 @@ sandbox). `npm run e2e` runs it every time: see "the probe" in
 | creating the reset file | blocked by the sandbox: "Operation not permitted" |
 | `bb thread interactions approve <request> <thread>` | **worked**, as bb allows any thread to do; cow flagged it "approved outside cow" |
 | opening bb's database, where cow's storage is, for writing | blocked by the sandbox |
-| `bb plugin config cow`, to see whether plugin management is reachable | reachable. `bb plugin disable cow` and `bb plugin remove cow`, which would stop cow or delete its storage and its log, were not run |
+| `bb plugin config cow`, to see whether plugin management is reachable | reachable. `bb plugin disable cow` and `bb plugin remove cow`, which would stop cow, were not run |
 
 So, plainly:
 
@@ -1265,19 +1265,25 @@ npm run typecheck
 **Run the end-to-end checks against a copy, not against a cow you use.** They
 reset enrollment, make capabilities and write to the log, and they would race
 the page you have open for the first key. `scripts/copy-for-checks.mjs` makes
-a copy of the plugin under another id, with its own storage, page and
-command, and both scripts take `--plugin`:
+a copy of the plugin under another id, `cow-check`, with its own storage,
+page and command, and both scripts run against that copy unless told
+otherwise:
 
 ```sh
 node scripts/copy-for-checks.mjs /some/empty/folder     # the id is cow-check
 bb plugin install /some/empty/folder --yes
-npm run e2e -- --plugin cow-check --project <id> --environment <id>
-npm run e2e:asks -- --plugin cow-check --project <id> --environment <id>
+npm run e2e -- --project <id> --environment <id>
+npm run e2e:asks -- --project <id> --environment <id>
 bb plugin remove cow-check
 ```
 
-On bb 0.49 removing a plugin leaves what it stored in bb's database, under
-the copy's id, where nothing reads it again.
+Each script first prints which plugin it runs against and what it will
+reset there: how many enrolled keys, which ones, and the reset file it
+creates. `--plugin <id>` names another copy. Against the installed cow both
+scripts refuse and say why; `--plugin cow --reset-the-installed-cow` runs
+them there all the same, and clears your key. Removing the copy leaves its
+rows in bb's database: see "Turn it off" for how to clear them, with
+`cow-check` in place of `cow`.
 
 `npm run e2e:asks` checks asks and briefs against a running bb, without
 a browser: two "cow test" fixtures and up to three hidden checker threads, on
@@ -1305,8 +1311,28 @@ cow's own files, and it writes and removes a `.cow-e2e` folder there.
 
 ```sh
 bb plugin disable cow   # unload it; your choice of Main is kept
-bb plugin remove cow    # uninstall it and delete what it stored
+bb plugin remove cow    # uninstall it; see below for what stays
 ```
+
+On bb 0.49, removing the plugin deletes its settings and nothing else of
+what it stored. Left in bb's database, where nothing reads them until a
+plugin with the same id is installed again:
+
+- cow's own storage (the `plugin_kv` table): the stored Mains, which replies
+  you have seen, asks, briefs, capabilities, the log, and the enrolled keys.
+  A cow installed again later finds all of it, enrolled keys included;
+- cow's notes on each thread (the `thread_plugin_metadata` table).
+
+To clear them, after removing the plugin:
+
+```sh
+sqlite3 ~/.bb/bb.db "delete from plugin_kv where plugin_id = 'cow'; delete from thread_plugin_metadata where plugin_id = 'cow';"
+```
+
+`~/.bb` is bb's data directory; `bb status` prints it. This cannot be undone.
+Each browser also keeps its own signing key, in its storage for bb's address,
+until that storage is cleared; the key is of no use once the enrolled keys
+are gone.
 
 cow stores seven things: the public halves of the enrolled keys, and
 capabilities, their notices and the log, in the plugin's own storage; which thread was last chosen as Main for each

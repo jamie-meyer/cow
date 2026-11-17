@@ -9,9 +9,14 @@
 //
 //   node scripts/copy-for-checks.mjs <empty folder> [--id cow-check]
 //   bb plugin install <that folder> --yes
-//   npm run e2e -- --plugin cow-check --project … --environment …
-//   npm run e2e:asks -- --plugin cow-check --project … --environment …
+//   npm run e2e -- --project … --environment …
+//   npm run e2e:asks -- --project … --environment …
 //   bb plugin remove cow-check
+//
+// The checks run against cow-check unless told otherwise, so with the default
+// id nothing more is needed. With another id, pass --plugin <id> to both.
+// They refuse the installed cow unless given --plugin cow
+// --reset-the-installed-cow as well.
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,4 +47,4 @@ manifest.bb.description = `A copy of cow for its end-to-end checks. Remove it wi
 writeFileSync(join(to, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 const app = join(to, "app.tsx");
 writeFileSync(app, readFileSync(app, "utf8").replace('title: "cow"', `title: "${id}"`).replace("🐄 cow: choose the Main thread", `${id}: choose the Main thread`));
-console.log(`${id} is in ${to}\n  bb plugin install ${to} --yes\n  … --plugin ${id}\n  bb plugin remove ${id}`);
+console.log(`${id} is in ${to}\n  bb plugin install ${to} --yes\n  npm run e2e -- ${id === "cow-check" ? "" : `--plugin ${id} `}--project … --environment …\n  bb plugin remove ${id}`);

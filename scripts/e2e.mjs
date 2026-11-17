@@ -35,12 +35,18 @@
 //        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 //          --headless=new --remote-debugging-port=9344 \
 //          --user-data-dir="$(mktemp -d)" --window-size=1440,900 about:blank
-//   2. npm run e2e -- --project <bb project id> --environment <environment id>
+//   2. node scripts/copy-for-checks.mjs <empty folder> && bb plugin install <that folder> --yes
+//   3. npm run e2e -- --project <bb project id> --environment <environment id>
+//   4. bb plugin remove cow-check
 //
 // Options:
 //   --bb <url>          bb's address (default http://127.0.0.1:38886)
-//   --plugin <id>       the plugin to check (default cow): a copy made with
-//                       scripts/copy-for-checks.mjs keeps a cow that is in use out of it
+//   --plugin <id>       the plugin to check (default cow-check, the copy made
+//                       with scripts/copy-for-checks.mjs). The checks reset the
+//                       enrollment of that plugin and say so before they start.
+//   --reset-the-installed-cow
+//                       needed, with --plugin cow, to run against the installed
+//                       cow: without it the checks refuse
 //   --port <n>          Chrome's debugging port (default 9344)
 //   --state <file>      remember the fixtures here and reuse them next run
 //   --keep              leave the fixtures unarchived (use with --state)
@@ -57,7 +63,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { connect, newContextTab, newTab, sleep } from "./cdp.mjs";
-import { createSigner } from "./sign.mjs";
+import { COPY_ID, createSigner, guardPlugin } from "./sign.mjs";
 
 const run = promisify(execFile);
 
@@ -74,8 +80,8 @@ const ENVIRONMENT = option("environment", "");
 const STATE = option("state", "");
 const SHOTS = option("shots", "");
 const MODEL = option("model", "claude-haiku-5-5");
-/** The plugin the checks run against: cow, or a copy of it installed under another id (see scripts/copy-for-checks.mjs). */
-const PLUGIN = option("plugin", "cow");
+/** The plugin the checks run against: the copy made by scripts/copy-for-checks.mjs, unless another is named. The installed cow needs a second flag: see guardPlugin. */
+const PLUGIN = option("plugin", COPY_ID);
 const TITLE = "cow test";
 
 /** This check's own key, for the calls only the person may make. Made in main(). */
@@ -2379,6 +2385,7 @@ const screen = `${ROOT}?.dataset.cowScreen`;
 let restoreStored = async () => undefined;
 
 async function main() {
+  await guardPlugin(BB, PLUGIN, args);
   const ids = await fixtures();
   await assertOurs(ids);
 

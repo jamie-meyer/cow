@@ -74,3 +74,43 @@ export async function createSigner(bb, label = "the end-to-end check", plugin = 
     },
   };
 }
+
+/** The id the copy made by scripts/copy-for-checks.mjs is installed under, and what the checks run against unless told otherwise. */
+export const COPY_ID = "cow-check";
+/** The flag without which the checks refuse to run against the installed cow. */
+export const INSTALLED_FLAG = "--reset-the-installed-cow";
+
+/**
+ * Stop unless it is safe to run against `plugin`, and say what the run will
+ * reset. The checks clear every enrolled key of the plugin they run against,
+ * make and delete capabilities in it and write to its log; on a cow in use
+ * that wipes the person's key and races their open page for the next one.
+ */
+export async function guardPlugin(bb, plugin, args) {
+  if (plugin === "cow" && !args.includes(INSTALLED_FLAG)) {
+    console.error(
+      `These checks do not run against the installed cow unless you say so.\n` +
+        `They would clear every key enrolled with it, so that your own page is no longer enrolled, and write test entries to its log, which nothing clears.\n\n` +
+        `Run them against a copy instead:\n` +
+        `  node scripts/copy-for-checks.mjs <empty folder>\n` +
+        `  bb plugin install <that folder> --yes\n` +
+        `  (run this again; the copy, ${COPY_ID}, is the default)\n` +
+        `  bb plugin remove ${COPY_ID}\n\n` +
+        `To run against the installed cow all the same: --plugin cow ${INSTALLED_FLAG}`,
+    );
+    process.exit(2);
+  }
+  let state = null;
+  try {
+    state = (await (await fetch(`${bb}/api/v1/plugins/${plugin}/rpc/keys_state`, { method: "POST", headers: { "content-type": "application/json" }, body: "null" })).json()).result ?? null;
+  } catch {
+    state = null;
+  }
+  if (state === null) {
+    console.error(`The plugin "${plugin}" does not answer${plugin === COPY_ID ? `: make and install the copy first.\n  node scripts/copy-for-checks.mjs <empty folder>\n  bb plugin install <that folder> --yes` : "."}`);
+    process.exit(2);
+  }
+  console.log(
+    `These checks run against the plugin "${plugin}". They will reset its enrollment, now and when they finish: ${state.keys.length} enrolled ${state.keys.length === 1 ? "key" : "keys"}${state.keys.length > 0 ? ` (${state.keys.map((key) => `${key.fingerprint}, ${key.label}`).join("; ")})` : ""} and ${state.requests.length} ${state.requests.length === 1 ? "request" : "requests"} will be cleared, by creating ${state.resetPath}. They also make and delete capabilities there and add to its log.`,
+  );
+}
