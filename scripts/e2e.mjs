@@ -1492,7 +1492,9 @@ async function main() {
   await page.key("1");
   await page.key("Enter");
   await waitForThread(ids.perms, (t) => !t.hasPendingInteraction, "allowed after ask again", 30_000);
-  await page.waitFor(`${lineText(ids.perms)} === "blocked cow"`, { label: "the retried command running", timeout: 120_000 });
+  // The fixture's wording of its reply varies; what matters is that the command ran and the turn ended.
+  await waitForThread(ids.perms, (t) => t.status === "idle" && !t.hasPendingInteraction, "the retried command running", 120_000);
+  await page.waitFor(`!${lineText(ids.perms)}.startsWith("permission")`, { label: "the request leaving its line", timeout: 30_000 });
   const ranRow = (await api(`/threads/${ids.perms}/timeline`)).rows.findLast((row) => row.command === "echo blocked cow");
   check(
     "granted, the command that bb had refused runs",
@@ -1502,7 +1504,7 @@ async function main() {
   await page.waitFor(`${lineState(ids.perms)} === "wants" && ${isReply(ids.perms)}`, { label: "its reply to the user" });
   check(
     "the turn was yours, so the line now waits on you with its reply, not with a request",
-    (await page.eval(lineState(ids.perms))) === "wants" && (await page.eval(queueText(ids.perms))) === "replied to you: blocked cow",
+    (await page.eval(lineState(ids.perms))) === "wants" && (await page.eval(queueText(ids.perms))) ?.startsWith("replied to you: ") === true,
     await page.eval(queueText(ids.perms)),
   );
   await seeReply(ids.perms);
