@@ -185,7 +185,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return found;
   };
-  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf), capabilityNames));
+  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf), capabilityNames, bb.pluginId));
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.

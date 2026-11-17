@@ -18,6 +18,7 @@
 //
 // Options:
 //   --bb <url>        bb's address (default http://127.0.0.1:38886)
+//   --plugin <id>     the plugin to check (default cow); see scripts/copy-for-checks.mjs
 //   --model <id>      fixture and checker model (default claude-haiku-5-5)
 //   --provider <id>   fixture and checker provider (default claude-code)
 //   --keep            leave the fixtures unarchived
@@ -42,6 +43,8 @@ const PROJECT = option("project", "");
 const ENVIRONMENT = option("environment", "");
 const MODEL = option("model", "claude-haiku-5-5");
 const PROVIDER = option("provider", "claude-code");
+/** The plugin the checks run against: cow, or a copy of it installed under another id (see scripts/copy-for-checks.mjs). */
+const PLUGIN = option("plugin", "cow");
 const TITLE = "cow test";
 
 const results = [];
@@ -57,7 +60,7 @@ async function api(path) {
 }
 /** Call cow's RPC as the page does. A refusal is an answer here. */
 async function rpc(method, input) {
-  const response = await fetch(`${BB}/api/v1/plugins/cow/rpc/${method}`, {
+  const response = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
@@ -77,7 +80,7 @@ async function bbAs(sender, ...argv) {
     return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
   }
 }
-const cow = (sender, ...argv) => bbAs(sender, "cow", ...argv);
+const cow = (sender, ...argv) => bbAs(sender, PLUGIN, ...argv);
 const thread = async (id) => (await api(`/threads?threadIds=${id}&limit=1&includeHidden=true`))[0];
 const output = async (id) => (await api(`/threads/${id}/output`)).output ?? "";
 
@@ -111,14 +114,14 @@ async function spawn(prompt, parent) {
 
 const ASKER = `You are a test fixture for a bb plugin. Do exactly this and nothing else.
 1. Run this shell command once, exactly as written:
-   bb cow ask --question "Which colour?" --option red --option "blue::the colder one" --risk low
+   bb ${PLUGIN} ask --question "Which colour?" --option red --option "blue::the colder one" --risk low
 2. Reply with exactly the first line the command printed, and end your turn. Do not ask again.
 Later a message will arrive that starts with "Answer to your question". When it does, reply with exactly: GOT <the last line of that message>
 Reply to any other message with exactly: ok`;
 
 const BRIEFER = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
 From then on, every time you receive the message "submit", run this shell command once, exactly as written:
-   bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
+   bb ${PLUGIN} brief submit "$BB_THREAD_STORAGE/brief.json"
 and reply with exactly what it printed. Use no other tool and run nothing else.`;
 
 const BRIEF = {
@@ -160,7 +163,7 @@ async function main() {
   const dataDir = /Data dir:\s*(\S+)/.exec((await bbAs(null, "status")).stdout)?.[1];
   if (!dataDir) throw new Error("could not find bb's data directory in `bb status`");
 
-  const config = async (...argv) => bbAs(null, "plugin", "config", "cow", ...argv);
+  const config = async (...argv) => bbAs(null, "plugin", "config", PLUGIN, ...argv);
   const before = JSON.parse((await config("--json")).stdout);
   const stored = (key) => (typeof before.values?.[key] === "string" ? before.values[key] : "");
   const was = { checkerModel: stored("checkerModel"), checkerProvider: stored("checkerProvider") };
@@ -168,7 +171,7 @@ async function main() {
   const checkers = new Set();
   let failure = null;
   // This check's key is the first enrolled, as a page's is on a fresh cow.
-  const signer = await createSigner(BB, "the asks end-to-end check");
+  const signer = await createSigner(BB, "the asks end-to-end check", PLUGIN);
   await signer.resetEnrollment();
   if ((await signer.enrol()) !== "enrolled-first") throw new Error("the check's key was not enrolled by first use");
 
@@ -216,7 +219,7 @@ async function main() {
     for (const entry of first.check?.runs ?? []) checkers.add(entry.threadId);
 
     // ---- reload, mid-way: an open ask, a stored brief, perhaps a running check
-    const reloaded = await bbAs(null, "plugin", "reload", "cow");
+    const reloaded = await bbAs(null, "plugin", "reload", PLUGIN);
     check("the plugin reloaded", reloaded.code === 0, reloaded.stderr.trim());
     await waitFor("cow after the reload", async () => ((await rpc("asks_list", {})).ok ? true : null), 60_000);
     const after = await ours();

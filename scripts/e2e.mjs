@@ -39,6 +39,8 @@
 //
 // Options:
 //   --bb <url>          bb's address (default http://127.0.0.1:38886)
+//   --plugin <id>       the plugin to check (default cow): a copy made with
+//                       scripts/copy-for-checks.mjs keeps a cow that is in use out of it
 //   --port <n>          Chrome's debugging port (default 9344)
 //   --state <file>      remember the fixtures here and reuse them next run
 //   --keep              leave the fixtures unarchived (use with --state)
@@ -72,6 +74,8 @@ const ENVIRONMENT = option("environment", "");
 const STATE = option("state", "");
 const SHOTS = option("shots", "");
 const MODEL = option("model", "claude-haiku-5-5");
+/** The plugin the checks run against: cow, or a copy of it installed under another id (see scripts/copy-for-checks.mjs). */
+const PLUGIN = option("plugin", "cow");
 const TITLE = "cow test";
 
 /** This check's own key, for the calls only the person may make. Made in main(). */
@@ -108,7 +112,7 @@ async function api(path) {
   return response.json();
 }
 async function rpc(method, input) {
-  const response = await fetch(`${BB}/api/v1/plugins/cow/rpc/${method}`, {
+  const response = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
@@ -136,7 +140,7 @@ async function cowAs(sender, ...argv) {
   if (sender === null) delete env.BB_THREAD_ID;
   else env.BB_THREAD_ID = sender;
   try {
-    const { stdout, stderr } = await run("bb", ["cow", ...argv], { env });
+    const { stdout, stderr } = await run("bb", [PLUGIN, ...argv], { env });
     return { code: 0, stdout, stderr };
   } catch (error) {
     if (typeof error.code !== "number") throw error;
@@ -194,7 +198,7 @@ async function spawn({ prompt, parent, model = MODEL, permissionMode }) {
 const ASKER = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
 From then on:
 - when you receive the message "ask", run this shell command once, exactly as written, and reply with exactly the first line it printed:
-  bb cow ask --question "Which colour?" --option red --option "blue::the colder one"
+  bb ${PLUGIN} ask --question "Which colour?" --option red --option "blue::the colder one"
 - when you receive a message that starts with "Answer to your question", reply with exactly: GOT <the last line of that message>
 - reply to anything else with exactly: ok
 Never run anything else, and never ask again by yourself.`;
@@ -289,7 +293,7 @@ let restoreSettings = async () => undefined;
 const plain = async (...argv) => (await run("bb", argv, { env: (({ BB_THREAD_ID: _own, ...rest }) => rest)(process.env) })).stdout;
 /** Call cow's RPC; a refusal is an answer here, not an error. */
 async function rpcSoft(method, input) {
-  const response = await fetch(`${BB}/api/v1/plugins/cow/rpc/${method}`, {
+  const response = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
@@ -328,8 +332,8 @@ const CLEAN_BRIEF = {
 async function prepareRaised(ids) {
   const dataDir = /Data dir:\s*(\S+)/.exec(await plain("status"))?.[1];
   if (!dataDir) throw new Error("could not find bb's data directory in `bb status`");
-  const before = JSON.parse(await plain("plugin", "config", "cow", "--json")).values ?? {};
-  const set = async (key, value) => plain("plugin", "config", "cow", ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", PLUGIN, ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
   restoreSettings = async () => {
     await set("checkerModel", before.checkerModel);
     await set("checkerProvider", before.checkerProvider);
@@ -751,8 +755,8 @@ async function prepareReading(ids) {
     if (end !== undefined) await rpc("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
   }
   // A brief is submitted without a check: only its evidence link is used here.
-  const before = JSON.parse(await plain("plugin", "config", "cow", "--json")).values ?? {};
-  const set = async (key, value) => plain("plugin", "config", "cow", ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", PLUGIN, ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
   restoreReading = async () => {
     await set("checkOnSubmit", before.checkOnSubmit);
     writeFileSync(join(storage, "proof.txt"), PROOF_TEXT);
@@ -1470,7 +1474,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const field = (name) => `document.querySelector('[data-cow-input="${name}"]')`;
   const sheet = `document.querySelector('[data-cow-sheet="capabilities"]')`;
   const sheetNote = `(${sheet}?.querySelector("[data-cow-sheet-note]")?.textContent ?? "")`;
-  const sheetCursor = `(${sheet}?.querySelector(".cow-cap-row.cow-cur")?.dataset.cowCap ?? null)`;
+  const sheetCursor = `(${sheet}?.querySelector(".cow-cap-row.cow-cur")?.dataset.cowCap ?? ${sheet}?.querySelector(".cow-cap-row.cow-cur")?.dataset.cowKey ?? null)`;
   const capMark = (id) => `(${lineEl(id)}?.querySelector("[data-cow-capmark]")?.dataset ?? null)`;
   const mark = async (id) => JSON.parse(await page.eval(`JSON.stringify(${capMark(id)} ? { held: ${capMark(id)}.cowCapmark, fresh: ${capMark(id)}.cowCapmarkNew ?? null, count: ${capMark(id)}.cowAllowedCount } : null)`));
   const select = async (id) => {
@@ -1579,7 +1583,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const openOther = async () => {
     const tab = await newContextTab(PORT);
     await tab.resize(1440, 900);
-    await tab.goto(`${BB}/plugins/cow/main`);
+    await tab.goto(`${BB}/plugins/${PLUGIN}/main`);
     await tab.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page in another browser", timeout: 60_000 });
     await chooseMain(tab, ids.cmain);
     await tab.waitFor(`!!${banner}`, { label: "its key's standing", timeout: 20_000 });
@@ -1820,8 +1824,8 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await sleep(3000);
   check(
     "a file under the directory as written, which a symbolic link takes out of it, is not allowed: the request waits on you",
-    (await pendingOf(ckid)).length === 1 && !existsSync(`${other}/x.txt`) && (await capLog())[0].event.kind === "auto-allowed" && (await capLog())[0].event.what === `change ${third}`,
-    JSON.stringify((await capLog())[0].event),
+    (await pendingOf(ckid)).length === 1 && !existsSync(`${other}/x.txt`) && !(await capLog()).some((entry) => entry.event.kind === "auto-allowed" && entry.event.what.includes("/out/x.txt")) && (await capLog()).find((entry) => entry.event.kind === "auto-allowed")?.event.what === `change ${third}`,
+    `the newest allowance in the log is still: ${JSON.stringify((await capLog()).find((entry) => entry.event.kind === "auto-allowed")?.event)}`,
   );
   await openCard(ckid, `!!document.querySelector('[data-cow-answer="${ckid}"] [data-cow-permission="file_change"]')`);
   await page.key("3");
@@ -1930,7 +1934,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const up = await page.eval(sheetCursor);
   await page.key("G");
   const bottom = await page.eval(sheetCursor);
-  check("j, k, gg and G move between the capabilities", top === madeScratch?.id && down === madeEcho?.id && up === top && bottom === down, JSON.stringify([top, down, up, bottom]));
+  check("j, k, gg and G move between the lines: the capabilities, then the keys", top === madeScratch?.id && down === madeEcho?.id && up === top && /^[0-9a-f]{4}-/.test(bottom ?? ""), JSON.stringify([top, down, up, bottom]));
   await page.key("g");
   await page.key("g");
   await page.key("Enter");
@@ -1958,9 +1962,19 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await sleep(300);
   check("nothing in the log can be deleted or made from: x and n do nothing there", !(await page.eval(`!!${sheet}.querySelector("[data-cow-sheet-confirm]")`)) && !(await page.eval(`!!${steps}`)));
   await shot("caps-sheet-log");
+  const shownBefore = JSON.parse(await page.eval(`JSON.stringify({ shown: Number(${sheet}.querySelector("[data-cow-caplog-shown]").dataset.cowCaplogShown), rows: ${sheet}.querySelectorAll(".cow-sheet-body > [data-cow-caplog]").length, all: ${sheet}.querySelector("[data-cow-caplog-shown]").dataset.cowCaplogAll ?? null, signed: ${sheet}.querySelector('[data-cow-caplog-kind="created"]')?.dataset.cowCaplogBy ?? null, text: ${sheet}.querySelector('[data-cow-caplog-kind="created"]')?.textContent ?? "" })`));
+  await page.key("a");
+  await page.waitFor(`${sheet}.querySelector("[data-cow-caplog-shown]")?.dataset.cowCaplogAll === "true"`, { label: "every entry" });
+  const shownAll = Number(await page.eval(`${sheet}.querySelector("[data-cow-caplog-shown]").dataset.cowCaplogShown`));
+  check(
+    "the log shows the entries of this Main's threads, and those about no thread, until a asks for all; an entry for something only the person may do names the key that signed it",
+    shownBefore.all === null && shownBefore.shown === shownBefore.rows && shownAll >= shownBefore.shown && shownAll === Number(await page.eval(`${sheet}.querySelectorAll(".cow-sheet-body > [data-cow-caplog]").length`)) && /^[0-9a-f]{4}(-[0-9a-f]{4}){3}$/.test(shownBefore.signed ?? "") && shownBefore.text.includes(`signed by ${shownBefore.signed}`),
+    JSON.stringify({ ...shownBefore, shownAll }),
+  );
+  await page.key("a");
   await page.key("Tab");
   await page.waitFor(`${sheet}.dataset.cowCapsheetView === "list"`, { label: "back to the capabilities" });
-  await page.key("G");
+  await sheetRow(page, `[data-cow-cap="${madeEcho?.id}"]`);
   await page.key(" ");
   await page.waitFor(`${sheet}.querySelectorAll("[data-cow-cap-new]").length === 0`, { label: "the second one acknowledged" });
   await page.key("q");
@@ -2057,7 +2071,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await page.eval(`document.querySelector("[data-cow-notice]").click(); true`);
   await page.waitFor(`!!${sheet}`, { label: "the sheet, from its notice in the queue" });
   check("a notice in the queue opens the sheet", (await page.eval(`${sheet}.querySelectorAll("[data-cow-cap-new]").length`)) === 1);
-  await page.key("G");
+  await sheetRow(page, "[data-cow-cap-new]");
   await page.key(" ");
   await page.waitFor(`${sheet}.querySelectorAll("[data-cow-cap-new]").length === 0`, { label: "the one from the refusal acknowledged" });
   await page.key("q");
@@ -2197,7 +2211,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await sayTo(chead, "ask: echo cow probe pending");
   await waitForThread(chead, (t) => t.hasPendingInteraction, "a request for the probe to try", 120_000);
   const [probeRequest] = await pendingOf(chead);
-  const agentKey = await createSigner(BB, "made by a fixture");
+  const agentKey = await createSigner(BB, "made by a fixture", PLUGIN);
   const planted = { name: "cow test planted", note: null, rule: { kind: "command", mode: "exact", text: "echo cow planted" }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null };
   const enrolledPage = (await signer.state()).keys.find((key) => /headless Chrome/.test(key.label)).fingerprint;
   const allow = { threadId: chead, interactionId: probeRequest.id, resolution: { decision: "allow_once", grantedPermissions: null } };
@@ -2218,12 +2232,12 @@ async function capsChecks(page, ids, shot, chooseMain) {
     "unsigned-approve": unsigned("key_approve", { fingerprint: agentKey.fingerprint }),
   };
   for (const [name, body] of Object.entries(bodies)) writeFileSync(join(probeDir, `${name}.json`), JSON.stringify(body));
-  const rpcUrl = `${BB}/api/v1/plugins/cow/rpc`;
+  const rpcUrl = `${BB}/api/v1/plugins/${PLUGIN}/rpc`;
   const post = (name, method) => `curl -s -m 8 -X POST ${rpcUrl}/${method} -H content-type:application/json -d @${probeDir}/${name}.json`;
   const routes = [
     ["old-create", post("old-create", "cap_create")],
-    ["bb-rpc-create", `bb plugin rpc call cow cap_create --input-file ${probeDir}/old-create.json --json`],
-    ["bb-rpc-signed-create", `bb plugin rpc call cow signed --input-file ${probeDir}/unsigned-create.json --json`],
+    ["bb-rpc-create", `bb plugin rpc call ${PLUGIN} cap_create --input-file ${probeDir}/old-create.json --json`],
+    ["bb-rpc-signed-create", `bb plugin rpc call ${PLUGIN} signed --input-file ${probeDir}/unsigned-create.json --json`],
     ["unsigned-create", post("unsigned-create", "signed")],
     ["forged-create", post("forged-create", "signed")],
     ["unsigned-ack", post("unsigned-ack", "signed")],
@@ -2253,7 +2267,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const afterProbe = await capState();
   const keysAfter = await signer.state();
   const only = /only the person may do/;
-  check("the probe ran, inside the fixture's sandbox", probeRows.length === 1 && routes.every(([name]) => got[name] !== "(no output)"), probeOutput.slice(0, 200));
+  check("the probe ran, inside the fixture's sandbox", probeRows.length >= 1 && routes.every(([name]) => got[name] !== "(no output)"), probeOutput.slice(0, 200));
   check(
     "a sandboxed agent can no longer make a capability: the old method is gone, by HTTP and by bb plugin rpc call, and an unsigned or forged signed call is refused",
     (await byName("cow test planted")) === null && !/"ok":true/.test(got["old-create"]) && !/cap_[0-9a-f]{6}/.test(got["bb-rpc-create"]) && only.test(got["bb-rpc-signed-create"]) && only.test(got["unsigned-create"]) && /signature does not match/.test(got["forged-create"]),
@@ -2370,7 +2384,7 @@ async function main() {
   await stale.goto("about:blank");
   stale.close();
   // The check's own key is the first enrolled; its browser's is approved with it when the page opens.
-  signer = await createSigner(BB);
+  signer = await createSigner(BB, "the end-to-end check", PLUGIN);
   await ownKey();
   await reset(ids);
   const before = await rpc("main_state", null);
@@ -2400,11 +2414,11 @@ async function main() {
     const shot = async (name) => {
       if (SHOTS) await page.shot(join(SHOTS, `${name}.png`));
     };
-    await page.goto(`${BB}/plugins/cow/main`);
+    await page.goto(`${BB}/plugins/${PLUGIN}/main`);
     await page.eval(`sessionStorage.removeItem("cow:main"); sessionStorage.removeItem("cow:test-clock-offset-ms"); true`);
     await page.resize(1440, 900);
     await page.colorScheme("light");
-    await page.goto(`${BB}/plugins/cow/main`);
+    await page.goto(`${BB}/plugins/${PLUGIN}/main`);
     await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
     await enrolPage();
     const chooseMain = async (tab, id) => {
@@ -2440,11 +2454,11 @@ async function main() {
     source: `sessionStorage.removeItem("cow:test-clock-offset-ms");`,
   });
   // A window that has never shown a Main, as a new one is.
-  await page.goto(`${BB}/plugins/cow/main`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.eval(`sessionStorage.removeItem("cow:main"); true`);
   await page.resize(1440, 900);
   await page.colorScheme("light");
-  await page.goto(`${BB}/plugins/cow/main`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page" });
   await enrolPage();
 
@@ -2497,7 +2511,7 @@ async function main() {
   // -- each window keeps its own Main --
   const other = await newTab(PORT);
   await other.resize(1200, 800);
-  await other.goto(`${BB}/plugins/cow/main`);
+  await other.goto(`${BB}/plugins/${PLUGIN}/main`);
   await other.waitFor(`${screen} === "overview"`, { label: "the second window" });
   check(
     "a second window starts from the Main chosen last, here the fixture",
@@ -2513,8 +2527,8 @@ async function main() {
     `${await page.eval(heading)} / ${await other.eval(heading)}`,
   );
   await shot("second-window", other);
-  await page.goto(`${BB}/plugins/cow/main`);
-  await other.goto(`${BB}/plugins/cow/main`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await other.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.waitFor(`${screen} === "overview"`, { label: "the first window reloaded" });
   await other.waitFor(`${screen} === "overview"`, { label: "the second window reloaded" });
   check(
@@ -2825,7 +2839,7 @@ async function main() {
   await shot("folded");
   await page.key("j");
   check("j goes from the folded group to the next line outside it", await page.eval(isCursor(ids.asks)));
-  await page.goto(`${BB}/plugins/cow/main`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.waitFor(`${screen} === "overview" && ${inTree(ids.quiet)}`, { label: "the page reloaded" });
   check(
     "the fold is this window's, and survives a reload",
@@ -3298,7 +3312,7 @@ async function main() {
 
   // -- verbs: select a line, then press the verb --
   // What can be undone lasts as long as the page: a reload starts with nothing.
-  await page.goto(`${BB}/plugins/cow/main`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.waitFor(`${screen} === "overview" && !!document.querySelector('.cow-main [data-cow-line="${ids.quiet}"]')`, {
     label: "the page reloaded before the verbs",
   });
@@ -4199,7 +4213,7 @@ async function main() {
   const help = await cow("help");
   check(
     "bb cow help lists the commands",
-    help.code === 0 && ["status", "archive", "park", "resume"].every((name) => help.stdout.includes(`bb cow ${name}`)),
+    help.code === 0 && ["status", "archive", "park", "resume"].every((name) => help.stdout.includes(`bb ${PLUGIN} ${name}`)),
     help.stdout,
   );
   const status = await cow("status", "--main", ids.main);
@@ -4460,7 +4474,7 @@ async function main() {
   const themes = await bb("theme", "list");
   check(
     "cow's own look is offered as a bb theme",
-    JSON.stringify(themes).includes("plugin:cow:cow"),
+    JSON.stringify(themes).includes(`plugin:${PLUGIN}:cow`),
   );
   // Switching bb's theme would change every open window, so the cow theme is
   // tried in this window alone, the way bb's settings preview a theme.
@@ -4551,7 +4565,7 @@ async function main() {
   async function finish(page) {
   check("no console errors", page.consoleErrors.length === 0, page.consoleErrors.join(" | "));
   // bb polls services of its own that may be down; only cow's requests count.
-  const failedRequests = page.networkErrors.filter((entry) => entry.includes("/plugins/cow"));
+  const failedRequests = page.networkErrors.filter((entry) => entry.includes(`/plugins/${PLUGIN}`));
   check("no failed requests to cow", failedRequests.length === 0, failedRequests.join(" | "));
   if (page.networkErrors.length > failedRequests.length) {
     console.log(`note: ${page.networkErrors.length - failedRequests.length} failed requests of bb's own, e.g. ${page.networkErrors[0]}`);

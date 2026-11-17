@@ -164,9 +164,11 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
   extra?: Extra,
   /** For each of these threads that holds any capability, their names. */
   capabilityNames?: (threadIds: readonly string[]) => Promise<ReadonlyMap<string, readonly string[]>>,
+  /** The command's name: `bb cow …`. A copy installed under another id answers to that id. */
+  name = "cow",
 ) {
   return defineCli({
-    name: "cow",
+    name,
     summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
     commands: {
       ...planCommands(actions),

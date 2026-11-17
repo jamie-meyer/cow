@@ -21,9 +21,9 @@ export function canonical(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-export async function createSigner(bb, label = "the end-to-end check") {
+export async function createSigner(bb, label = "the end-to-end check", plugin = "cow") {
   const post = async (method, input) => {
-    const response = await fetch(`${bb}/api/v1/plugins/cow/rpc/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+    const response = await fetch(`${bb}/api/v1/plugins/${plugin}/rpc/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     return response.json();
   };
   const pair = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);

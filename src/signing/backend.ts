@@ -17,7 +17,7 @@ import { CAPS_CHANGED, CAP_LIMITS, VIAS, scopeSchema } from "../caps/cap.ts";
 import type { LogStore } from "../caps/logstore.ts";
 import type { Caps } from "../caps/service.ts";
 import { Refusal } from "../kv.ts";
-import { PERSON_ACTIONS, type PersonAction, type PublicKey, envelopeSchema, keysStateSchema } from "./envelope.ts";
+import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
 
 const id = z.string().min(1).max(200);
@@ -68,8 +68,12 @@ export const signingRpcContract = defineRpcContract({
     input: z.object({ key: z.unknown(), label: z.string().max(400) }),
     output: z.object({ outcome: z.enum(["enrolled-first", "enrolled", "pending", "refused"]), fingerprint: z.string() }),
   },
-  /** One of the person's actions, signed. The only way to any of them. */
-  signed: { input: envelopeSchema, output: z.object({ result: z.unknown() }) },
+  /**
+   * One of the person's actions, signed. The only way to any of them. The
+   * input is checked by `keys.verify`, not here, so that a call with no
+   * signature is told what it lacks instead of which field is missing.
+   */
+  signed: { input: z.unknown(), output: z.object({ result: z.unknown() }) },
 });
 
 const REFUSAL_CODES: Record<string, "conflict" | "forbidden" | "invalid" | "not_found"> = {
