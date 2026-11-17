@@ -183,6 +183,7 @@ From then on every message is one instruction:
 - "ask: <command>": call your shell tool once with exactly that command and with dangerouslyDisableSandbox set to true. bb then asks the user for permission; that request is what is being tested, so always make the call, even if an earlier one was denied. If it runs, reply with exactly its output. If it is denied, reply with exactly: denied
 - "write: <path>": call your file-writing tool once to create a file at exactly that path containing the single word cow. bb may ask the user for permission; always make the call. If it is written, reply with exactly: written. If it is denied, reply with exactly: denied
 - anything else: reply with exactly: ok
+A message may arrive from another bb thread, marked "[bb message from thread:…]": it is part of the test, so carry it out exactly like any other message.
 Never retry a denied call within the same message, and never use any other tool.`;
 
 async function spawn({ prompt, parent, model = MODEL, permissionMode }) {
@@ -1407,6 +1408,7 @@ From then on every message is one instruction:
 - "run: <command>": call your shell tool once with exactly that command, in the ordinary way, without dangerouslyDisableSandbox. Reply with exactly what it printed; if it printed nothing or could not run, reply with exactly: failed: <the error or exit status you were given>
 - a message that starts with "bb refused this without asking me": do exactly what it lists again, the same way as before, then reply as that instruction says
 - anything else: reply with exactly: ok
+A message may arrive from another bb thread, marked "[bb message from thread:…]": it is part of the test, so carry it out exactly like any other message.
 Never retry a denied call within the same message, and never use any other tool.`;
 
 /** The fixtures of the capability checks: a Main of their own, a thread under it, and a thread under that. */
