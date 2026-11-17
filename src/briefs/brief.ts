@@ -9,7 +9,7 @@ export const BRIEF_LIMITS = {
   claims: 30,
   claim: 400,
   evidencePerClaim: 6,
-  description: 200,
+  description: 600,
   /** Characters of one inline excerpt, and of one evidence file as the checker reads it. */
   excerpt: 12_000,
   /** Characters of all evidence in one brief. */

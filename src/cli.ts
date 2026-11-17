@@ -8,7 +8,7 @@ import { type Attention, attend, attentionCommands, elsewhereText } from "./rais
 import { pickUpText } from "./park.ts";
 import { MAX_NEXT, MAX_TODOS, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
-import { statusText } from "./status.ts";
+import { statusText, withCapabilities } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked">;
@@ -158,7 +158,13 @@ function planCommands(actions: CliActions) {
   };
 }
 
-export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand>> = Record<never, never>>(actions: CliActions, attention?: Attention, extra?: Extra) {
+export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand>> = Record<never, never>>(
+  actions: CliActions,
+  attention?: Attention,
+  extra?: Extra,
+  /** For each of these threads that holds any capability, their names. */
+  capabilityNames?: (threadIds: readonly string[]) => Promise<ReadonlyMap<string, readonly string[]>>,
+) {
   return defineCli({
     name: "cow",
     summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
@@ -181,7 +187,9 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           const plain = await acting(() => actions.status(main, ctx.projectId ?? null));
           // The asks themselves, and what each brief came to, are added to the overview.
           const attended = attention ? await attend(attention, plain, ctx.projectId ?? null) : null;
-          const report = attended ?? plain;
+          const raisedOrPlain = attended ?? plain;
+          const ids = [raisedOrPlain.main, ...raisedOrPlain.threads, ...raisedOrPlain.parked, ...raisedOrPlain.done].map((line) => line.id);
+          const report = capabilityNames ? withCapabilities(raisedOrPlain, await capabilityNames(ids)) : raisedOrPlain;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }
             : { exitCode: 0, stdout: statusText(report) + elsewhereText(attended?.asksElsewhere ?? 0) };

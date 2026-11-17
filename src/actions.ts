@@ -31,7 +31,7 @@ import {
   seenSchema,
   todoListSchema,
 } from "./shared.ts";
-import { type Activity, LIMITS, type ThreadFacts, derive, isBusy } from "./state.ts";
+import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
 import { verbBlocked } from "./verbs.ts";
@@ -117,6 +117,8 @@ export interface RaisedSource {
   /** Thread id to when cow delivered the person's answers to its asks. */
   delivered?(): Promise<ReadonlyMap<string, readonly number[]>>;
   marks(threadIds: readonly string[]): Promise<ReadonlyMap<string, BriefMark>>;
+  /** Thread id to the decisions on its permission requests that were made outside cow and are not acknowledged. */
+  outside?(): Promise<ReadonlyMap<string, readonly OutsideFlag[]>>;
 }
 
 export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource): Actions {
@@ -275,6 +277,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     const asks = asksByThread(raised ? await raised.openAsks() : []);
     const briefs = raised ? await raised.marks([...wanted]) : new Map<string, BriefMark>();
     const delivered = (await raised?.delivered?.()) ?? new Map<string, readonly number[]>();
+    const outside = (await raised?.outside?.()) ?? new Map<string, readonly OutsideFlag[]>();
     const deriveThread = (isRoot: (id: string) => boolean) => (thread: ThreadFacts) =>
       derive(
         thread,
@@ -285,7 +288,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         noted.archives[thread.id]?.reason,
         noted.dismissals[thread.id]?.throughSeq,
         { head: projects.has(thread.id), project: projects.has(thread.id) || isRoot(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
-        { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null, delivered: delivered.get(thread.id) },
+        { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null, delivered: delivered.get(thread.id), outside: outside.get(thread.id) },
       );
     const plans = {
       note: (id: string) => noted.nexts[id]?.text ?? null,

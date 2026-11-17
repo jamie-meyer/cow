@@ -99,7 +99,15 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const attention = registerAttention(bb);
+  const caps = registerCaps(bb);
   const actions = createActions(bb, readState, {
+    outside: async () => {
+      const found = new Map<string, { id: string; text: string; at: number }[]>();
+      for (const notice of (await caps.state()).notices) {
+        if (notice.kind === "outside" && notice.threadId !== null) found.set(notice.threadId, [...(found.get(notice.threadId) ?? []), { id: notice.id, text: notice.text, at: notice.at }]);
+      }
+      return found;
+    },
     openAsks: () => attention.asks.list(),
     marks: (ids) => attention.briefs.marks(ids),
     delivered: async () => {
@@ -158,12 +166,21 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  const caps = registerCaps(bb);
   const titleOf = async (threadId: string) => {
     const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
     return (typeof found?.title === "string" && found.title.trim()) || threadId;
   };
-  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf)));
+  const capabilityNames = async (threadIds: readonly string[]) => {
+    const found = new Map<string, string[]>();
+    // Nothing to look up when no capability is in force, which is the usual case.
+    if (!(await caps.state()).capabilities.some((capability) => capability.deletedAt === null)) return found;
+    for (const threadId of threadIds) {
+      const names = (await caps.heldBy(threadId)).map((entry) => entry.capability.name);
+      if (names.length > 0) found.set(threadId, names);
+    }
+    return found;
+  };
+  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf), capabilityNames));
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.

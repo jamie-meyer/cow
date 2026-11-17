@@ -21,17 +21,21 @@ export type CheckRun = (
   | { status: "running" }
   | { status: "done"; verdicts: ClaimVerdict[] }
   /** The checker did not answer in the required form, used a tool, failed or timed out. */
-  | { status: "failed"; error: string }
+  | { status: "failed"; error: string; /** What the checker said, when it said something that could not be used. */ answer?: string | null }
 ) & {
   /** The hidden thread the checker ran in. */
   threadId: string;
   startedAt: number;
   finishedAt: number | null;
+  /** 2 for a run started again because the first answer could not be read. */
+  attempt?: number;
 };
 
 export interface Check {
   /** The model the checker was asked to use; null for bb's default. */
   model: string | null;
+  /** The provider it ran on; null or absent for bb's default. */
+  provider?: string | null;
   startedAt: number;
   runs: CheckRun[];
 }
@@ -81,6 +85,8 @@ export interface Review {
   runs: { done: number; failed: number; running: number };
   /** Why each failed run failed. */
   failures: string[];
+  /** The same runs, each with what the checker answered when it answered something unusable, and whether it was a second try. */
+  failed: { error: string; answer: string | null; retried: boolean }[];
   /** Disputed claims, contradicted ones first. */
   disputes: ReviewedClaim[];
   judgementCalls: Brief["judgementCalls"];
@@ -118,6 +124,7 @@ export function review(brief: Brief, check: Check | null): Review {
     model: check?.model ?? null,
     runs: { done: done.length, failed: failed.length, running },
     failures: failed.map((run) => run.error),
+    failed: failed.map((run) => ({ error: run.error, answer: run.answer ?? null, retried: (run.attempt ?? 1) > 1 })),
     disputes: reviewed.filter((entry) => entry.dispute !== null).sort((a, b) => rank(a) - rank(b)),
     judgementCalls: brief.judgementCalls,
     claims: reviewed.filter((entry) => entry.dispute === null),
@@ -191,7 +198,7 @@ const LABEL_TEXT: Record<Label, string> = { checked: "checked", inferred: "infer
 
 const cut = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
 
-export const SHOW_LIMITS = { disputes: 30, claims: 30, text: 300 } as const;
+export const SHOW_LIMITS = { disputes: 30, claims: 30, text: 300, answer: 4000 } as const;
 
 function claimLines(entry: ReviewedClaim): string[] {
   const { claim, verdict } = entry;
@@ -215,7 +222,13 @@ export function reviewText(head: { threadId: string; version: number; summary: s
   else if (seen.state === "running") out.push(`Check running (${seen.runs.running} of ${seen.runs.running + seen.runs.done + seen.runs.failed} runs still going). Nothing below is verified yet.`);
   else if (seen.state === "failed") out.push("CHECK FAILED: no run of the checker gave a usable answer. Nothing below is verified.");
   else out.push(`Checked by ${checker}: ${seen.runs.done} ${seen.runs.done === 1 ? "run" : "runs"}${seen.runs.failed > 0 ? `, and ${seen.runs.failed} that failed` : ""}.`);
-  for (const failure of seen.failures.slice(0, 5)) out.push(`  failed run: ${cut(failure, SHOW_LIMITS.text)}`);
+  for (const failure of seen.failed.slice(0, 5)) {
+    out.push(`  failed run${failure.retried ? " (the second try: the first answer could not be read either)" : ""}: ${cut(failure.error, SHOW_LIMITS.text)}`);
+    if (failure.answer !== null) {
+      out.push(`  what the checker answered (${failure.answer.length} characters${failure.answer.length > SHOW_LIMITS.answer ? `, the first ${SHOW_LIMITS.answer} shown` : ""}):`);
+      out.push(...failure.answer.slice(0, SHOW_LIMITS.answer).split("\n").map((line) => `    | ${line}`));
+    }
+  }
 
   out.push("", `Disputes (${seen.disputes.length})`);
   if (seen.disputes.length === 0) out.push(seen.state === "checked" ? "    none" : "    unknown: there is no check to dispute anything");

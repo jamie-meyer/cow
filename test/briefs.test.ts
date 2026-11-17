@@ -286,7 +286,6 @@ test("the checker's answer settles the check: a contradicted claim is disputed, 
 
 test("a malformed answer, a tool call, an error and silence are each a failed check, never a pass", async () => {
   const cases: [string, (w: ReturnType<typeof world>) => void, RegExp][] = [
-    ["prose", (w) => w.reply("chk_1", "All three claims check out."), /not the one JSON object/],
     ["a tool", (w) => w.reply("chk_1", answerAll("supported"), ["Read"]), /used a tool \(Read\)/],
     ["an error", (w) => w.checkers.set("chk_1", { state: "error", reply: null, tools: [] }), /turn failed/],
     ["gone", (w) => w.checkers.delete("chk_1"), /thread is gone/],
@@ -305,6 +304,56 @@ test("a malformed answer, a tool call, an error and silence are each a failed ch
     assert.ok(view.review.claims.every((entry) => entry.verdict === null), name);
     assert.deepEqual(w.discarded, ["chk_1"], name);
   }
+});
+
+test("an answer that cannot be read is tried once more, and both the reason and what the checker said are kept", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  const slip = answerAll("supported").replace('"id":"c2"', '"id":"c2":""');
+  w.reply("chk_1", slip);
+  // The first answer is not valid JSON: the run is started again, and nothing is called failed yet.
+  let view = briefView(await w.briefs.get("child"));
+  assert.equal(view.review.state, "running");
+  assert.equal(w.started.length, 2);
+  assert.deepEqual(w.discarded, ["chk_1"]);
+  assert.notEqual(w.started[1]!.prompt, "");
+  assert.deepEqual([w.started[1]!.model, w.started[1]!.provider], [w.started[0]!.model, w.started[0]!.provider]);
+  // The second answers well: the check stands on it.
+  w.reply("chk_2", answerAll("supported"));
+  view = briefView(await w.briefs.get("child"));
+  assert.equal(view.review.state, "checked");
+  assert.deepEqual(view.review.runs, { done: 1, failed: 0, running: 0 });
+
+  // When the second is unreadable too, the check fails, and says what came back.
+  const again = world();
+  again.files.set("child/diff.txt", "ok");
+  await again.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  again.reply("chk_1", "All three claims check out.");
+  await again.briefs.get("child");
+  again.reply("chk_2", slip);
+  const failed = briefView(await again.briefs.get("child"));
+  assert.equal(failed.review.state, "failed");
+  assert.equal(again.started.length, 2);
+  assert.deepEqual(failed.review.failed, [{ error: "the checker's answer is not valid JSON", answer: slip, retried: true }]);
+  assert.deepEqual(again.discarded, ["chk_1", "chk_2"]);
+  const text = reviewText({ threadId: "child", version: 1, summary: "s" }, failed.review);
+  assert.match(text, /failed run \(the second try: the first answer could not be read either\): the checker's answer is not valid JSON/);
+  assert.match(text, /what the checker answered \(\d+ characters\):\n    \| \{"claims"/);
+  assert.ok(text.includes('"id":"c2":""'));
+});
+
+test("a checker that used a tool, failed or said nothing is not tried again", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  w.reply("chk_1", answerAll("supported"), ["Read"]);
+  const view = briefView(await w.briefs.get("child"));
+  assert.equal(view.review.state, "failed");
+  assert.equal(w.started.length, 1);
+  assert.equal(view.review.failed[0]!.retried, false);
+  // What it said is kept all the same.
+  assert.equal(view.review.failed[0]!.answer, answerAll("supported"));
 });
 
 test("reading a brief is recorded once, and a new check makes it unread again", async () => {
@@ -395,6 +444,9 @@ test("settings decide the model, the number of runs, and whether a submit is che
   w.reply("chk_1", answerAll("supported"));
   w.reply("chk_2", answerAll("supported").replace('"c2","shows":"About c2.","verdict":"supported"', '"c2","shows":"About c2.","verdict":"not-supported"'));
   w.reply("chk_3", "no idea");
+  // The unreadable one is tried once more, as chk_4, and fails for good when that is unreadable too.
+  assert.deepEqual(briefView(await w.briefs.get("child")).review.runs, { done: 2, failed: 0, running: 1 });
+  w.reply("chk_4", "still no idea");
   const view = briefView(await w.briefs.get("child"));
   assert.deepEqual(view.review.runs, { done: 2, failed: 1, running: 0 });
   assert.deepEqual(view.review.disputes.map((entry) => [entry.claim.id, entry.disagreement]), [["c2", ["supported", "not-supported"]]]);

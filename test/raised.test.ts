@@ -309,7 +309,8 @@ test("brief check is refused for the audited thread and runs for the one above i
   const { run, files, started, reply } = cli();
   files.set("/work/brief.json", JSON.stringify(BRIEF));
   await run(["brief", "submit", "brief.json"]);
-  reply("chk_1", "nonsense");
+  // A checker that used a tool has failed for good; one whose answer could not be read would be run again first.
+  reply("chk_1", "nonsense", ["Read"]);
   const own = await run(["brief", "check", "child"]);
   assert.equal(own.exitCode, 1);
   assert.match(own.stderr ?? "", /cannot order the audit of its own brief/);

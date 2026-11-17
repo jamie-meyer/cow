@@ -215,10 +215,20 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <p className={`cow-bf-check cow-bf-check-${check.tone}`} data-cow-brief-check={seen.state} data-cow-brief-runs={seen.runs.done}>
           {check.text}
         </p>
-        {seen.failures.map((failure, index) => (
-          <p key={index} className="cow-bf-failure" data-cow-brief-failure="">
-            a run failed: {failure}
-          </p>
+        {seen.failed.map((failure, index) => (
+          <div key={index} className="cow-bf-failure" data-cow-brief-failure="">
+            <p>
+              a run failed{failure.retried ? ", and so did the second try" : ""}: {failure.error}
+            </p>
+            {failure.answer !== null ? (
+              <>
+                <p className="cow-bf-none">What the checker answered, as it came ({failure.answer.length} characters). None of it counts as a verdict.</p>
+                <pre className="cow-perm-diff" data-cow-brief-answer="">
+                  {failure.answer}
+                </pre>
+              </>
+            ) : null}
+          </div>
         ))}
         <h3 data-cow-brief-section="disputes">
           Disputed by the checker <b>{disputes.length}</b>

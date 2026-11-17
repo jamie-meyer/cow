@@ -18,15 +18,26 @@ export const CHECK_TIMEOUT_MS = 10 * 60_000;
 const START_GRACE_MS = 20_000;
 
 const verdictSchema = z.object({ id: z.string(), shows: z.string(), verdict: z.enum(VERDICTS), needs: z.string().nullable() });
-const runBase = { threadId: z.string(), startedAt: z.number(), finishedAt: z.number().nullable() };
+const runBase = {
+  threadId: z.string(),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  /** 2 for a run started again because the first answer could not be read. */
+  attempt: z.number().int().min(1).optional(),
+};
+/** How much of a checker's unusable answer is kept, to be shown with why it failed. */
+export const MAX_KEPT_ANSWER = 20_000;
 const checkSchema = z.object({
   model: z.string().nullable(),
+  /** The provider the check ran on; null for bb's default. Checks recorded before this was kept have none. */
+  provider: z.string().nullable().default(null),
   startedAt: z.number(),
   runs: z.array(
     z.discriminatedUnion("status", [
       z.object({ status: z.literal("running"), ...runBase }),
       z.object({ status: z.literal("done"), verdicts: z.array(verdictSchema), ...runBase }),
-      z.object({ status: z.literal("failed"), error: z.string(), ...runBase }),
+      /** `answer`: what the checker said, when it said something that could not be used. */
+      z.object({ status: z.literal("failed"), error: z.string(), answer: z.string().nullable().optional(), ...runBase }),
     ]),
   ),
 });
@@ -141,10 +152,11 @@ export function createBriefs(deps: BriefDeps): Briefs {
     deps.changed();
   };
 
-  /** Where one running run stands now: still running, or its final state. */
-  const judge = async (run: CheckRun, brief: Brief): Promise<CheckRun> => {
+  /** Where one running run stands now: still running, or its final state. `unreadable`: it answered, and the answer could not be read. */
+  const judge = async (run: CheckRun, brief: Brief): Promise<CheckRun & { unreadable?: true }> => {
     const now = deps.now();
-    const base = { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now };
+    const attempt = run.attempt ?? 1;
+    const base = { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now, attempt, answer: null };
     const sight = await deps.checker.look(run.threadId).catch((): CheckerSight => ({ state: "running", reply: null, tools: [] }));
     if (sight.state === "running" || (sight.state === "idle" && sight.reply === null && now - run.startedAt < START_GRACE_MS)) {
       return now - run.startedAt > CHECK_TIMEOUT_MS ? { ...base, status: "failed", error: "the checker did not answer in time" } : run;
@@ -153,10 +165,31 @@ export function createBriefs(deps: BriefDeps): Briefs {
     if (sight.state === "error") return { ...base, status: "failed", error: "the checker's turn failed" };
     if (sight.tools.length > 0) {
       // It was given everything in its prompt. A checker that went looking elsewhere is not independent of what it found.
-      return { ...base, status: "failed", error: `the checker used a tool (${sight.tools.slice(0, 3).join(", ")}); its answer is discarded` };
+      return { ...base, status: "failed", error: `the checker used a tool (${sight.tools.slice(0, 3).join(", ")}); its answer is discarded`, answer: sight.reply?.slice(0, MAX_KEPT_ANSWER) ?? null };
     }
     const parsed = parseCheckerReply(sight.reply, brief.claims.map((claim) => claim.id));
-    return parsed.ok ? { ...base, status: "done", verdicts: parsed.verdicts } : { ...base, status: "failed", error: parsed.error };
+    if (parsed.ok) return { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now, attempt, status: "done", verdicts: parsed.verdicts };
+    // What it said is kept, so that whoever reads the failure can see what went wrong.
+    const answer = sight.reply === null || sight.reply.trim() === "" ? null : sight.reply.slice(0, MAX_KEPT_ANSWER);
+    return { ...base, status: "failed", error: parsed.error, answer, ...(answer === null ? {} : { unreadable: true as const }) };
+  };
+
+  /** Run a checker again, once, when its answer could not be read: a slip in its JSON is not a verdict on the brief. */
+  const again = async (record: BriefRecord, failed: CheckRun & { status: "failed" }): Promise<CheckRun> => {
+    try {
+      const thread = await deps.thread(record.threadId);
+      const checker = await deps.checker.start({
+        projectId: record.projectId,
+        environmentId: thread?.environmentId ?? null,
+        prompt: checkerPrompt(record.brief, deps.newId()),
+        model: record.check?.model ?? null,
+        provider: record.check?.provider ?? null,
+      });
+      await kv.set(`${RUN_PREFIX}${checker}`, { threadId: record.threadId, version: record.version });
+      return { status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 2 };
+    } catch (cause) {
+      return { ...failed, error: `${failed.error}; and it could not be run again: ${cause instanceof Error ? cause.message : String(cause)}` };
+    }
   };
 
   /** Move a brief's check along: read each running run's thread, record what it said, and put the thread away. */
@@ -165,14 +198,23 @@ export function createBriefs(deps: BriefDeps): Briefs {
       const record = await read(threadId, version);
       if (!record.check?.runs.some((run) => run.status === "running")) return record;
       const runs: CheckRun[] = [];
-      for (const run of record.check.runs) runs.push(run.status === "running" ? await judge(run, record.brief) : run);
-      const finished = runs.filter((run, index) => run.status !== "running" && record.check?.runs[index]?.status === "running");
-      if (finished.length === 0) return record;
+      /** The checker threads that have finished, whatever became of their run. */
+      const over: string[] = [];
+      for (const run of record.check.runs) {
+        if (run.status !== "running") {
+          runs.push(run);
+          continue;
+        }
+        const { unreadable, ...judged } = await judge(run, record.brief);
+        if (judged.status !== "running") over.push(run.threadId);
+        runs.push(unreadable && judged.status === "failed" && (judged.attempt ?? 1) < 2 ? await again(record, judged) : judged);
+      }
+      if (over.length === 0) return record;
       const next = { ...record, check: { ...record.check, runs } };
       await write(next);
-      for (const run of finished) {
-        await deps.checker.discard(run.threadId).catch(() => undefined);
-        await kv.delete(`${RUN_PREFIX}${run.threadId}`);
+      for (const threadId of over) {
+        await deps.checker.discard(threadId).catch(() => undefined);
+        await kv.delete(`${RUN_PREFIX}${threadId}`);
       }
       return next;
     });
@@ -195,13 +237,13 @@ export function createBriefs(deps: BriefDeps): Briefs {
         try {
           const checker = await deps.checker.start({ projectId: record.projectId, environmentId: thread?.environmentId ?? null, prompt, model, provider });
           await kv.set(`${RUN_PREFIX}${checker}`, { threadId, version: record.version });
-          runs.push({ status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null });
+          runs.push({ status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 1 });
         } catch (cause) {
-          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), error: `the checker could not be started: ${cause instanceof Error ? cause.message : String(cause)}` });
+          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), attempt: 1, answer: null, error: `the checker could not be started: ${cause instanceof Error ? cause.message : String(cause)}` });
         }
       }
       // A new check may say something new, so the brief is the person's to read again.
-      const next = { ...record, check: { model, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null };
+      const next = { ...record, check: { model, provider, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null };
       await write(next);
       return next;
     });

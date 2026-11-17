@@ -34,6 +34,14 @@ export interface StatusLine {
   depth: number;
   /** 1-based place in the queue, or null when it is not waiting on the user. */
   queue: number | null;
+  /** The names of the capabilities that apply to it; absent when none was looked up. */
+  capabilities?: string[];
+}
+
+/** The same report with each line saying which capabilities its thread holds. */
+export function withCapabilities<T extends StatusReport>(report: T, held: ReadonlyMap<string, readonly string[]>): T {
+  const named = <L extends StatusLine>(line: L): L => ({ ...line, capabilities: [...(held.get(line.id) ?? [])] });
+  return { ...report, main: named(report.main), queue: report.queue.map(named), threads: report.threads.map(named), parked: report.parked.map(named), done: report.done.map(named) };
 }
 
 export interface StatusReport {
@@ -114,6 +122,9 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
 /** What is next for a line: its own words when it left any, else what cow works out. */
 const nextOf = (line: StatusLine): string => (line.note !== null ? ` → next, in its words: ${line.note}` : line.next ? ` → ${line.next}` : "");
 
+/** The capabilities a line's thread holds, by name. */
+const holds = (line: StatusLine): string => (line.capabilities && line.capabilities.length > 0 ? `  [holds: ${line.capabilities.join(", ")}]` : "");
+
 function row(line: StatusLine, indent: boolean): string[] {
   const place = line.queue === null ? "  " : String(line.queue).padStart(2);
   const pad = indent ? "  ".repeat(line.depth) : "";
@@ -121,7 +132,7 @@ function row(line: StatusLine, indent: boolean): string[] {
     ? `  [under it: ${Object.entries(line.under).map(([state, count]) => `${count} ${state}`).join(", ")}]`
     : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}  ${line.doing}${nextOf(line)}${under}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}  ${line.doing}${nextOf(line)}${under}${holds(line)}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }
@@ -133,7 +144,7 @@ export function statusText(report: StatusReport): string {
   const { main, omitted } = report;
   const waiting = report.queue.length + omitted.queue;
   const out: string[] = [
-    `Main: ${main.title} (${main.id}) · ${main.label} ${main.inState}${main.doing ? ` · ${main.doing}` : ""}${main.note !== null ? nextOf(main) : ""}`,
+    `Main: ${main.title} (${main.id}) · ${main.label} ${main.inState}${main.doing ? ` · ${main.doing}` : ""}${main.note !== null ? nextOf(main) : ""}${holds(main)}`,
     ...main.todo.map((title, index) => `    not started ${index + 1}: ${title}`),
     "",
     `Waiting on the user (${waiting})`,
