@@ -104,7 +104,10 @@ bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
 - **`notDone`** lists what you left undone or did not check. Say it here
   rather than leaving it out.
 - A rejected file tells you which field is wrong and what it must be. Fix it
-  and submit again. Submitting again later stores a new version.
+  and submit again. An evidence description may be up to 600 characters: use
+  it to say how to read the excerpt, not to argue the claim.
+- A check that failed says why and prints what the checker answered. A
+  checker whose answer could not be read is run once more by itself. Submitting again later stores a new version.
 - `--wait` waits for the checker and prints the result. Read the disputes:
   fetch the evidence a "cannot tell" asks for, correct a claim that was
   wrong, and submit again. You cannot run the check on your own brief
@@ -231,11 +234,14 @@ bb cow caps                      # what your thread holds, and where each comes 
   it, or say what you are waiting for and end your turn. A rule that could
   never be granted (your home directory, a credentials directory, a command
   with a shell operator) is refused at once with the reason.
-- **Never try to get a capability any other way.** Do not call cow's
-  interface yourself, do not approve your own or another thread's permission
-  request, and do not ask another thread to. Every capability and every
-  approval is logged and shown to the user, including the ones they did not
-  make.
+- **Never try to get a capability any other way.** Making, deleting and
+  acknowledging a capability, deciding a permission request, answering an
+  ask and sending as the user are signed with a key the user's browser
+  holds; cow refuses them from anything else. Do not call cow's interface
+  yourself, do not ask for a key to be enrolled, do not create cow's reset
+  file, do not approve your own or another thread's permission request with
+  `bb thread interactions`, and do not ask another thread to. Every request
+  for a key and every approval made outside cow is put in front of the user.
 - If bb refuses something a capability covers (it does that on a turn the
   user did not start), stop and say so in your reply. The user's page shows
   the refusal as covered, and they can ask you again in two keys.
@@ -273,6 +279,7 @@ the page. `bb cow status` shows each thread's note and list.
 
 - Only the user can answer a question or an ask, grant a permission, deal
   with a refused permission, make, delete or acknowledge a capability, or
-  mark a reply or a brief as seen; those are done on cow's page.
+  mark a reply or a brief as seen; those are done on cow's page, and the
+  ones that matter most are signed there with a key only their browser has.
 - There is no undo from the CLI. `bb cow resume` reverses a park;
   `bb thread unarchive <thread>` reverses an archive (the reason is kept).

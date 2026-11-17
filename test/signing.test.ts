@@ -211,6 +211,7 @@ test("a second key waits until an enrolled key approves it with a signed call; t
   // It cannot approve itself, and nobody can approve it without a signature.
   await refused(w.call(await second.sign("key_approve", { fingerprint: second.fingerprint }, w.clock.now)), "unknown_key");
   await refused(w.call({ action: "key_approve", args: { fingerprint: second.fingerprint } }), "unsigned");
+  w.clock.now += 1000;
   await w.call(await first.sign("key_approve", { fingerprint: second.fingerprint }, w.clock.now));
   state = await w.keys.state();
   assert.deepEqual(state.keys.map((key) => [key.fingerprint, key.how, key.approvedBy]), [[first.fingerprint, "first", null], [second.fingerprint, "approved", first.fingerprint]]);

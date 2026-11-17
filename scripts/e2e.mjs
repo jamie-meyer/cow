@@ -222,6 +222,8 @@ async function fixtures() {
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
     if (ids[name] || !wanted.includes(name)) return;
+    // A fixture kept from an earlier run may be archived, and bb starts nothing under an archived thread.
+    if (options.parent && (await api(`/threads?threadIds=${options.parent}&limit=1`))[0]?.archivedAt) await bb("thread", "unarchive", options.parent);
     ids[name] = await spawn(options);
     if (STATE) writeFileSync(STATE, JSON.stringify(ids));
   };
@@ -2411,8 +2413,8 @@ async function main() {
 
   if (flag("only-reader") || flag("only-caps")) {
     const page = await connect(PORT, "");
-    const shot = async (name) => {
-      if (SHOTS) await page.shot(join(SHOTS, `${name}.png`));
+    const shot = async (name, from = page) => {
+      if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
     };
     await page.goto(`${BB}/plugins/${PLUGIN}/main`);
     await page.eval(`sessionStorage.removeItem("cow:main"); sessionStorage.removeItem("cow:test-clock-offset-ms"); true`);

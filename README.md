@@ -405,9 +405,10 @@ No decision can be undone. Once allowed, the command runs or the file is
 written at once, and a session grant lasts until the thread's session ends.
 The card says so.
 
-The page sends your decision to bb through cow's backend, which writes it in
-the capability log. That is how cow can tell a decision made on its page from
-one made somewhere else.
+The page sends your decision to bb through cow's backend, as a call signed
+with the page's key, and cow writes it in the log with that key. That is how
+cow can tell a decision made on its page from one made somewhere else. A page
+whose key is not enrolled cannot decide: see "Only you: signed calls".
 
 Two limits come from bb, not from cow:
 
@@ -509,16 +510,19 @@ the workspace sandbox. Credentials are not part of this: bb writes the
 environment values a plugin contributes into the thread's event log
 unmasked, so cow hands out none.
 
-**This is not a security boundary.** bb does not tell a plugin who is calling
-it, so cow cannot stop a local process, an agent included, from making a
-capability through the same interface the page uses. What cow does is make
-every such act visible: see "What cow cannot guarantee" below, which says
-what was tried and what worked.
+**Read the limits before you rely on it.** bb does not tell a plugin who is
+calling it. cow therefore takes nothing only you may do unless it is signed
+with a key your browser holds: see "Only you: signed calls". That stops a
+sandboxed agent from making a capability, or acknowledging one, through cow.
+It rests on your browser's key store and on bb's sandbox, and bb's own
+commands remain open to every thread: "What cow cannot guarantee" says what
+was tried and what each attempt came to.
 
 ### Making, viewing and deleting
 
-Only you do these, on the page. There is no `bb cow` command and no agent
-tool that makes, changes, grants, deletes or acknowledges a capability.
+Only you do these, on the page, and each is a signed call. There is no
+`bb cow` command and no agent tool that makes, changes, grants, deletes or
+acknowledges a capability.
 
 **From a permission request.** The card (`a` on the line) has one more
 choice after bb's own: "Allow once, and save as a capability". Its digit
@@ -553,9 +557,10 @@ thread. Once saved, the refusal reads as covered: see "Using one".
 | `n` | make one from scratch, through the same steps, starting with its kind. "Who it applies to" is offered around the line the cursor was on when you pressed `C` |
 | `x` | delete the one under the cursor, after a confirmation that names the threads that lose it; `y` confirms |
 | `u` | put back the one deleted last from this sheet, after `y`. It counts as new again |
-| `Enter` | its history, in place: when it was made, each request it allowed, when it was acknowledged, deleted or put back |
+| `Enter` | its history, in place: when it was made, each request it allowed, when it was acknowledged, deleted or put back. On a page that asks to be enrolled: approve its key, after `y` |
+| `x` on a key | refuse a page that asks, remove an enrolled key, or forget a refusal, after `y`; see "Only you: signed calls" |
 | `Space` | acknowledge what is marked new on the line |
-| `Tab` | the log, and back |
+| `Tab` | the log, and back. The log shows the entries of this window's Main and the threads under it, and those about no thread (keys, a reset); `a` there shows all |
 | `f` | hints on what is in the sheet |
 | `q`, `Esc` | close |
 
@@ -683,14 +688,17 @@ paths as written; the links are followed when the request comes.
 
 ### The log, the notices, and approvals cow did not make
 
-Because cow cannot tell who calls it, it records and shows instead:
+cow records and shows what happens, whoever did it:
 
 - **The log.** Every capability made, deleted or put back, every notice
   acknowledged, every request allowed through a capability (when, on which
   thread, what, by which capability), every decision made through cow's page,
-  every decision cow saw made somewhere else, and every capability a thread
-  asked for. The sheet shows it newest first (`Tab`), and no key, command or
-  interface method edits or clears it. Entries are numbered and each carries
+  every message sent and ask answered as you, every decision cow saw made
+  somewhere else, every capability a thread asked for, and every key
+  enrolled, asked for, refused or removed, and every reset. Each entry for
+  something only you may do names the key that signed it. The sheet shows it
+  newest first (`Tab`), and no key, command or interface method edits or
+  clears it. Entries are numbered and each carries
   the hash of the one before, so an entry removed from the middle, or
   changed, shows as "the log is broken at entry N". The chain holds no
   secret: see the limits.
@@ -711,50 +719,135 @@ Because cow cannot tell who calls it, it records and shows instead:
   tell that from another thread running `bb thread interactions approve`,
   because bb records no one for either.
 
+### Only you: signed calls
+
+bb serves a plugin's interface to any local process, and does not say who is
+calling. So cow does not take a caller's word for anything only you may do.
+The page proves it is yours with a signature.
+
+- **A key the page holds.** The first time a browser opens cow, the page makes
+  a signing key pair (ECDSA P-256, with WebCrypto). The private half is made
+  non-extractable and kept in that browser's own storage (IndexedDB) for bb's
+  address; no script, cow's included, can read it out. The public half is
+  what cow's backend knows. A key is shown as a short fingerprint, such as
+  `445f-d491-2add-8ca0`.
+- **What is signed.** Everything only you may do: making, deleting and
+  putting back a capability; acknowledging a notice or a decision made
+  outside cow; deciding a permission request; every message cow sends as you
+  ("ask again as me", "carry on without it", the reason for a denial, `I` and
+  `i`); answering an ask, or closing one as already answered in chat; and
+  approving, refusing or removing a key. The list is `PERSON_ACTIONS` in
+  `src/signing/envelope.ts`. None of these is a method of cow's interface any
+  more. There is one method, `signed`, and it acts only when the call carries
+  a signature, by an enrolled key, over the action's name, all of its
+  arguments, a time and a nonce. A call signed more than two minutes ago, or
+  before cow last started, is refused; so is one that was already used.
+- **What is not.** What agents are meant to do stays unsigned: `bb cow ask`,
+  withdrawing or closing their own ask, `brief submit`, `next`, `todo`,
+  `park`, `archive`, `project`, `cap request`, and everything that only
+  reads. Typing into a chat's own composer is bb's, not cow's.
+- **The log names the key.** Each log entry for one of those actions records
+  the fingerprint of the key that signed it, and `C`, `Tab` shows it. cow
+  writes such an entry only for a verified signature.
+
+**Enrollment.** With no key enrolled, the first page to open cow enrols its
+key, and says so in a notice at the top of the page with the fingerprint:
+trust on first use. After that, another browser (the web page as well as the
+desktop app, a second machine) is not enrolled by opening cow. Its page shows
+its fingerprint and waits; every enrolled page shows "a page asks to act as
+you: key …" in its queue. `C` there lists the keys: `Enter` on the request
+approves it after `y`, `x` refuses it. Compare the fingerprint with the one
+the waiting page shows before you approve: the name beside it is that page's
+own word. The sheet lists each enrolled key with how and when it was
+enrolled and when it was last used; `x` on one removes it, after `y`, and
+`x` on a refusal forgets it so that page can ask again. Approving, refusing
+and removing are signed like everything else.
+
+**A page that is not enrolled** reads everything and can do none of the
+above. A notice at the top says so, with its own key and how to get
+enrolled, and each verb that needs a signature says the same instead of
+acting ("not sent: this page's key … is not enrolled, so this page can only
+read. Approve it from a page that is enrolled …").
+
+**If something else enrolled first.** On a cow with no key, whatever opens it
+first holds it, and an agent could be first. Then your own page is the one
+that is not enrolled, and it says so in red: "cow's person-only actions are
+held by a key that is not this page's". That notice is the evidence. To take
+it back, from your own terminal:
+
+```sh
+mkdir -p ~/.bb/plugins/cow && touch ~/.bb/plugins/cow/reset-enrollment
+```
+
+(The page prints the exact path: it is `plugins/cow/reset-enrollment` under
+bb's data directory.) cow removes the file, clears every enrolled key and
+every request, writes the reset in the log, and the next page to open is
+enrolled. The path is under bb's data directory and outside thread storage
+because bb's command sandbox does not let a thread write there.
+
 ### What cow cannot guarantee
 
-What was tried, on bb 0.49.0, from inside a sandboxed agent's own turn
-(a fixture thread running ordinary commands in bb's command sandbox):
+What was tried, on bb 0.49.0, from inside a sandboxed agent's own turn (a
+fixture thread running one script of ordinary commands in bb's command
+sandbox). `npm run e2e` runs it every time: see "the probe" in
+`scripts/e2e.mjs`.
 
 | Route | Result |
 | --- | --- |
-| `bb plugin rpc call cow cap_create --input-file …`, a bare `bb` command | **worked**: the capability was made |
-| `curl` to `http://127.0.0.1:38886/api/v1/plugins/cow/rpc/cap_create` | **worked**: the capability was made |
-| the same call to `cap_ack`, on the notice of the capability it had made | **worked**: the notice left the queue |
-| the same call to `cap_delete` | **worked** |
-| the same call to `permission_decide`, on another thread's pending request | **worked**: the request was approved, and logged as a decision made on cow's page |
-| `bb thread interactions approve <request> <thread>`, bypassing cow | **worked**, as bb allows any thread to do; cow flagged it "approved outside cow" |
+| the old methods (`cap_create`, `cap_ack`, `permission_decide`, `ask_answer`), by `curl` and by `bb plugin rpc call` | refused: they no longer exist |
+| `signed` with no signature: make a capability, acknowledge a notice, delete a capability, decide another thread's permission request, answer an ask, approve a key; by `curl` and by `bb plugin rpc call` | refused: "this is something only the person may do, so the call has to be signed by a key enrolled with cow" |
+| `signed` with a made-up signature that names the enrolled page's key | refused: "the signature does not match the call" |
+| `key_enrol` with a key of its own | accepted as a **request**: it shows in your queue under whatever name the caller gave, and does nothing until an enrolled page approves it |
+| creating the reset file | blocked by the sandbox: "Operation not permitted" |
+| `bb thread interactions approve <request> <thread>` | **worked**, as bb allows any thread to do; cow flagged it "approved outside cow" |
 | opening bb's database, where cow's storage is, for writing | blocked by the sandbox |
 | `bb plugin config cow`, to see whether plugin management is reachable | reachable. `bb plugin disable cow` and `bb plugin remove cow`, which would stop cow or delete its storage and its log, were not run |
 
 So, plainly:
 
-- **An agent that sets out to can give itself a capability**, with one
-  command. cow does not prevent it. The capability is in the log, raises a
-  notice, and is counted in the bar at the bottom and marked on every line it
-  applies to.
-- **The same agent can then acknowledge its own notice.** After that nothing
-  is in your queue. What still shows it: the log (an "added" entry and an
-  "acknowledged" entry you did not make), the sheet, the number of
-  capabilities in force, the mark on the lines, and "allowed by" each time it
-  is used.
-- **An agent that approves a request through cow's own interface is recorded
-  as you.** The log says "allowed once on cow's page", and nothing is
-  flagged. Only a decision that goes round cow is flagged.
+- **Prevented: forging your actions through cow.** A sandboxed agent cannot
+  make, delete or acknowledge a capability, decide a permission request
+  through cow, answer an ask as you, send as you through cow, or enrol a key.
+  What cow logs as done by a key was signed by that key.
+- **Still only visible: bb's own commands.** Any thread can approve or deny
+  another thread's permission request with `bb thread interactions`, and can
+  send a thread a message as you with `bb thread tell` once it clears the
+  variable that names it. Those are bb's, and cow cannot stop them. An
+  approval or denial made that way is flagged "outside cow" on the line and
+  in the queue until you acknowledge it; a message sent that way is not
+  flagged. Deciding a request in bb's own chat is flagged the same way,
+  because bb records no one for either.
+- **What it rests on.**
+  - *The browser's key store.* The private key cannot be exported through
+    the browser, but it is in the browser profile's files on disk. bb's
+    sandbox lets a thread read most of the disk. An agent that parsed those
+    files could take the key and sign as you; cow would not know. So could
+    anything that drives your own browser, with your profile, to the page.
+  - *bb's sandbox.* The reset file, cow's storage and the log are protected
+    only by a sandboxed thread not being able to write under bb's data
+    directory. A thread in bb's full-access mode is not sandboxed: it can
+    create the reset file and be the next to enrol, or rewrite the storage.
+    Your page would then say it is not enrolled, and the log would hold a
+    reset you did not make, or be missing.
+  - *First use.* Whatever opens a cow with no key first is enrolled. Enrol
+    your own page before you let agents run.
+  - *The plugin staying installed.* `bb plugin disable` and `remove` are
+    reachable from a thread.
 - **The log is evidence against a caller of the interface, not against
-  someone who can write cow's storage.** A sandboxed agent could not. A
-  process outside the sandbox could rewrite the whole log with hashes that
-  check out, or remove the plugin and its storage. A missing or broken log is
-  itself the sign.
+  someone who can write cow's storage.** Its chain of hashes holds no secret:
+  a process outside the sandbox could rewrite the whole log so that it checks
+  out. A missing or broken log is itself the sign.
 - **Requests are watched only while cow runs.** A request raised and decided
   entirely while the plugin was disabled, or reloading, is never seen. One
   that cow saw raised, and finds decided when it loads again, is flagged: cow
   did not make that decision. What is still pending when cow loads is looked
   at then, and allowed if a capability covers it.
+- A page left open from before an update keeps the code it loaded. One from
+  before signing existed cannot act until it is reloaded.
 - cow reads bb 0.49 with the Claude Code provider, as elsewhere on this page.
 
-The log and the notices are for noticing. What you allow is still decided by
-what you put in a rule and who you give it to.
+Capabilities, the log and the notices are for control and for noticing. What
+you allow is still decided by what you put in a rule and who you give it to.
 
 ## Parking
 
@@ -895,7 +988,8 @@ bb cow ask close <id> --answered <the answer you were given>
   parked. Only an archived thread's asks are left out.
 - **Only you answer**, on the page. There is no `bb cow answer`: a command
   cannot tell your terminal from an agent's, because an agent can clear the
-  variable that names its thread.
+  variable that names its thread. The page's answer is a signed call, so
+  nothing else can answer through cow either: see "Only you: signed calls".
 - The answer reaches the asking thread as a message from you that quotes the
   question and gives the answer, and starts its next turn if it had gone
   idle.
@@ -999,7 +1093,7 @@ The file:
 | `summary` | one paragraph, up to 1200 characters |
 | `claims` | 1 to 30; `text` up to 400 characters; `id` optional (`c1`, `c2`, … when left out) |
 | `label` | the agent's own word: `checked`, `inferred` or `not-checked`. A `checked` claim needs evidence |
-| `evidence` | up to 6 per claim, each a one-line `description` and exactly one of `text` (an excerpt) or `path` (a text file in the thread's storage). 12,000 characters each as the checker reads it, 60,000 in all |
+| `evidence` | up to 6 per claim, each a one-line `description` of up to 600 characters and exactly one of `text` (an excerpt) or `path` (a text file in the thread's storage). 12,000 characters each as the checker reads it, 60,000 in all |
 | `judgementCalls` | up to 10 decisions that are yours; `askId` links one to an ask of the same thread |
 | `notDone` | up to 20 lines: what was left undone or not checked |
 
@@ -1023,6 +1117,14 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   else (prose, a missing claim, a `cannot-tell` that does not say what would
   settle it, an error, no answer in ten minutes) is a **failed check**, shown
   as one. It is never a pass.
+- An answer that cannot be read (broken JSON, a claim left out) is tried once
+  more with a fresh checker before the check fails: a slip in the form is not
+  a verdict on the brief. A checker that used a tool, errored or said nothing
+  is not tried again.
+- A failed check keeps the reason and what the checker answered, as it came.
+  The sheet and `bb cow brief show` print both, so that you can see whether
+  it was the checker or the brief that went wrong. None of it counts as a
+  verdict.
 - The thread a brief is from cannot order its own audit. The thread above it
   can, and so can you.
 
@@ -1121,7 +1223,7 @@ bb cow help
 
 | Command | Does |
 | --- | --- |
-| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf and what finished in the last 2 days |
+| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf and what finished in the last 2 days. A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue |
 | `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
@@ -1156,8 +1258,22 @@ these commands.
 ## Develop
 
 ```sh
-npm test            # unit tests: states, projects, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker, the reader, scrolling the chat, capabilities (rules, refusals, matching, scope, the log, the steps)
+npm test            # unit tests: states, projects, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker, the reader, scrolling the chat, capabilities (rules, refusals, matching, scope, the log, the steps), signed calls (keys, enrollment, replay, reset)
 npm run typecheck
+```
+
+**Run the end-to-end checks against a copy, not against a cow you use.** They
+reset enrollment, make capabilities and write to the log, and they would race
+the page you have open for the first key. `scripts/copy-for-checks.mjs` makes
+a copy of the plugin under another id, with its own storage, page and
+command, and both scripts take `--plugin`:
+
+```sh
+node scripts/copy-for-checks.mjs /some/empty/folder     # the id is cow-check
+bb plugin install /some/empty/folder --yes
+npm run e2e -- --plugin cow-check --project <id> --environment <id>
+npm run e2e:asks -- --plugin cow-check --project <id> --environment <id>
+bb plugin remove cow-check                              # and everything it stored
 ```
 
 `npm run e2e:asks` checks asks and briefs against a running bb, without
@@ -1172,7 +1288,11 @@ stops and archives them for real, grants them permission to run `echo` and to
 write small files under `/tmp`, and runs `bb cow` on them), and archives them
 afterwards. It makes capabilities that apply only to those fixtures, for
 `echo` commands and a scratch directory under `/tmp`, and deletes them; what
-it did stays in the capability log, which nothing clears. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it. With `--only-caps` it makes three fixtures and checks only capabilities.
+it did stays in the log of the plugin it ran against, which nothing clears.
+It holds a signing key of its own, resets enrollment with the reset file when
+it starts and when it finishes, opens two more browser contexts to check a
+page that waits and one that is refused, and has one fixture run every route
+to your actions from inside its sandbox. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it. With `--only-caps` it makes three fixtures and checks only capabilities.
 With `--only-reader` it makes four fixtures and checks
 only the reader, projects, asks answered in chat and scrolling the chat; its
 `--environment` must then be a checkout of cow, because the fixture links to
@@ -1185,14 +1305,15 @@ bb plugin disable cow   # unload it; your choice of Main is kept
 bb plugin remove cow    # uninstall it and delete what it stored
 ```
 
-cow stores six things: capabilities, their notices and their log, in the
-plugin's own storage; which thread was last chosen as Main for each
+cow stores seven things: the public halves of the enrolled keys, and
+capabilities, their notices and the log, in the plugin's own storage; which thread was last chosen as Main for each
 project; which reply of each thread you have seen; its notes on a thread
 (why it is parked, why it was archived, which refused permissions you
 dismissed, what the thread says is next and has not started, whether it is a
 project), kept in that thread's plugin metadata; asks and briefs, with the checker's verdicts, in
-the plugin's own storage; and, in each window's session storage, the Main
-that window shows and the groups folded in it. When a thread is deleted in
+the plugin's own storage; in each window's session storage, the Main
+that window shows and the groups folded in it; and, in the browser's own
+storage, that browser's signing key. When a thread is deleted in
 bb, cow deletes its record of which reply you saw and its notes on it.
 Capabilities and the log are kept.
 
