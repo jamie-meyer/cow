@@ -9,6 +9,7 @@ import type { BriefMark } from "./briefs/review.ts";
 import type { BriefRecord } from "./briefs/service.ts";
 import type { attentionRpcContract } from "./raised-backend.ts";
 import { RAISED_CHANGED } from "./raised.ts";
+import type { Signer } from "./signing/page.ts";
 
 export interface RaisedData {
   /** Thread id to its open asks, oldest first. */
@@ -36,7 +37,7 @@ const NO_BRIEFS: ReadonlyMap<string, BriefMark> = new Map();
 const NO_DELIVERED: ReadonlyMap<string, readonly number[]> = new Map();
 
 /** Load the asks and briefs of `threadIds`, and again whenever that list or any of them changes. */
-export function useRaised(threadIds: readonly string[] | null): RaisedData {
+export function useRaised(threadIds: readonly string[] | null, signer: Signer): RaisedData {
   const rpc = useRpc<typeof attentionRpcContract>();
   const [asks, setAsks] = useState(NO_ASKS);
   const [briefs, setBriefs] = useState(NO_BRIEFS);
@@ -88,7 +89,7 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
       delivered,
       changes,
       answer: async (askId, option, text) => {
-        const answered = await rpc.call("ask_answer", { id: askId, option, text });
+        const answered = await signer.call("ask_answer", { id: askId, option, text });
         // The message that carried it is the person's, and answers nothing else.
         if (answered.deliveredAt !== null) {
           const at = answered.deliveredAt;
@@ -96,7 +97,7 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
         }
         return gone(answered);
       },
-      close: async (askId) => gone(await rpc.call("ask_close", { id: askId })),
+      close: async (askId) => gone(await signer.call("ask_close", { id: askId })),
       brief: async (threadId) => (await rpc.call("brief_get", { threadId })).record,
       markRead: async (threadId, version) => {
         await rpc.call("brief_read", { threadId, version });
@@ -107,5 +108,5 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
         reload();
       },
     };
-  }, [asks, briefs, delivered, changes, rpc, reload]);
+  }, [asks, briefs, delivered, changes, rpc, reload, signer]);
 }

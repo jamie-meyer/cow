@@ -6,87 +6,35 @@
 // So nothing here trusts a caller: every method that changes anything goes
 // through the service, which logs it and raises a notice.
 
-import { type BbPluginApi, defineRpcContract, experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
-import { createHash, randomUUID } from "node:crypto";
+import { type BbPluginApi, defineRpcContract } from "@get-bb/plugin-sdk";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { z } from "zod";
-import { Refusal } from "../kv.ts";
 import { fileChanges } from "../permission.ts";
-import { CAPS_CHANGED, CAP_LIMITS, VIAS, capabilitySchema, scopeSchema } from "./cap.ts";
+import { CAPS_CHANGED } from "./cap.ts";
 import { logEntrySchema } from "./log.ts";
+import type { LogStore } from "./logstore.ts";
 import type { Resolved } from "./match.ts";
 import { readPath } from "./paths.ts";
 import { type Caps, type InteractionState, MAX_LOG_PAGE, capStateSchema, chainCheckSchema, createCaps } from "./service.ts";
 
 const id = z.string().min(1).max(200);
-const ruleDraftSchema = z.union([
-  z.object({ kind: z.literal("dir"), text: z.string().max(5000) }),
-  z.object({ kind: z.literal("command"), mode: z.enum(["exact", "prefix"]), text: z.string().max(5000) }),
-]);
-const grantSchema = z.object({
-  fileSystem: z.object({ read: z.array(z.string()), write: z.array(z.string()) }).nullable(),
-  network: z.object({ enabled: z.boolean().nullable() }).nullable(),
-});
-const resolutionSchema = z.union([
-  z.object({ decision: z.literal("allow_once"), grantedPermissions: z.null() }),
-  z.object({ decision: z.literal("allow_for_session"), grantedPermissions: grantSchema }),
-  z.object({ decision: z.literal("deny") }),
-]);
 
 /**
- * What the page calls. There is no CLI command and no agent tool for any of
- * the methods that change something: making, deleting and acknowledging are
- * the person's, on the page.
+ * What anyone may read. Nothing here changes anything: making, deleting,
+ * restoring and acknowledging, and deciding a request, are the person's, and
+ * are reached only as signed calls (see ../signing/backend.ts).
  */
 export const capsRpcContract = defineRpcContract({
   /** Every capability, the notices not yet acknowledged, what capabilities have allowed on each thread, and where the refused places are. */
   caps_state: { input: z.null(), output: capStateSchema },
-  cap_create: {
-    input: z.object({
-      name: z.string().max(CAP_LIMITS.name * 4),
-      note: z.string().max(CAP_LIMITS.note * 4).nullable(),
-      rule: ruleDraftSchema,
-      scope: scopeSchema,
-      via: z.enum(VIAS),
-      sourceThreadId: id.nullable(),
-      askId: id.nullable(),
-    }),
-    output: capabilitySchema,
-  },
-  cap_delete: { input: z.object({ id }), output: capabilitySchema },
-  cap_restore: { input: z.object({ id }), output: capabilitySchema },
-  cap_ack: { input: z.object({ noticeId: id }), output: z.null() },
   /** The log, newest first; with `capabilityId`, one capability's history. */
   caps_log: {
     input: z.object({ limit: z.number().int().min(1).max(MAX_LOG_PAGE).optional(), capabilityId: id.optional() }),
     output: z.object({ entries: z.array(logEntrySchema), total: z.number(), check: chainCheckSchema }),
   },
-  /** Answer one of bb's permission requests as decided on the page, so cow knows the decision was made through it. */
-  permission_decide: {
-    input: z.object({ threadId: id, interactionId: id, resolution: resolutionSchema }),
-    output: z.null(),
-  },
 });
-
-const REFUSAL_CODES: Record<string, "conflict" | "invalid" | "not_found"> = {
-  capability_not_found: "not_found",
-  notice_not_found: "not_found",
-  thread_not_found: "not_found",
-  name_taken: "conflict",
-  already_deleted: "conflict",
-  not_deleted: "conflict",
-  not_decided: "conflict",
-};
-
-async function refusing<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (cause) {
-    if (cause instanceof Refusal) throw new experimental_PluginRpcRefusal({ code: REFUSAL_CODES[cause.code] ?? "invalid", message: cause.message });
-    throw cause;
-  }
-}
 
 const record = (value: unknown): Record<string, unknown> | null => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null);
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -135,7 +83,7 @@ export function interactionState(events: readonly unknown[], interactionId: stri
   return newest?.state ?? null;
 }
 
-export function registerCaps(bb: BbPluginApi): Caps {
+export function registerCaps(bb: BbPluginApi, log: LogStore): Caps {
   const changed = () => bb.realtime.publish(CAPS_CHANGED, {});
   const threadOf = async (threadId: string) => {
     const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
@@ -155,7 +103,7 @@ export function registerCaps(bb: BbPluginApi): Caps {
     kv: bb.storage.kv,
     now: Date.now,
     newId: () => randomUUID().replace(/-/g, "").slice(0, 10),
-    hash: (text) => createHash("sha256").update(text).digest("hex"),
+    log,
     places: async () => ({ home: homedir() || null, dataDir: bb.server.experimental_dataDir || null }),
     thread: async (threadId) => {
       const found = await threadOf(threadId);
@@ -198,18 +146,7 @@ export function registerCaps(bb: BbPluginApi): Caps {
 
   bb.rpc.register(capsRpcContract, {
     caps_state: () => caps.state(),
-    cap_create: (input) => refusing(() => caps.create(input)),
-    cap_delete: ({ id: capabilityId }) => refusing(() => caps.remove(capabilityId)),
-    cap_restore: ({ id: capabilityId }) => refusing(() => caps.restore(capabilityId)),
-    cap_ack: async ({ noticeId }) => {
-      await refusing(() => caps.acknowledge(noticeId));
-      return null;
-    },
     caps_log: (filter) => caps.log({ ...(filter.limit === undefined ? {} : { limit: filter.limit }), ...(filter.capabilityId === undefined ? {} : { capabilityId: filter.capabilityId }) }),
-    permission_decide: async ({ threadId, interactionId, resolution }) => {
-      await refusing(() => caps.decideOnPage(threadId, interactionId, resolution));
-      return null;
-    },
   });
 
   const quietly = (what: string) => (cause: unknown) => bb.log.warn(`${what}: ${cause instanceof Error ? cause.message : String(cause)}`);

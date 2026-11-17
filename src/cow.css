@@ -1707,3 +1707,24 @@
 .cow-q-notice p {
   -webkit-line-clamp: 3;
 }
+
+/* This page's signing key: said plainly when it was just enrolled, and loudly when it is not. */
+.cow-keybanner {
+  margin: 6px 0 2px;
+  padding: 5px 10px;
+  border-left: 3px solid var(--cow-run);
+  background: var(--cow-tint-run);
+  font: 12.5px/19px var(--cow-sans);
+  color: var(--cow-ink);
+}
+.cow-keybanner-off {
+  border-left-color: var(--cow-fail);
+  background: color-mix(in srgb, var(--cow-fail) 10%, transparent);
+}
+.cow-keybanner-off b {
+  color: var(--cow-fail);
+}
+.cow-caplog-by {
+  font: 11px/19px var(--cow-mono);
+  color: var(--cow-faint);
+}

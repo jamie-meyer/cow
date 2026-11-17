@@ -7,6 +7,8 @@ import { z } from "zod";
 import { createActions } from "./src/actions.ts";
 import { registerAttention } from "./src/raised-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
+import { createLogStore } from "./src/caps/logstore.ts";
+import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
 import { cowCli } from "./src/cli.ts";
 import {
@@ -99,7 +101,10 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const attention = registerAttention(bb);
-  const caps = registerCaps(bb);
+  // One log for capabilities and keys: one numbering, one chain.
+  const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
+  const caps = registerCaps(bb, log);
+  registerSigning(bb, log, caps, attention.asks);
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();

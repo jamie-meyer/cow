@@ -31,7 +31,7 @@ const markSchema = z.object({
   read: z.boolean(),
 });
 
-/** What the page calls. Answering an ask is here and nowhere in the CLI: it is the user's to do. */
+/** What the page reads, and what anyone may do. Answering an ask, and closing one as answered in chat, are the person's: they are signed calls (see signing/backend.ts). */
 export const attentionRpcContract = defineRpcContract({
   /** Asks, oldest first: the open ones, or with `all`, every one. */
   asks_list: {
@@ -41,16 +41,6 @@ export const attentionRpcContract = defineRpcContract({
       /** For each thread with an open ask: when cow delivered the person's answers to its other asks. */
       delivered: z.record(z.string(), z.array(z.number())),
     }),
-  },
-  /** Close an ask the user answered in chat. Nothing is sent to the thread. Only the page calls this. */
-  ask_close: {
-    input: z.object({ id }),
-    output: askSchema,
-  },
-  /** Record the user's answer to an ask and send it to the asking thread as the user. */
-  ask_answer: {
-    input: z.object({ id, option: z.number().int().min(1).nullable(), text: z.string().max(4000).nullable() }),
-    output: askSchema,
   },
   /** A thread's brief with its evidence and its check, or null when it has none. Read it with `review()`. */
   brief_get: {
@@ -237,8 +227,6 @@ export function registerAttention(bb: BbPluginApi): Attention {
       }
       return { asks: filter.all === true ? every : every.filter((ask) => ask.status === "open"), delivered };
     },
-    ask_close: ({ id: askId }) => refusing(() => asks.close(askId, { person: true })),
-    ask_answer: ({ id: askId, option, text }) => refusing(() => asks.answer(askId, { option, text })),
     brief_get: async ({ threadId, version }) => {
       const versions = await briefs.versions(threadId);
       if (versions.length === 0) return { record: null, versions };

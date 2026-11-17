@@ -11,19 +11,22 @@
 // its end.
 
 import { z } from "zod";
+import { canonical } from "../signing/canonical.ts";
 import { OUTSIDE_WHERE } from "../state.ts";
 import { VIA_TEXT, type Via } from "./cap.ts";
 
 const what = z.string().max(2000);
+/** The thread a capability names: what says whose tree an entry belongs to. Entries written before this was kept have none. */
+const scopeThread = z.string().nullable().default(null);
 
 const eventSchema = z.union([
   /** A capability was made. `summary` is its notice text: name, rule and who it applies to. */
-  z.object({ kind: z.literal("created"), capabilityId: z.string(), name: z.string(), summary: what, via: z.string(), sourceThreadId: z.string().nullable() }),
-  z.object({ kind: z.literal("deleted"), capabilityId: z.string(), name: z.string() }),
+  z.object({ kind: z.literal("created"), capabilityId: z.string(), name: z.string(), summary: what, via: z.string(), sourceThreadId: z.string().nullable(), scopeThreadId: scopeThread }),
+  z.object({ kind: z.literal("deleted"), capabilityId: z.string(), name: z.string(), scopeThreadId: scopeThread }),
   /** A deleted capability was put back in force. */
-  z.object({ kind: z.literal("restored"), capabilityId: z.string(), name: z.string(), summary: what }),
-  /** A notice was acknowledged on the page. */
-  z.object({ kind: z.literal("acknowledged"), noticeId: z.string(), capabilityId: z.string().nullable(), threadId: z.string().nullable(), summary: what }),
+  z.object({ kind: z.literal("restored"), capabilityId: z.string(), name: z.string(), summary: what, scopeThreadId: scopeThread }),
+  /** A notice was acknowledged on the page. `scopeThreadId`: for a capability's notice, the thread the capability names. */
+  z.object({ kind: z.literal("acknowledged"), noticeId: z.string(), capabilityId: z.string().nullable(), threadId: z.string().nullable(), summary: what, scopeThreadId: scopeThread }),
   /** cow answered a request "allow once" through a capability. `links`: whether symbolic links in the paths could be followed. */
   z.object({ kind: z.literal("auto-allowed"), threadId: z.string(), interactionId: z.string(), capabilityId: z.string(), name: z.string(), what, links: z.enum(["followed", "not-followed", "none"]) }),
   /** A request was decided through cow's page. cow cannot tell who pressed the keys. */
@@ -32,6 +35,19 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("outside"), threadId: z.string(), interactionId: z.string(), decision: z.string(), what }),
   /** A thread asked for a capability, with `bb cow cap request`. */
   z.object({ kind: z.literal("requested"), threadId: z.string(), askId: z.string(), what }),
+  /** A message was sent to a thread as the person, from cow's page. */
+  z.object({ kind: z.literal("sent"), threadId: z.string(), what }),
+  /** An ask was answered on cow's page, or closed there as already answered in chat. */
+  z.object({ kind: z.literal("ask-answered"), threadId: z.string(), askId: z.string(), what }),
+  z.object({ kind: z.literal("ask-closed"), threadId: z.string(), askId: z.string() }),
+  /** A page's key was enrolled: the first one by itself, any later one by a page already enrolled. */
+  z.object({ kind: z.literal("key-enrolled"), fingerprint: z.string(), how: z.enum(["first", "approved"]), label: z.string() }),
+  /** A page asked for its key to be enrolled. Anyone can ask; only an enrolled page can approve. */
+  z.object({ kind: z.literal("key-requested"), fingerprint: z.string(), label: z.string() }),
+  z.object({ kind: z.literal("key-refused"), fingerprint: z.string() }),
+  z.object({ kind: z.literal("key-removed"), fingerprint: z.string() }),
+  /** Every enrolled key was cleared, because the reset file was found. `keys`: how many. */
+  z.object({ kind: z.literal("enrollment-reset"), keys: z.number() }),
 ]);
 export type LogEvent = z.infer<typeof eventSchema>;
 
@@ -42,32 +58,38 @@ export const logEntrySchema = z.object({
   /** The hash of the entry before it; empty for the first. */
   prev: z.string(),
   hash: z.string(),
+  /**
+   * The fingerprint of the key that signed the call this entry records; null
+   * for what cow did by itself or saw (an allowance through a capability, a
+   * decision made outside cow, a thread's request, a reset).
+   */
+  by: z.string().nullable().default(null),
   event: eventSchema,
 });
 export type LogEntry = z.infer<typeof logEntrySchema>;
 
 export type Hash = (text: string) => string;
 
-const canonical = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-};
-
 /** The hash of an entry: over its number, time, the hash before it, and what happened. */
-export function entryHash(entry: Pick<LogEntry, "seq" | "at" | "prev" | "event">, hash: Hash): string {
-  return hash(canonical({ seq: entry.seq, at: entry.at, prev: entry.prev, event: entry.event }));
+export function entryHash(entry: Pick<LogEntry, "seq" | "at" | "prev" | "event" | "by">, hash: Hash): string {
+  return hash(canonical({ seq: entry.seq, at: entry.at, prev: entry.prev, by: entry.by, event: entry.event }));
 }
 
-/** The entry that follows `last` (null for the first). */
-export function nextEntry(last: Pick<LogEntry, "seq" | "hash"> | null, event: LogEvent, at: number, hash: Hash): LogEntry {
-  const base = { seq: (last?.seq ?? 0) + 1, at, prev: last?.hash ?? "", event };
+/** The entry that follows `last` (null for the first). `by`: the key that signed the call it records. */
+export function nextEntry(last: Pick<LogEntry, "seq" | "hash"> | null, event: LogEvent, at: number, hash: Hash, by: string | null = null): LogEntry {
+  const base = { seq: (last?.seq ?? 0) + 1, at, prev: last?.hash ?? "", by, event };
   return { ...base, hash: entryHash(base, hash) };
+}
+
+/** What an entry needs a signature for: these kinds are written only for a call a key signed. */
+export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"];
+
+/** The thread whose tree an entry belongs to, or null when it belongs to none (a key, a reset). */
+export function entryThread(event: LogEvent): string | null {
+  if ("threadId" in event && event.threadId) return event.threadId;
+  if ("scopeThreadId" in event && event.scopeThreadId) return event.scopeThreadId;
+  if ("sourceThreadId" in event && event.sourceThreadId) return event.sourceThreadId;
+  return null;
 }
 
 export type ChainCheck =
@@ -127,6 +149,22 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return `${outsideText(event.decision, event.what)} · on ${on(event.threadId)} · ${OUTSIDE_WHERE}`;
     case "requested":
       return `${on(event.threadId)} asked for a capability: ${event.what}`;
+    case "sent":
+      return `sent as you to ${on(event.threadId)}: ${event.what}`;
+    case "ask-answered":
+      return `answered an ask of ${on(event.threadId)}: ${event.what}`;
+    case "ask-closed":
+      return `closed an ask of ${on(event.threadId)} as already answered in chat`;
+    case "key-enrolled":
+      return event.how === "first" ? `key ${event.fingerprint} enrolled by first use: ${event.label}` : `key ${event.fingerprint} enrolled, approved from an enrolled page: ${event.label}`;
+    case "key-requested":
+      return `a page asked for its key ${event.fingerprint} to be enrolled: ${event.label}`;
+    case "key-refused":
+      return `key ${event.fingerprint} was refused`;
+    case "key-removed":
+      return `key ${event.fingerprint} was removed`;
+    case "enrollment-reset":
+      return `enrollment was reset from the reset file: ${event.keys} ${event.keys === 1 ? "key" : "keys"} cleared`;
   }
 }
 

@@ -31,6 +31,7 @@ import { covers } from "./caps/match.ts";
 import { type Held, ancestorsOf, held as heldBy } from "./caps/scope.ts";
 import type { Use } from "./caps/service.ts";
 import type { Refusal } from "./refusal.ts";
+import { type Signer, useSigner } from "./signing/page.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
 import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
@@ -1086,6 +1087,7 @@ function OverviewScreen({
   parks,
   raised,
   caps,
+  signer,
   threads,
   onChooseMain,
 }: {
@@ -1096,6 +1098,7 @@ function OverviewScreen({
   parks: Parks;
   raised: RaisedData;
   caps: CapsData;
+  signer: Signer;
   threads: readonly ThreadFacts[];
   onChooseMain: () => void;
 }) {
@@ -1275,8 +1278,8 @@ function OverviewScreen({
     if (target === null || sending) return;
     if (!text) return endSay();
     setSending(true);
-    sdk.threads
-      .send({ threadId: target, mode: "auto", input: [{ type: "text", text, mentions: [] }] })
+    signer
+      .call("send", { threadId: target, text })
       .then(
         () => {
           setMessage(`said to ${titles.get(target) ?? "the thread"}`);
@@ -1354,6 +1357,8 @@ function OverviewScreen({
   });
   const capSheet = useCapSheet({
     caps,
+    signer,
+    underMain: useMemo(() => new Set([main.thread.id, ...descendantIds(threads, main.thread.id, 0)]), [threads, main.thread.id]),
     threads,
     titleOf: (id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? id,
     now,
@@ -1382,6 +1387,9 @@ function OverviewScreen({
     raised,
     caps,
     coverage,
+    sendAs: async (threadId, text) => {
+      await signer.call("send", { threadId, text });
+    },
     startCap: (origin, proposal) => capSteps.start(origin, proposal),
     openBrief: (id) => sheetRef.current?.open(id),
     now,
@@ -1698,7 +1706,9 @@ function OverviewScreen({
   // Always in sight: a capability nobody remembers making shows as a number that went up.
   const inForce = caps.capabilities.filter((capability) => capability.deletedAt === null).length;
   // What waits on the person: the lines in the queue, and the capabilities they have not acknowledged.
-  const waiting = overview.queue.length + capNotices.length;
+  // A page that asks for its key to be enrolled waits on the person too, on a page that can approve it.
+  const keyRequests = signer.status === "enrolled" ? (signer.keys?.requests ?? []).filter((request) => request.status === "pending") : [];
+  const waiting = overview.queue.length + capNotices.length + keyRequests.length;
   const row = (line: Line, flat: boolean) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
@@ -1797,6 +1807,27 @@ function OverviewScreen({
             on you
           </span>
         </header>
+        {signer.status !== "enrolled" && signer.status !== "loading" ? (
+          <p className="cow-keybanner cow-keybanner-off" data-cow-key-status={signer.status} data-cow-key-fingerprint={signer.fingerprint ?? ""} role="alert">
+            <b>
+              {signer.status === "unavailable"
+                ? "This page can only read."
+                : (signer.keys?.keys.length ?? 0) > 0
+                  ? "cow's person-only actions are held by a key that is not this page's."
+                  : "This page's key is not enrolled."}
+            </b>{" "}
+            {signer.why[0]?.toUpperCase()}
+            {signer.why.slice(1)}
+            {signer.status === "pending" ? " If you never enrolled a page, something else did: that is what the reset is for." : ""}
+          </p>
+        ) : signer.firstUse ? (
+          <p className="cow-keybanner" data-cow-key-status="first" data-cow-key-fingerprint={signer.fingerprint ?? ""} role="status">
+            <b>This page's key {signer.fingerprint} is now enrolled, by first use.</b> No key was enrolled, so the first page to open cow holds what only you may do: making and deleting capabilities, acknowledging, deciding permission requests, answering asks, and sending as you. Any other browser has to be approved from a page that is enrolled.{" "}
+            <button type="button" className="cow-vb" data-cow-hint="" data-cow-key-dismiss="" tabIndex={-1} onClick={signer.dismissFirstUse}>
+              understood
+            </button>
+          </p>
+        ) : null}
         {card(main.thread.id)}
 
         <div className="cow-body">
@@ -1868,8 +1899,22 @@ function OverviewScreen({
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
                 replies addressed to you, parked work that came back, new capabilities and decisions made outside cow, oldest first.
               </p>
-              {capNotices.length > 0 ? (
-                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length}>
+              {capNotices.length + keyRequests.length > 0 ? (
+                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length + keyRequests.length}>
+                  {keyRequests.map((request) => (
+                    <li key={request.fingerprint} className="cow-q cow-q-notice" data-cow-key-waiting={request.fingerprint} data-cow-hint="" onClick={() => capSheet.show()}>
+                      <span className="cow-qn">{CAP_GLYPH}</span>
+                      <span className="cow-gl" />
+                      <div>
+                        <p>
+                          a page asks to act as you: key {request.fingerprint} ({request.label})
+                        </p>
+                        <small>
+                          {formatAge(Math.max(0, now - request.requestedAt))} · <kbd>C</kbd>, then <kbd>⏎</kbd> approves or <kbd>x</kbd> refuses
+                        </small>
+                      </div>
+                    </li>
+                  ))}
                   {capNotices.map((notice) => (
                     <li key={notice.id} className="cow-q cow-q-notice" data-cow-notice={notice.id} data-cow-notice-capability={notice.capabilityId ?? undefined} data-cow-hint="" onClick={() => capSheet.show()}>
                       <span className="cow-qn">{CAP_GLYPH}</span>
@@ -1886,7 +1931,7 @@ function OverviewScreen({
               ) : null}
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
-                  <li className="cow-q-empty">{capNotices.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
+                  <li className="cow-q-empty">{capNotices.length + keyRequests.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
                 ) : (
                   overview.queue.map((line) => (
                     <li
@@ -2119,8 +2164,9 @@ export function CowPage() {
   );
   const parks = useParks(underMain);
   const notes = parks.notes;
-  const raised = useRaised(underMain);
-  const caps = useCaps();
+  const signer = useSigner();
+  const raised = useRaised(underMain, signer);
+  const caps = useCaps(signer);
 
   const projects = useMemo(() => projectIds(snapshot.threads, parks.projects.keys(), mainId), [snapshot.threads, parks.projects, mainId]);
   const overview = useMemo(
@@ -2242,6 +2288,7 @@ export function CowPage() {
       parks={parks}
       raised={raised}
       caps={caps}
+      signer={signer}
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
     />

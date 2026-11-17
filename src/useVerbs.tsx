@@ -67,6 +67,8 @@ export interface VerbHost {
   caps: CapsData;
   /** For each refusal of a thread, the name of the capability that would cover it when asked again, or null. */
   coverage: (threadId: string, refusals: readonly Refusal[]) => (string | null)[];
+  /** Send a thread a message as the person: a signed call, so only an enrolled page can. */
+  sendAs: (threadId: string, text: string) => Promise<void>;
   /** Start the steps that make a capability. */
   startCap: (origin: StepsOrigin, proposal: Proposal | null) => void;
   now: number;
@@ -431,8 +433,8 @@ export function useVerbs(host: VerbHost): Verbs {
       }
       if (message === null) return close("denied: it was told no");
       // bb's denial carries no text, so the reason follows as a message.
-      sdk.threads
-        .send({ threadId, mode: "auto", input: [{ type: "text", text: message, mentions: [] }] })
+      host
+        .sendAs(threadId, message)
         .then(
           () => close("denied, and told why"),
           (cause: unknown) => close(`denied, but your message was not sent: ${errorText(cause)}`),
@@ -530,8 +532,8 @@ export function useVerbs(host: VerbHost): Verbs {
       }, failed("not dismissed"));
     }
     // Sent as the user, so the turn it starts is one a person started.
-    sdk.threads
-      .send({ threadId, mode: "auto", input: [{ type: "text", text: result.text, mentions: [] }] })
+    host
+      .sendAs(threadId, result.text)
       .then(
         () =>
           close(

@@ -10,6 +10,7 @@ import { CAPS_CHANGED, type Capability, type RuleDraft, type Scope, type Via } f
 import type { ChainCheck, LogEntry } from "./log.ts";
 import type { Places } from "./paths.ts";
 import type { Notice, Use } from "./service.ts";
+import type { Signer } from "../signing/page.ts";
 
 export interface CapsData {
   /** False until the first read: until then nothing is known to be held. */
@@ -37,7 +38,7 @@ export interface CapsData {
 
 const NO_PLACES: Places = { home: null, dataDir: null };
 
-export function useCaps(): CapsData {
+export function useCaps(signer: Signer): CapsData {
   const rpc = useRpc<typeof capsRpcContract>();
   const [loaded, setLoaded] = useState(false);
   const [capabilities, setCapabilities] = useState<readonly Capability[]>([]);
@@ -87,31 +88,31 @@ export function useCaps(): CapsData {
       places,
       changes,
       create: async (input) => {
-        const made = await rpc.call("cap_create", input);
+        const made = await signer.call("cap_create", input);
         reload();
         return made;
       },
       remove: async (id) => {
-        const gone = await rpc.call("cap_delete", { id });
+        const gone = await signer.call("cap_delete", { id });
         reload();
         return gone;
       },
       restore: async (id) => {
-        const back = await rpc.call("cap_restore", { id });
+        const back = await signer.call("cap_restore", { id });
         reload();
         return back;
       },
       acknowledge: async (noticeId) => {
-        await rpc.call("cap_ack", { noticeId });
+        await signer.call("cap_ack", { noticeId });
         // Gone from the page at once; the reload confirms it.
         setNotices((current) => current.filter((notice) => notice.id !== noticeId));
         reload();
       },
       log: (capabilityId) => rpc.call("caps_log", capabilityId === undefined ? {} : { capabilityId }),
       decide: async (threadId, interactionId, resolution) => {
-        await rpc.call("permission_decide", { threadId, interactionId, resolution });
+        await signer.call("permission_decide", { threadId, interactionId, resolution });
       },
     }),
-    [loaded, capabilities, notices, uses, outside, places, changes, rpc, reload],
+    [loaded, capabilities, notices, uses, outside, places, changes, rpc, reload, signer],
   );
 }

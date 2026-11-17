@@ -12,15 +12,14 @@ import { toAskDetail } from "../answer.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { type PermissionResolution, permissionSummary } from "../permission.ts";
 import { type Capability, type Rule, type RuleDraft, type Scope, type Via, addedText, capabilitySchema, isActive, readName, readNote, readRule, ruleDraft, ruleText } from "./cap.ts";
-import { type ChainCheck, type Hash, type LogEntry, type LogEvent, checkChain, entryCapability, logEntrySchema, nextEntry, outsideText } from "./log.ts";
+import { type ChainCheck, type LogEntry, entryCapability, outsideText } from "./log.ts";
+import type { LogStore } from "./logstore.ts";
 import { type Request, type Resolved, covers, coversResolved, requestText } from "./match.ts";
 import { type Places, directoryRefusal, readPath } from "./paths.ts";
 import { type Held, held } from "./scope.ts";
 import { z } from "zod";
 
 const CAP = "cap:";
-const LOG = "caplog:";
-const LOG_HEAD = "caplog-head";
 const NOTICE = "capnote:";
 const USE = "capuse:";
 const PENDING = "cappend:";
@@ -81,7 +80,8 @@ export interface CapDeps {
   kv: Kv;
   now(): number;
   newId(): string;
-  hash: Hash;
+  /** The log every change here is written to. */
+  log: LogStore;
   /** Where home and bb's data are on the server's machine. */
   places(): Promise<Places>;
   /** A thread's title, or null when bb has no such thread. */
@@ -113,13 +113,16 @@ export interface CreateInput {
 
 export interface Caps {
   state(): Promise<CapState>;
+  // The five that follow are the person's. Each takes `by`, the fingerprint of
+  // the key that signed the call: they are reached only through a verified
+  // signature, and what they log says which key it was.
   /** Make a capability. It is logged, and a notice is raised that stays until acknowledged. */
-  create(input: CreateInput): Promise<Capability>;
+  create(input: CreateInput, by: string): Promise<Capability>;
   /** Delete one. It allows nothing from this moment. */
-  remove(id: string): Promise<Capability>;
+  remove(id: string, by: string): Promise<Capability>;
   /** Put a deleted one back in force. A notice is raised, as for a new one. */
-  restore(id: string): Promise<Capability>;
-  acknowledge(noticeId: string): Promise<Notice>;
+  restore(id: string, by: string): Promise<Capability>;
+  acknowledge(noticeId: string, by: string): Promise<Notice>;
   /** The log, newest first, and whether its chain holds. `capabilityId` narrows it to one capability's history. */
   log(filter?: { limit?: number; capabilityId?: string }): Promise<{ entries: LogEntry[]; total: number; check: ChainCheck }>;
   /** The capabilities in force that apply to a thread. */
@@ -129,7 +132,7 @@ export interface Caps {
   /** Record that a thread asked for a capability. */
   requested(threadId: string, askId: string, rule: Rule): Promise<void>;
   /** Answer a request as decided on the page, and record that cow did it. */
-  decideOnPage(threadId: string, interactionId: string, resolution: PermissionResolution): Promise<void>;
+  decideOnPage(threadId: string, interactionId: string, resolution: PermissionResolution, by: string): Promise<void>;
   /** bb raised a request: remember it, and allow it once when a capability covers it. Returns the capability that allowed it. */
   raised(threadId: string, interaction: unknown): Promise<Capability | null>;
   /** Look again at the requests cow is watching (of one thread, or all): flag the ones decided somewhere else. */
@@ -139,8 +142,6 @@ export interface Caps {
   /** Forget what is kept about a thread that bb has deleted. Capabilities and the log stay. */
   forget(threadId: string): Promise<void>;
 }
-
-const pad = (seq: number): string => String(seq).padStart(10, "0");
 
 export function createCaps(deps: CapDeps): Caps {
   const { kv } = deps;
@@ -160,24 +161,7 @@ export function createCaps(deps: CapDeps): Caps {
   };
   const titleOf = async (threadId: string): Promise<string> => (await deps.thread(threadId))?.title ?? threadId;
 
-  // ---- the log ----------------------------------------------------------
-
-  /** The whole log, oldest first. This process is the only writer, so it is read from storage once. */
-  let entries: LogEntry[] | null = null;
-  const loadLog = async (): Promise<LogEntry[]> => {
-    if (entries === null) entries = (await readAll(LOG, logEntrySchema)).sort((a, b) => a.seq - b.seq);
-    return entries;
-  };
-  const append = (event: LogEvent): Promise<LogEntry> =>
-    locked("log", async () => {
-      const log = await loadLog();
-      const last = log[log.length - 1] ?? null;
-      const entry = nextEntry(last, event, deps.now(), deps.hash);
-      await kv.set(LOG + pad(entry.seq), entry);
-      await kv.set(LOG_HEAD, { seq: entry.seq, hash: entry.hash });
-      log.push(entry);
-      return entry;
-    });
+  const append = deps.log.append;
 
   const notify = async (notice: Omit<Notice, "id" | "at">): Promise<Notice> => {
     const made: Notice = { ...notice, id: `note_${deps.newId()}`, at: deps.now() };
@@ -206,7 +190,7 @@ export function createCaps(deps: CapDeps): Caps {
 
   const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
-  const create: Caps["create"] = (input) =>
+  const create: Caps["create"] = (input, by) =>
     locked("capabilities", async () => {
       const name = readName(input.name);
       if (!name.ok) throw new Refusal("bad_capability", name.error);
@@ -236,25 +220,25 @@ export function createCaps(deps: CapDeps): Caps {
       const title = await titleOf(made.scope.threadId);
       const summary = addedText(made, "added", () => title);
       // Logged before it is in force: nothing can be allowed by a capability the log does not hold.
-      await append({ kind: "created", capabilityId: made.id, name: made.name, summary, via: made.via, sourceThreadId: made.sourceThreadId });
+      await append({ kind: "created", capabilityId: made.id, name: made.name, summary, via: made.via, sourceThreadId: made.sourceThreadId, scopeThreadId: made.scope.threadId }, by);
       await notify({ kind: "capability", capabilityId: made.id, threadId: null, text: summary });
       await kv.set(CAP + made.id, made);
       deps.changed();
       return made;
     });
 
-  const remove: Caps["remove"] = (id) =>
+  const remove: Caps["remove"] = (id, by) =>
     locked("capabilities", async () => {
       const found = await capability(id);
       if (!isActive(found)) throw new Refusal("already_deleted", `“${found.name}” is already deleted`);
       const deleted = { ...found, deletedAt: deps.now() };
       await kv.set(CAP + id, deleted);
-      await append({ kind: "deleted", capabilityId: id, name: found.name });
+      await append({ kind: "deleted", capabilityId: id, name: found.name, scopeThreadId: found.scope.threadId }, by);
       deps.changed();
       return deleted;
     });
 
-  const restore: Caps["restore"] = (id) =>
+  const restore: Caps["restore"] = (id, by) =>
     locked("capabilities", async () => {
       const found = await capability(id);
       if (isActive(found)) throw new Refusal("not_deleted", `“${found.name}” is not deleted`);
@@ -265,7 +249,7 @@ export function createCaps(deps: CapDeps): Caps {
       if (clash) throw new Refusal("name_taken", `another capability is now named “${clash.name}”: delete that one first`);
       const title = await titleOf(found.scope.threadId);
       const summary = addedText(found, "restored", () => title);
-      await append({ kind: "restored", capabilityId: id, name: found.name, summary });
+      await append({ kind: "restored", capabilityId: id, name: found.name, summary, scopeThreadId: found.scope.threadId }, by);
       await notify({ kind: "capability", capabilityId: id, threadId: null, text: summary });
       const restored = { ...found, deletedAt: null };
       await kv.set(CAP + id, restored);
@@ -273,12 +257,13 @@ export function createCaps(deps: CapDeps): Caps {
       return restored;
     });
 
-  const acknowledge: Caps["acknowledge"] = (noticeId) =>
+  const acknowledge: Caps["acknowledge"] = (noticeId, by) =>
     locked(`notice:${noticeId}`, async () => {
       const found = /^note_[a-z0-9]{1,40}$/.test(noticeId) ? noticeSchema.safeParse(await kv.get(NOTICE + noticeId)) : null;
       if (!found?.success) throw new Refusal("notice_not_found", `there is no notice ${noticeId} to acknowledge`);
       const notice = found.data;
-      await append({ kind: "acknowledged", noticeId, capabilityId: notice.capabilityId, threadId: notice.threadId, summary: notice.text });
+      const about = notice.capabilityId === null ? null : capabilitySchema.safeParse(await kv.get(CAP + notice.capabilityId));
+      await append({ kind: "acknowledged", noticeId, capabilityId: notice.capabilityId, threadId: notice.threadId, summary: notice.text, scopeThreadId: about?.success ? about.data.scope.threadId : null }, by);
       await kv.delete(NOTICE + noticeId);
       deps.changed();
       return notice;
@@ -346,7 +331,7 @@ export function createCaps(deps: CapDeps): Caps {
         return null;
       }
       const at = deps.now();
-      await append({ kind: "auto-allowed", threadId, interactionId: read.id, capabilityId: now.data.id, name: now.data.name, what: read.what, links: found.links });
+      await append({ kind: "auto-allowed", threadId, interactionId: read.id, capabilityId: now.data.id, name: now.data.name, what: read.what, links: found.links }, null);
       const used = await locked("capabilities", async () => {
         const fresh = capabilitySchema.safeParse(await kv.get(CAP + now.data.id));
         const next = { ...(fresh.success ? fresh.data : now.data), uses: (fresh.success ? fresh.data.uses : now.data.uses) + 1, lastUsedAt: at };
@@ -360,7 +345,7 @@ export function createCaps(deps: CapDeps): Caps {
     });
   };
 
-  const decideOnPage: Caps["decideOnPage"] = async (threadId, interactionId, resolution) => {
+  const decideOnPage: Caps["decideOnPage"] = async (threadId, interactionId, resolution, by) => {
     await locked(`interaction:${interactionId}`, async () => {
       const known = pendingSchema.safeParse(await kv.get(PENDING + interactionId));
       await kv.set(OWN + interactionId, { by: "page", at: deps.now() });
@@ -370,7 +355,7 @@ export function createCaps(deps: CapDeps): Caps {
         await kv.delete(OWN + interactionId);
         throw new Refusal("not_decided", cause instanceof Error ? cause.message : String(cause));
       }
-      await append({ kind: "decided", threadId, interactionId, decision: resolution.decision, what: known.success ? known.data.what : "a permission request" });
+      await append({ kind: "decided", threadId, interactionId, decision: resolution.decision, what: known.success ? known.data.what : "a permission request" }, by);
       // Only a request cow is watching is looked at again; for any other there is nothing left to tell apart.
       if (!known.success) await kv.delete(OWN + interactionId);
     });
@@ -387,7 +372,7 @@ export function createCaps(deps: CapDeps): Caps {
       // A request that ended with no decision (its turn was stopped) was neither allowed nor denied by anyone.
       if (own || state.status === "gone") return;
       const text = outsideText(state.decision, pending.what);
-      await append({ kind: "outside", threadId: pending.threadId, interactionId: pending.interactionId, decision: state.decision, what: pending.what });
+      await append({ kind: "outside", threadId: pending.threadId, interactionId: pending.interactionId, decision: state.decision, what: pending.what }, null);
       await notify({ kind: "outside", capabilityId: null, threadId: pending.threadId, text });
       deps.changed();
     });
@@ -423,9 +408,8 @@ export function createCaps(deps: CapDeps): Caps {
     },
 
     async log(filter = {}) {
-      const all = await loadLog();
-      const head = z.object({ seq: z.number(), hash: z.string() }).safeParse(await kv.get(LOG_HEAD));
-      const check = checkChain(all, deps.hash, head.success ? head.data : null);
+      const all = await deps.log.all();
+      const check = await deps.log.check();
       const wanted = filter.capabilityId === undefined ? all : all.filter((entry) => entryCapability(entry.event) === filter.capabilityId);
       const limit = Math.max(1, Math.min(filter.limit ?? MAX_LOG_PAGE, MAX_LOG_PAGE));
       return { entries: wanted.slice(-limit).reverse(), total: wanted.length, check };
@@ -442,7 +426,7 @@ export function createCaps(deps: CapDeps): Caps {
     checkRule: (rule) => checkedRule(rule, null),
 
     async requested(threadId, askId, rule) {
-      await append({ kind: "requested", threadId, askId, what: `${rule.kind === "dir" ? "write under" : rule.mode === "exact" ? "run" : "run commands beginning"} ${ruleText(rule)}` });
+      await append({ kind: "requested", threadId, askId, what: `${rule.kind === "dir" ? "write under" : rule.mode === "exact" ? "run" : "run commands beginning"} ${ruleText(rule)}` }, null);
       deps.changed();
     },
 

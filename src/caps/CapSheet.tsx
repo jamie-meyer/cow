@@ -9,9 +9,16 @@ import type { CapsData } from "./data.ts";
 import { type ChainCheck, type LogEntry, OUTSIDE_WHERE, eventText } from "./log.ts";
 import { holders } from "./scope.ts";
 import type { Notice } from "./service.ts";
+import type { EnrolledKey, KeyRequest } from "../signing/envelope.ts";
+import type { Signer } from "../signing/page.ts";
+import { entryThread } from "./log.ts";
 
 export interface CapSheetHost {
   caps: CapsData;
+  /** This page's key, and the keys cow trusts. */
+  signer: Signer;
+  /** Main and every thread under it: the log shows their entries unless asked for all. */
+  underMain: ReadonlySet<string>;
   /** Every thread bb has: who a scope takes in today, and their titles. */
   threads: readonly { id: string; title: string; parentThreadId: string | null; archivedAt: number | null }[];
   titleOf: (threadId: string) => string;
@@ -32,7 +39,18 @@ export interface CapSheetControl {
   node: ReactNode;
 }
 
-type Row = { kind: "capability"; id: string; capability: Capability; notices: Notice[] } | { kind: "outside"; id: string; notice: Notice };
+type Row =
+  | { kind: "capability"; id: string; capability: Capability; notices: Notice[] }
+  | { kind: "outside"; id: string; notice: Notice }
+  /** A page that asks for its key to be enrolled, or was refused. */
+  | { kind: "request"; id: string; request: KeyRequest }
+  | { kind: "key"; id: string; key: EnrolledKey };
+type KeyConfirming =
+  | { on: "key"; what: "approve"; request: KeyRequest }
+  | { on: "key"; what: "refuse"; request: KeyRequest }
+  /** Remove an enrolled key, or forget a refusal so that page can ask again. */
+  | { on: "key"; what: "remove"; fingerprint: string; label: string; enrolled: boolean };
+type Confirming = { on: "capability"; what: "delete" | "restore"; capability: Capability } | KeyConfirming;
 type Log = { entries: LogEntry[]; total: number; check: ChainCheck };
 
 const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
@@ -48,7 +66,10 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   const [logCursor, setLogCursor] = useState(0);
   const [history, setHistory] = useState<ReadonlyMap<string, LogEntry[]>>(new Map());
   const [log, setLog] = useState<Log | null>(null);
-  const [confirming, setConfirming] = useState<{ what: "delete" | "restore"; capability: Capability } | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
+  /** The log shows every entry, not only those of this Main's threads. */
+  const [allEntries, setAllEntries] = useState(false);
+  const { signer } = host;
   /** Deleted from this sheet, newest last: what u puts back. */
   const [deleted, setDeleted] = useState<readonly string[]>([]);
   const [note, setNote] = useState("");
@@ -67,8 +88,10 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
       if (isActive(capability) || notices.length > 0) found.push({ kind: "capability", id: capability.id, capability, notices });
     }
     for (const notice of caps.notices) if (notice.kind === "outside") found.push({ kind: "outside", id: notice.id, notice });
+    for (const request of signer.keys?.requests ?? []) found.push({ kind: "request", id: `request:${request.fingerprint}`, request });
+    for (const key of signer.keys?.keys ?? []) found.push({ kind: "key", id: `key:${key.fingerprint}`, key });
     return found;
-  }, [caps.capabilities, caps.notices]);
+  }, [caps.capabilities, caps.notices, signer.keys]);
   const at = Math.max(0, rows.findIndex((row) => row.id === cursor));
   const current = rows[at] ?? null;
 
@@ -120,6 +143,7 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   };
 
   const acknowledge = (row: Row) => {
+    if (row.kind === "request" || row.kind === "key") return setNote("Space acknowledges a new capability or a decision made outside cow; a key is approved with Enter and removed with x");
     const notices = row.kind === "outside" ? [row.notice] : row.notices;
     if (notices.length === 0) return setNote("there is nothing to acknowledge on this line");
     Promise.all(notices.map((notice) => caps.acknowledge(notice.id))).then(
@@ -147,18 +171,34 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
 
   const move = (by: number) => {
     setNote("");
-    if (view === "log") return setLogCursor((value) => Math.max(0, Math.min((log?.entries.length ?? 1) - 1, value + by)));
+    if (view === "log") return setLogCursor((value) => Math.max(0, Math.min(Math.max(0, shownEntries.length - 1), value + by)));
     const next = rows[Math.max(0, Math.min(rows.length - 1, at + by))];
     if (next) setCursor(next.id);
   };
   const jump = (to: "top" | "bottom") => {
-    if (view === "log") return setLogCursor(to === "top" ? 0 : Math.max(0, (log?.entries.length ?? 1) - 1));
+    if (view === "log") return setLogCursor(to === "top" ? 0 : Math.max(0, shownEntries.length - 1));
     const next = rows[to === "top" ? 0 : rows.length - 1];
     if (next) setCursor(next.id);
   };
 
   const onKey = (key: string): boolean => {
     if (!open) return false;
+    if (confirming !== null && confirming.on === "key") {
+      const asked: KeyConfirming = confirming;
+      setConfirming(null);
+      if (key !== "y" && key !== "Y") {
+        setNote("nothing changed");
+        return true;
+      }
+      const done =
+        asked.what === "approve"
+          ? signer.call("key_approve", { fingerprint: asked.request.fingerprint }).then(() => `enrolled the key ${asked.request.fingerprint}: that page can now do what you can`)
+          : asked.what === "refuse"
+            ? signer.call("key_refuse", { fingerprint: asked.request.fingerprint }).then(() => `refused the key ${asked.request.fingerprint}: that page can only read`)
+            : signer.call("key_remove", { fingerprint: asked.fingerprint }).then(() => (asked.enrolled ? `removed the key ${asked.fingerprint}: the page that holds it can only read now` : `forgot the refusal of ${asked.fingerprint}: that page can ask again`));
+      done.then(setNote, (cause: unknown) => setNote(`not done: ${errorText(cause)}`));
+      return true;
+    }
     if (confirming !== null) {
       const { what, capability } = confirming;
       setConfirming(null);
@@ -215,21 +255,29 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
         close();
         return true;
     }
-    if (view === "log") return true;
+    if (view === "log") {
+      if (key === "a") {
+        setAllEntries(!allEntries);
+        setLogCursor(0);
+      }
+      return true;
+    }
     switch (key) {
       case "n":
         setNote("");
         host.startNew();
         return true;
       case "x":
-        if (current?.kind !== "capability") setNote("x deletes a capability: move to one first");
+        if (current?.kind === "request") setConfirming(current.request.status === "pending" ? { on: "key", what: "refuse", request: current.request } : { on: "key", what: "remove", fingerprint: current.request.fingerprint, label: current.request.label, enrolled: false });
+        else if (current?.kind === "key") setConfirming({ on: "key", what: "remove", fingerprint: current.key.fingerprint, label: current.key.label, enrolled: true });
+        else if (current?.kind !== "capability") setNote("x deletes a capability, refuses a page's key or removes one: move to one first");
         else if (!isActive(current.capability)) setNote("it is deleted already: Space acknowledges that it was made");
-        else setConfirming({ what: "delete", capability: current.capability });
+        else setConfirming({ on: "capability", what: "delete", capability: current.capability });
         return true;
       case "u": {
         const last = caps.capabilities.find((capability) => capability.id === deleted[deleted.length - 1] && !isActive(capability));
         if (!last) setNote("nothing to undo: u puts back the capability deleted last from this sheet");
-        else setConfirming({ what: "restore", capability: last });
+        else setConfirming({ on: "capability", what: "restore", capability: last });
         return true;
       }
       case " ":
@@ -237,6 +285,10 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
         return true;
       case "Enter":
         if (current?.kind === "capability") toggleHistory(current.capability);
+        else if (current?.kind === "request") {
+          if (current.request.status === "pending") setConfirming({ on: "key", what: "approve", request: current.request });
+          else setNote("it was refused: x forgets the refusal, and that page can then ask again");
+        } else if (current?.kind === "key") setNote(current.key.fingerprint === signer.fingerprint ? "this is this page's own key" : "an enrolled key: x removes it");
         else if (current) setNote("Space acknowledges it; the log has the rest: Tab");
         return true;
       default:
@@ -293,12 +345,65 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   };
 
   const logLine = (entry: LogEntry, isCurrent: boolean) => (
-    <p key={entry.seq} className={isCurrent ? "cow-caplog cow-cur" : "cow-caplog"} data-cow-caplog={entry.seq} data-cow-caplog-kind={entry.event.kind}>
+    <p key={entry.seq} className={isCurrent ? "cow-caplog cow-cur" : "cow-caplog"} data-cow-caplog={entry.seq} data-cow-caplog-kind={entry.event.kind} data-cow-caplog-by={entry.by ?? undefined}>
       <span className="cow-caplog-n">{entry.seq}</span>
       <time>{when(entry.at)}</time>
-      <span>{eventText(entry.event, host.titleOf)}</span>
+      <span>
+        {eventText(entry.event, host.titleOf)}
+        {entry.by ? <small className="cow-caplog-by"> · signed by {entry.by}{entry.by === signer.fingerprint ? ", this page's key" : ""}</small> : null}
+      </span>
     </p>
   );
+  // The log's entries for this window: those of Main's own threads and those that are about no thread, unless all are asked for.
+  const shownEntries = (log?.entries ?? []).filter((entry) => {
+    if (allEntries) return true;
+    const thread = entryThread(entry.event);
+    return thread === null || host.underMain.has(thread);
+  });
+  const keyRow = (row: Extract<Row, { kind: "key" | "request" }>) => {
+    const fingerprint = row.kind === "key" ? row.key.fingerprint : row.request.fingerprint;
+    const mine = fingerprint === signer.fingerprint;
+    return (
+      <div
+        key={row.id}
+        className={["cow-cap-row", row.id === current?.id ? "cow-cur" : "", row.kind === "request" && row.request.status === "pending" ? "cow-cap-new" : ""].join(" ").trim()}
+        data-cow-key={row.kind === "key" ? fingerprint : undefined}
+        data-cow-key-request={row.kind === "request" ? fingerprint : undefined}
+        data-cow-key-request-status={row.kind === "request" ? row.request.status : undefined}
+        data-cow-key-mine={mine || undefined}
+        data-cow-hint=""
+        onClick={() => setCursor(row.id)}
+      >
+        <p className="cow-cap-line">
+          {row.kind === "request" ? <b className="cow-cap-tag">{row.request.status === "pending" ? "asks to be enrolled" : "refused"}</b> : null}
+          <code>{fingerprint}</code>
+          <span>{row.kind === "key" ? row.key.label : row.request.label}</span>
+          {mine ? <b>this page's key</b> : null}
+          {row.kind === "key" ? (
+            <>
+              <span>
+                enrolled {formatAge(Math.max(0, host.now - row.key.enrolledAt))} ago, {row.key.how === "first" ? "by first use" : `approved by ${row.key.approvedBy ?? "an enrolled key"}`}
+              </span>
+              <span>{row.key.lastUsedAt === null ? "never used" : `last used ${formatAge(Math.max(0, host.now - row.key.lastUsedAt))} ago`}</span>
+            </>
+          ) : (
+            <span>
+              asked {formatAge(Math.max(0, host.now - row.request.requestedAt))} ago · the name is the page's own word: compare the key with the one that page shows ·{" "}
+              {row.request.status === "pending" ? (
+                <>
+                  <kbd>⏎</kbd> approve · <kbd>x</kbd> refuse
+                </>
+              ) : (
+                <>
+                  <kbd>x</kbd> forget the refusal
+                </>
+              )}
+            </span>
+          )}
+        </p>
+      </div>
+    );
+  };
 
   const body =
     view === "list" ? (
@@ -326,6 +431,15 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
             </div>
           ) : null,
         )}
+        <h3 data-cow-caps-section="keys">
+          Keys that may act as you <b>{signer.keys?.keys.length ?? 0}</b>
+        </h3>
+        <p className="cow-bf-none" data-cow-key-own={signer.fingerprint ?? ""} data-cow-key-own-status={signer.status}>
+          {signer.status === "enrolled"
+            ? `This page's key is ${signer.fingerprint}, and it is enrolled. What only you may do is signed with it; the private half cannot leave this browser.`
+            : `${signer.why[0]?.toUpperCase() ?? ""}${signer.why.slice(1)}`}
+        </p>
+        {rows.map((row) => (row.kind === "request" || row.kind === "key" ? keyRow(row) : null))}
       </>
     ) : log === null ? (
       <p className="cow-bf-lede">Reading the log…</p>
@@ -335,9 +449,14 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
           {log.check.intact
             ? `${log.total} ${log.total === 1 ? "entry" : "entries"}, numbered without a gap, each carrying the hash of the one before.`
             : `The log is broken at entry ${log.check.at}: ${log.check.why}. Something other than cow changed its storage.`}{" "}
-          Newest first{log.total > log.entries.length ? `; the newest ${log.entries.length} are shown` : ""}.
+          Newest first{log.total > log.entries.length ? `; the newest ${log.entries.length} are read` : ""}.{" "}
+          <span data-cow-caplog-shown={shownEntries.length} data-cow-caplog-all={allEntries || undefined}>
+            {allEntries
+              ? `Showing all ${shownEntries.length}.`
+              : `Showing ${shownEntries.length}: the entries of this Main's threads, and those about no thread${log.entries.length > shownEntries.length ? `; ${log.entries.length - shownEntries.length} about other threads are left out` : ""}.`}
+          </span>
         </p>
-        {log.entries.length === 0 ? <p className="cow-bf-none">Nothing has happened yet.</p> : log.entries.map((entry, index) => logLine(entry, index === logCursor))}
+        {shownEntries.length === 0 ? <p className="cow-bf-none">Nothing has happened here yet.</p> : shownEntries.map((entry, index) => logLine(entry, index === logCursor))}
       </>
     );
 
@@ -349,14 +468,35 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
           {caps.capabilities.filter(isActive).length} in force · {caps.notices.length} to acknowledge
         </span>
         <span className="cow-sheet-what">
-          A capability lets cow answer bb “allow once” without asking you. Everything made, deleted and allowed is logged and shown to you; cow cannot tell who called it, only show what was done.
+          A capability lets cow answer bb “allow once” without asking you. Making, deleting and acknowledging one are signed with a key this browser holds, and everything is logged.
         </span>
       </div>
       <div className="cow-sheet-body" data-cow-scroll="" ref={bodyRef}>
         {body}
       </div>
       <div className="cow-sheet-foot">
-        {confirming ? (
+        {confirming && confirming.on === "key" ? (
+          <span data-cow-sheet-confirm={confirming.what}>
+            {confirming.what === "approve" ? (
+              <>
+                <b>Enrol the key {confirming.request.fingerprint}?</b> The page that holds it ({confirming.request.label}, by its own word) will be able to do everything only you may do. Approve it only if that page is yours and shows this same key.
+              </>
+            ) : confirming.what === "refuse" ? (
+              <>
+                <b>Refuse the key {confirming.request.fingerprint}?</b> The page that holds it can only read, and cannot ask again until the refusal is forgotten.
+              </>
+            ) : confirming.enrolled ? (
+              <>
+                <b>Remove the key {confirming.fingerprint}?</b> {confirming.fingerprint === signer.fingerprint ? "It is this page's own: this page will only be able to read, and with no key left the next page to open is enrolled." : "The page that holds it will only be able to read."}
+              </>
+            ) : (
+              <>
+                <b>Forget the refusal of {confirming.fingerprint}?</b> That page can then ask to be enrolled again.
+              </>
+            )}{" "}
+            <kbd>y</kbd> yes · any other key cancels
+          </span>
+        ) : confirming ? (
           <span data-cow-sheet-confirm={confirming.what}>
             {confirming.what === "delete" ? (
               <>
@@ -375,7 +515,7 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
           </span>
         ) : (
           <span>
-            <kbd>j</kbd> <kbd>k</kbd> <kbd>gg</kbd> <kbd>G</kbd> move · <kbd>⇥</kbd> the capabilities · <kbd>q</kbd> <kbd>Esc</kbd> close · nothing here can be edited or cleared
+            <kbd>j</kbd> <kbd>k</kbd> <kbd>gg</kbd> <kbd>G</kbd> move · <kbd>a</kbd> {allEntries ? "only this Main's entries" : "all entries"} · <kbd>⇥</kbd> the capabilities · <kbd>q</kbd> <kbd>Esc</kbd> close · nothing here can be edited or cleared
           </span>
         )}
         {note ? (

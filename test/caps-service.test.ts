@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { followLinks, interactionState } from "../src/caps/backend.ts";
 import type { Resolved } from "../src/caps/match.ts";
+import { createLogStore } from "../src/caps/logstore.ts";
 import { type CapDeps, type CreateInput, type InteractionState, createCaps } from "../src/caps/service.ts";
 import { Refusal } from "../src/kv.ts";
 import type { PermissionResolution } from "../src/permission.ts";
@@ -10,6 +11,7 @@ import { NOW } from "./fixtures.ts";
 import { PARENTS, memoryKv } from "./memory.ts";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const BY = "aaaa-bbbb-cccc-dddd";
 
 /** A small bb: threads from PARENTS, requests that can be decided, and a filesystem of links. */
 function world(kv = memoryKv()) {
@@ -25,7 +27,7 @@ function world(kv = memoryKv()) {
     kv,
     now: () => (clock.now += 1),
     newId: () => `t${(ids += 1)}`,
-    hash: sha,
+    log: createLogStore({ kv, now: () => (clock.now += 1), hash: sha }),
     places: async () => ({ home: "/Users/pat", dataDir: "/Users/pat/.bb" }),
     thread: async (threadId) => (threadId in PARENTS ? { title: threadId.toUpperCase() } : null),
     ancestors: async (threadId) => {
@@ -53,7 +55,16 @@ function world(kv = memoryKv()) {
     changed: () => undefined,
     warn: () => undefined,
   };
-  const caps = createCaps(deps);
+  const real = createCaps(deps);
+  // The person's actions are reached only through a verified signature; here the key that signed is BY unless a test names another.
+  const caps = {
+    ...real,
+    create: (given: CreateInput, by = BY) => real.create(given, by),
+    remove: (id: string, by = BY) => real.remove(id, by),
+    restore: (id: string, by = BY) => real.restore(id, by),
+    acknowledge: (noticeId: string, by = BY) => real.acknowledge(noticeId, by),
+    decideOnPage: (threadId: string, interactionId: string, resolution: PermissionResolution, by = BY) => real.decideOnPage(threadId, interactionId, resolution, by),
+  };
   const commandRequest = (id: string, command: string, decisions = ["allow_once", "deny"]) => {
     states.set(id, { status: "pending" });
     return { id, status: "pending", createdAt: NOW, payload: { kind: "approval", subject: { kind: "command", itemId: `item_${id}`, command, cwd: null }, availableDecisions: decisions, reason: "dangerouslyDisableSandbox" } };
@@ -149,6 +160,9 @@ test("a covered request is answered allow once, logged, and counted on the threa
   assert.equal(state.uses.child?.what, "change /tmp/scratch/a.txt");
   const [entry] = (await w.caps.log()).entries;
   assert.deepEqual(entry!.event, { kind: "auto-allowed", threadId: "child", interactionId: "pint_1", capabilityId: made.id, name: "scratch", what: "change /tmp/scratch/a.txt", links: "followed" });
+  // What cow did by itself names no key; what the person did names the key that signed it.
+  assert.equal(entry!.by, null);
+  assert.equal((await w.caps.log()).entries.at(-1)!.by, BY);
   // It was cow's own decision: it is never flagged as made somewhere else.
   await w.caps.settle();
   assert.equal((await w.caps.state()).notices.filter((notice) => notice.kind === "outside").length, 0);
@@ -293,6 +307,7 @@ test("a decision made on the page is cow's own; one made anywhere else is flagge
   notices = (await w.caps.state()).notices;
   assert.deepEqual(notices.map((notice) => notice.text), ["approved outside cow: run: echo moo", "denied outside cow: run: echo baa"]);
   assert.deepEqual(await kinds(w), ["decided", "outside", "outside"]);
+  assert.deepEqual((await w.caps.log()).entries.map((entry) => entry.by).reverse(), [BY, null, null]);
   assert.deepEqual(await w.caps.watching(), []);
   await w.caps.acknowledge(notices[0]!.id);
   assert.equal((await w.caps.state()).notices.length, 1);

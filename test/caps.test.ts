@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { type Capability, type Rule, addedText, readName, readRule, ruleText, scopeText, sentence, suggestName } from "../src/caps/cap.ts";
 import { MAX_COMMAND, RUNNERS, joinWords, readCommandRule, splitWords } from "../src/caps/command.ts";
-import { type LogEntry, type LogEvent, checkChain, eventText, nextEntry, outsideText } from "../src/caps/log.ts";
+import { type LogEntry, type LogEvent, SIGNED_KINDS, checkChain, entryThread, eventText, nextEntry, outsideText } from "../src/caps/log.ts";
 import { covers, coversResolved, requestText } from "../src/caps/match.ts";
 import { MAX_PATH, PROTECTED_IN_HOME, directoryRefusal, isInside, parentDirectory, readDirectoryRule, readPath } from "../src/caps/paths.ts";
 import { ancestorsOf, applies, held, holders, sourceText } from "../src/caps/scope.ts";
@@ -479,10 +479,10 @@ test("a name is required and kept to one short line; a rule is checked as typed"
 // ---- the log ------------------------------------------------------------------
 
 const EVENTS: LogEvent[] = [
-  { kind: "created", capabilityId: "cap_1", name: "scratch", summary: "capability added: scratch: /tmp/scratch for “Billing” only", via: "card", sourceThreadId: "head" },
+  { kind: "created", capabilityId: "cap_1", name: "scratch", summary: "capability added: scratch: /tmp/scratch for “Billing” only", via: "card", sourceThreadId: "head", scopeThreadId: "head" },
   { kind: "auto-allowed", threadId: "head", interactionId: "pint_1", capabilityId: "cap_1", name: "scratch", what: "change /tmp/scratch/a.txt", links: "followed" },
   { kind: "outside", threadId: "kid", interactionId: "pint_2", decision: "allow_once", what: "run: echo cow" },
-  { kind: "deleted", capabilityId: "cap_1", name: "scratch" },
+  { kind: "deleted", capabilityId: "cap_1", name: "scratch", scopeThreadId: "head" },
 ];
 const chain = (events: LogEvent[] = EVENTS) => {
   const entries: LogEntry[] = [];
@@ -517,12 +517,34 @@ test("an entry taken out, changed, repeated or cut off the end shows as a break"
   assert.match((cut as { why: string }).why, /entries after 3 are missing/);
   assert.deepEqual(checkChain(entries, sha, { seq: 4, hash: entries[3]!.hash }), { intact: true, entries: 4 });
   // A middle entry replaced by one with a recomputed hash still breaks the next one.
-  const forged = nextEntry(entries[0]!, { kind: "deleted", capabilityId: "cap_9", name: "x" }, 1001, sha);
+  const forged = nextEntry(entries[0]!, { kind: "deleted", capabilityId: "cap_9", name: "x", scopeThreadId: null }, 1001, sha);
   assert.equal(checkChain([entries[0]!, forged, entries[2]!, entries[3]!], sha).intact, false);
+});
+
+test("an entry records the key that signed it, and changing that breaks the chain", () => {
+  const signed = nextEntry(null, EVENTS[0]!, 1000, sha, "aaaa-bbbb-cccc-dddd");
+  const unsigned = nextEntry(signed, EVENTS[1]!, 1001, sha);
+  assert.equal(signed.by, "aaaa-bbbb-cccc-dddd");
+  assert.equal(unsigned.by, null);
+  assert.deepEqual(checkChain([signed, unsigned], sha), { intact: true, entries: 2 });
+  assert.equal(checkChain([{ ...signed, by: "eeee-ffff-0000-1111" }, unsigned], sha).intact, false);
+  assert.equal(checkChain([{ ...signed, by: null }, unsigned], sha).intact, false);
+  // The kinds that record one of the person's actions are the ones that must be signed.
+  for (const kind of ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"] as const) assert.ok(SIGNED_KINDS.includes(kind), kind);
+  for (const kind of ["auto-allowed", "outside", "requested", "enrollment-reset", "key-requested"] as const) assert.ok(!SIGNED_KINDS.includes(kind), kind);
+});
+
+test("an entry belongs to the tree of the thread it is about, or to none", () => {
+  assert.equal(entryThread(EVENTS[0]!), "head");
+  assert.equal(entryThread(EVENTS[2]!), "kid");
+  assert.equal(entryThread({ kind: "created", capabilityId: "c", name: "n", summary: "s", via: "sheet", sourceThreadId: null, scopeThreadId: "main" }), "main");
+  assert.equal(entryThread({ kind: "key-enrolled", fingerprint: "aaaa-bbbb-cccc-dddd", how: "first", label: "Chrome" }), null);
+  assert.equal(entryThread({ kind: "enrollment-reset", keys: 2 }), null);
 });
 
 test("an entry reads as a sentence, and a decision made elsewhere says where it may have been made", () => {
   const title = (id: string) => ({ head: "Billing", kid: "Refunds" })[id] ?? id;
+  assert.equal(eventText(EVENTS[0]!, title), "capability added: scratch: /tmp/scratch for “Billing” only · made from a permission request, on “Billing”");
   assert.equal(eventText(EVENTS[1]!, title), "allowed by scratch: change /tmp/scratch/a.txt · on “Billing”");
   assert.equal(eventText(EVENTS[2]!, title), "approved outside cow: run: echo cow · on “Refunds” · in bb's own view, or by another thread");
   assert.equal(outsideText("deny", "run: echo cow"), "denied outside cow: run: echo cow");
