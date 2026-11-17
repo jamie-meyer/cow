@@ -25,8 +25,10 @@ export type Command =
   | { kind: "reorder"; by: 1 | -1 }
   /** Narrow the page to the lines that match what is typed. */
   | { kind: "filter" }
-  /** Inside an open brief: run its check again. */
+  /** Inside an open brief: run its check again. On a line: show the capabilities its thread holds. */
   | { kind: "recheck" }
+  /** Open the capabilities sheet. */
+  | { kind: "caps" }
   /** Close what is open over the page. */
   | { kind: "close" }
   /** Mark the line as a project, or take the mark off. */
@@ -51,13 +53,15 @@ export const KEY_MAP: readonly { keys: string; does: string }[] = [
   { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
   { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
   { keys: "I", does: "say something to the selected thread" },
-  { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed" },
+  { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card" },
   { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
+  { keys: "c", does: "show the capabilities the line's thread holds, and where each comes from: itself, a thread above it, or Main; c or Esc closes" },
+  { keys: "C", does: "the capabilities sheet over the page: n makes one, x deletes (y confirms), u undoes a delete, Enter shows its history, Space acknowledges a new one or a decision made outside cow, Tab shows the log, q or Esc closes" },
   { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
   { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
   { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
   { keys: "r", does: "resume a parked line: back into the tree" },
-  { keys: "Space", does: "mark a reply as seen: the line stops waiting on you" },
+  { keys: "Space", does: "mark a reply as seen: the line stops waiting on you; on a line whose request was decided outside cow, acknowledge that" },
   { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
   { keys: "J K", does: "move a not-started item down, up its list" },
   { keys: "e", does: "archive a done, idle or failed line: a reason or nothing, then Enter" },
@@ -131,6 +135,8 @@ export class KeyReader {
         return { kind: "verb", verb: "brief" };
       case "c":
         return { kind: "recheck" };
+      case "C":
+        return { kind: "caps" };
       case "q":
         return { kind: "close" };
       case "P":

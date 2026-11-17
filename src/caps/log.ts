@@ -11,6 +11,7 @@
 // its end.
 
 import { z } from "zod";
+import { OUTSIDE_WHERE } from "../state.ts";
 
 const what = z.string().max(2000);
 
@@ -103,8 +104,7 @@ export function outsideText(decision: string, text: string): string {
   const verb = decision === "deny" ? "denied" : decision === "allow_for_session" ? "approved for the session" : "approved";
   return `${verb} outside cow: ${text}`;
 }
-/** Where an outside decision was made, as far as cow can say. */
-export const OUTSIDE_WHERE = "in bb's own view, or by another thread";
+export { OUTSIDE_WHERE };
 
 /** One entry as a sentence. `titleOf` names a thread. */
 export function eventText(event: LogEvent, titleOf: (threadId: string) => string): string {

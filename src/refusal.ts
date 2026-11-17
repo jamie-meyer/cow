@@ -234,9 +234,14 @@ export interface BlockedDraft {
   messages: Record<"ask_again" | "carry_on", string>;
 }
 
-export function emptyBlockedDraft(refusals: readonly Refusal[]): BlockedDraft {
+/**
+ * The card as it opens. With `covered`, every refusal is covered by a
+ * capability, so asking again is all that is left to do: that choice starts
+ * marked, and Enter sends it.
+ */
+export function emptyBlockedDraft(refusals: readonly Refusal[], covered = false): BlockedDraft {
   return {
-    chosen: null,
+    chosen: covered ? 1 : null,
     messages: { ask_again: askAgainMessage(refusals), carry_on: carryOnMessage(refusals) },
   };
 }

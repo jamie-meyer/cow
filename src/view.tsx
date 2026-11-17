@@ -22,6 +22,15 @@ import {
 import type { MainState, rpcContract } from "../server.ts";
 import { type BriefSheetControl, useBriefSheet } from "./BriefSheet.tsx";
 import { type BriefMark, disputeCount } from "./briefs/review.ts";
+import { useCapSheet } from "./caps/CapSheet.tsx";
+import { type StepsOrigin, useCapSteps } from "./caps/CapSteps.tsx";
+import { HeldCard } from "./caps/HeldCard.tsx";
+import { type Capability, ruleText, scopeText } from "./caps/cap.ts";
+import { type CapsData, useCaps } from "./caps/data.ts";
+import { covers } from "./caps/match.ts";
+import { type Held, ancestorsOf, held as heldBy } from "./caps/scope.ts";
+import type { Use } from "./caps/service.ts";
+import type { Refusal } from "./refusal.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
 import { useNow } from "./clock.ts";
 import { ThreadStore } from "./data.ts";
@@ -93,6 +102,8 @@ const LOAD_SETTLE_MS = 4000;
 const CHAT_SETTLE_MS = 2500;
 /** The picker lists this many threads, most recently active first. */
 const PICKER_LIMIT = 300;
+/** How long a line says which capability allowed its last request. */
+const ALLOWED_SHOWN_MS = 10 * 60_000;
 /** Where a window keeps which groups are folded. */
 const FOLDS_KEY = "cow:folds";
 
@@ -226,6 +237,45 @@ const DISPUTED_GLYPH = (
   </svg>
 );
 
+/** The mark of a line whose thread holds a capability: a key. */
+const CAP_GLYPH = (
+  <svg className="cow-g" viewBox="0 0 12 12" aria-hidden="true">
+    <circle cx="3.6" cy="6" r="2.3" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <path d="M5.9 6h4.9M9 6v2.2M10.8 6v1.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+  </svg>
+);
+
+/** What capabilities add to one line. */
+interface LineCaps {
+  /** The capabilities that apply to its thread. */
+  held: readonly Held[];
+  /** One of them is new: its notice has not been acknowledged. */
+  fresh: boolean;
+  /** What capabilities have allowed on it. */
+  use: Use | null;
+  /** When everything bb refused it is covered by capabilities: their names. */
+  coveredBy: string | null;
+}
+
+function CapMark({ caps, now }: { caps: LineCaps; now: number }) {
+  if (caps.held.length === 0 && caps.use === null) return null;
+  const names = caps.held.map((entry) => entry.capability.name).join(", ");
+  const used = caps.use ? `capabilities have allowed ${caps.use.count} ${caps.use.count === 1 ? "request" : "requests"} here, the last ${formatAge(Math.max(0, now - caps.use.lastAt))} ago` : "none has been used here";
+  return (
+    <span
+      className={caps.fresh ? "cow-capmark cow-capmark-new" : "cow-capmark"}
+      data-cow-capmark={caps.held.length}
+      data-cow-capmark-new={caps.fresh || undefined}
+      data-cow-allowed-count={caps.use?.count ?? 0}
+      title={`${caps.held.length === 0 ? "holds no capability now" : `holds ${caps.held.length === 1 ? "a capability" : `${caps.held.length} capabilities`}: ${names}`}${caps.fresh ? " · one is new: C, then Space, acknowledges it" : ""} · ${used} · c shows them`}
+    >
+      {CAP_GLYPH}
+      {caps.fresh ? <small>new</small> : null}
+      {caps.use ? <small>{caps.use.count}×</small> : null}
+    </span>
+  );
+}
+
 type BriefKind = "disputed" | "clean" | "failed" | "checking" | "unchecked";
 export function briefKind(mark: BriefMark): BriefKind {
   if (mark.state === "running") return "checking";
@@ -316,11 +366,14 @@ function LineRow({
   waitingInside,
   open,
   context,
+  caps,
   onSelect,
   onOpen,
   onFold,
 }: {
   line: Line;
+  /** What capabilities add to the line; null when there is nothing to add. */
+  caps: LineCaps | null;
   now: number;
   flat: boolean;
   parentTitle: string | null;
@@ -340,7 +393,10 @@ function LineRow({
 }) {
   const { thread, derived } = line;
   const returned = derived.park?.due != null;
-  const next = nextMove(line);
+  // Covered by a capability: asking again is two keys, and the line says so.
+  const covered = derived.state === "blocked" ? (caps?.coveredBy ?? null) : null;
+  const next = covered !== null ? { text: "ask again as you: press a, then Enter", own: false } : nextMove(line);
+  const allowed = caps?.use && now - caps.use.lastAt <= ALLOWED_SHOWN_MS ? caps.use : null;
   const classes = ["cow-ln", `cow-d-${derived.state}`];
   if (returned) classes.push("cow-up");
   if (current) classes.push("cow-cur");
@@ -368,6 +424,8 @@ function LineRow({
       data-cow-reply={derived.reply ? "" : undefined}
       data-cow-project={thread.archivedAt === null ? (line.project ?? undefined) : undefined}
       data-cow-asks={derived.asks?.length}
+      data-cow-caps={caps && caps.held.length > 0 ? caps.held.length : undefined}
+      data-cow-outside={derived.outside?.length}
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
       data-cow-returned={returned || undefined}
@@ -427,10 +485,23 @@ function LineRow({
             </small>
           ) : null}
         </span>
+        {caps ? <CapMark caps={caps} now={now} /> : null}
         {derived.brief ? <BriefMarks mark={derived.brief} /> : null}
         {!flat && line.rollup ? <RollupMarks rollup={line.rollup} older={line.olderUnder} /> : null}
       </span>
       <span className="cow-wh">
+        {allowed ? (
+          <b className="cow-allowed" data-cow-allowed={allowed.name} title={`cow answered bb “allow once” for: ${allowed.what}`}>
+            allowed by {allowed.name} {formatAge(Math.max(0, now - allowed.lastAt))} ago
+            {" · "}
+          </b>
+        ) : null}
+        {covered !== null ? (
+          <b className="cow-allowed" data-cow-covered={covered}>
+            covered by {covered}
+            {" · "}
+          </b>
+        ) : null}
         {waitingInside > 0 ? (
           <b className="cow-inside" data-cow-inside={waitingInside}>
             {waitingInside} inside {waitingInside === 1 ? "waits" : "wait"} on you
@@ -631,6 +702,22 @@ function Help({ onClose }: { onClose: () => void }) {
             <span>
               <b>disputed.</b> The checker's verdict on that many claims is weaker than the agent's own label:
               contradicted by the evidence, or not established by it.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>{CAP_GLYPH} 3×</span>
+            <span>
+              <b>a capability.</b> The thread holds a grant you made: to write under one directory, or to run one command. When bb
+              asks and the capability covers all of it, cow answers “allow once” and logs it; the number is how many times. The line says
+              “allowed by …” for a while. <kbd>c</kbd> shows what a line holds; <kbd>C</kbd> opens them all, with the log. “new” means
+              one you have not acknowledged: cow cannot tell who made it, so every new one is shown to you.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>not cow</span>
+            <span>
+              <b>approved, or denied, outside cow.</b> A permission request of the thread was decided, and not on this page or by a
+              capability: in bb's own view, or by another thread. <kbd>Space</kbd> on the line acknowledges it.
             </span>
           </div>
           <div className="cow-row">
@@ -996,6 +1083,7 @@ function OverviewScreen({
   truncated,
   parks,
   raised,
+  caps,
   threads,
   onChooseMain,
 }: {
@@ -1005,6 +1093,7 @@ function OverviewScreen({
   truncated: boolean;
   parks: Parks;
   raised: RaisedData;
+  caps: CapsData;
   threads: readonly ThreadFacts[];
   onChooseMain: () => void;
 }) {
@@ -1210,6 +1299,78 @@ function OverviewScreen({
     [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
   const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
   const sheetRef = useRef<BriefSheetControl | null>(null);
+
+  // Capabilities: what each thread holds, which are new, and what they would cover.
+  const parents = useMemo(() => new Map(threads.map((thread) => [thread.id, thread.parentThreadId])), [threads]);
+  const freshCaps = useMemo(() => new Set(caps.notices.flatMap((notice) => (notice.kind === "capability" && notice.capabilityId ? [notice.capabilityId] : []))), [caps.notices]);
+  const heldOf = useCallback((id: string): Held[] => heldBy(caps.capabilities, id, ancestorsOf((thread) => parents.get(thread), id)), [caps.capabilities, parents]);
+  /** For each refusal: the capability that would cover it when the thread is asked again. Judged on the paths as written; the backend looks again, links included, when the request comes. */
+  const coverage = useCallback(
+    (threadId: string, refusals: readonly Refusal[]): (string | null)[] => {
+      const mine = heldOf(threadId);
+      return refusals.map((refusal) => {
+        const request = refusal.kind === "command" ? ({ kind: "command", command: refusal.what } as const) : ({ kind: "file_change", paths: [refusal.what] } as const);
+        return mine.find((entry) => covers(entry.capability.rule, request).covered)?.capability.name ?? null;
+      });
+    },
+    [heldOf],
+  );
+  const lineCaps = (line: Line): LineCaps | null => {
+    const mine = heldOf(line.thread.id);
+    const use = caps.uses.get(line.thread.id) ?? null;
+    const refusals = line.derived.blocked?.refusals ?? [];
+    const covered = refusals.length === 0 ? [] : coverage(line.thread.id, refusals);
+    const coveredBy = covered.length > 0 && covered.every((name) => name !== null) ? [...new Set(covered)].join(", ") : null;
+    if (mine.length === 0 && use === null) return null;
+    return { held: mine, fresh: mine.some((entry) => freshCaps.has(entry.capability.id)), use, coveredBy };
+  };
+  const capSteps = useCapSteps({
+    caps,
+    mainId: main.thread.id,
+    titleOf: (id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? id,
+    say: (text) => setMessage(text),
+    focusOverview: () => focusOverview(),
+    after: async (origin: StepsOrigin, made: Capability) => {
+      const name = `“${made.name}”`;
+      if (origin.interactionId) {
+        return caps.decide(origin.threadId, origin.interactionId, { decision: "allow_once", grantedPermissions: null }).then(
+          () => `saved ${name}, and allowed this request once · it is marked new until you acknowledge it: C, then Space`,
+          (cause: unknown) => `saved ${name}, but this request was not allowed: ${cause instanceof Error ? cause.message : String(cause)} · press a`,
+        );
+      }
+      if (origin.askId) {
+        const said = `granted as the capability ${name}: ${ruleText(made.rule)} for ${scopeText(made.scope, (id) => titles.get(id) ?? id)}`;
+        return raised.answer(origin.askId, 1, said).then(
+          () => `saved ${name}, and told the thread · it is marked new until you acknowledge it: C, then Space`,
+          (cause: unknown) => `saved ${name}, but the thread was not told: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+      if (origin.via === "blocked") return `saved ${name}: press a, then Enter, to ask again as you · it is marked new until you acknowledge it`;
+      return `saved ${name}: it is marked new until you acknowledge it with Space`;
+    },
+    cancelled: (origin) => (origin.interactionId ? "nothing saved: the request is still waiting" : origin.askId ? "nothing saved: the ask is still open" : "nothing saved"),
+  });
+  const capSheet = useCapSheet({
+    caps,
+    threads,
+    titleOf: (id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? id,
+    now,
+    // From scratch, who it applies to is offered around the line the cursor is on.
+    startNew: () => capSteps.start({ via: "sheet", threadId: selectedTodo?.ownerId ?? selectedLine?.thread.id ?? main.thread.id, where: "sheet" }, null),
+    steps: capSteps.origin?.where === "sheet" ? capSteps.node : null,
+    onClose: () => focusOverview(),
+  });
+  /** The line whose capabilities are shown under it, with c. */
+  const [capsFor, setCapsFor] = useState<string | null>(null);
+  useEffect(() => setCapsFor(null), [selected]);
+  const acknowledgeOutside = (line: Line) => {
+    const flags = line.derived.outside ?? [];
+    Promise.all(flags.map((flag) => caps.acknowledge(flag.id))).then(
+      () => setMessage(`acknowledged: ${flags.length === 1 ? "it is" : "they are"} in the log`),
+      (cause: unknown) => setMessage(`not acknowledged: ${cause instanceof Error ? cause.message : String(cause)}`),
+    );
+  };
+
   const verbs = useVerbs({
     sdk,
     overview,
@@ -1217,6 +1378,9 @@ function OverviewScreen({
     selected: selectedLine,
     parks,
     raised,
+    caps,
+    coverage,
+    startCap: (origin, proposal) => capSteps.start(origin, proposal),
     openBrief: (id) => sheetRef.current?.open(id),
     now,
     folded,
@@ -1343,7 +1507,13 @@ function OverviewScreen({
     if (moveInList({ order, cursor: selected, setCursor }, command)) return;
     switch (command.kind) {
       case "recheck":
-        return setMessage("c runs a brief's check again from inside the brief: b opens one");
+        // On a line, c shows the capabilities its thread holds; inside a brief it runs the check again.
+        if (selectedTodo || !selectedLine) return setMessage("c shows a thread's capabilities: select a thread's line first");
+        setMessage("");
+        return setCapsFor(capsFor === selectedLine.thread.id ? null : selectedLine.thread.id);
+      case "caps":
+        setMessage("");
+        return capSheet.show();
       case "close":
         // A file bb is showing beside the page, after o in the reader: q puts it away.
         panelFiles.closeShown();
@@ -1360,6 +1530,7 @@ function OverviewScreen({
       case "main-chat":
         return openChat(main.thread.id);
       case "back":
+        if (capsFor !== null) return setCapsFor(null);
         if (panelFiles.closeShown()) return;
         if (pane !== null) closePane();
         else setMessage("");
@@ -1386,6 +1557,8 @@ function OverviewScreen({
       }
       case "seen":
         if (selectedTodo) return setMessage("that is work not started, not a reply");
+        // A decision made outside cow is acknowledged first: it is the newer thing to know.
+        if (selectedLine?.derived.outside) return acknowledgeOutside(selectedLine);
         if (selectedLine === main && main.thread.parentThreadId === null) {
           return setMessage("Main's reply is read by opening its chat: press m");
         }
@@ -1428,6 +1601,12 @@ function OverviewScreen({
           if (key === "Escape" || key === "?" || key === "q") setHelp(false);
           return true;
         }
+      : capSteps.onKey
+        ? (key) => {
+            // The steps that make a capability hold the keyboard until they are saved or left.
+            capSteps.onKey?.(key);
+            return true;
+          }
       : verbs.onKey
         ? (key) => {
             // An ask's proof files are links: f still labels them while its card is open.
@@ -1446,6 +1625,8 @@ function OverviewScreen({
                 filterRef.current?.focus();
                 return true;
               }
+            : capSheet.open
+              ? (key) => capSheet.onKey(key)
             : sheet.onKey
               ? (key) => {
                   sheet.onKey?.(key);
@@ -1503,7 +1684,17 @@ function OverviewScreen({
   };
   const paneTitle = pane === null ? "" : (titles.get(pane) ?? "a thread that is no longer listed");
   // A card opened for one ask from inside a brief is drawn there, not under the line.
-  const card = (id: string) => (verbs.card?.threadId === id && verbs.card.askId === undefined ? verbs.card.node : null);
+  const allLines = [main, ...listed(overview)];
+  const card = (id: string) => {
+    if (capSteps.origin?.where === "line" && capSteps.origin.threadId === id) return capSteps.node;
+    if (verbs.card?.threadId === id && verbs.card.askId === undefined) return verbs.card.node;
+    if (capsFor !== id) return null;
+    const line = allLines.find((other) => other.thread.id === id);
+    return <HeldCard threadId={id} held={heldOf(id)} fresh={freshCaps} use={caps.uses.get(id) ?? null} outside={caps.outside.get(id) ?? []} titleOf={(thread) => titles.get(thread) ?? threads.find((other) => other.id === thread)?.title ?? thread} now={now} key={line?.thread.id} />;
+  };
+  const capNotices = caps.notices.filter((notice) => notice.kind === "capability");
+  // What waits on the person: the lines in the queue, and the capabilities they have not acknowledged.
+  const waiting = overview.queue.length + capNotices.length;
   const row = (line: Line, flat: boolean) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
@@ -1517,6 +1708,7 @@ function OverviewScreen({
         waitingInside={fold === "folded" ? waitingInside(overview, line.thread.id) : 0}
         open={line.thread.id === pane}
         context={hit !== null && !hit.has(line.thread.id)}
+        caps={lineCaps(line)}
         onFold={toggleFold}
         parentTitle={
           line.thread.parentThreadId === main.thread.id
@@ -1547,7 +1739,9 @@ function OverviewScreen({
             ? "say"
             : help
               ? "help"
-              : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : sheet.threadId !== null ? "brief" : "normal"))
+              : capSteps.origin !== null
+                ? "cap"
+                : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : capSheet.open ? "caps" : sheet.threadId !== null ? "brief" : "normal"))
       }
       tabIndex={-1}
       ref={rootRef}
@@ -1575,6 +1769,10 @@ function OverviewScreen({
               {STATE_LABEL[main.derived.state]} <Age derived={main.derived} now={now} />
             </span>
             <span className="cow-maindoing">
+              {(() => {
+                const mine = lineCaps(main);
+                return mine ? <CapMark caps={mine} now={now} /> : null;
+              })()}
               {main.derived.brief ? <BriefMarks mark={main.derived.brief} /> : null}
               {main.derived.doing}
               {main.note !== null ? (
@@ -1591,7 +1789,7 @@ function OverviewScreen({
             </span>
           ) : null}
           <span className="cow-sum">
-            <b>{listedCount}</b> {listedCount === 1 ? "thread" : "threads"} · <b>{overview.queue.length}</b> waiting
+            <b>{listedCount}</b> {listedCount === 1 ? "thread" : "threads"} · <b>{waiting}</b> waiting
             on you
           </span>
         </header>
@@ -1660,15 +1858,31 @@ function OverviewScreen({
           {pane === null ? (
             <aside className="cow-side">
               <h2>
-                Waiting on you <b>{overview.queue.length}</b>
+                Waiting on you <b>{waiting}</b>
               </h2>
               <p className="cow-sub">
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
-                replies addressed to you and parked work that came back, oldest first.
+                replies addressed to you, parked work that came back, new capabilities and decisions made outside cow, oldest first.
               </p>
+              {capNotices.length > 0 ? (
+                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length}>
+                  {capNotices.map((notice) => (
+                    <li key={notice.id} className="cow-q cow-q-notice" data-cow-notice={notice.id} data-cow-notice-capability={notice.capabilityId ?? undefined} data-cow-hint="" onClick={() => capSheet.show()}>
+                      <span className="cow-qn">{CAP_GLYPH}</span>
+                      <span className="cow-gl" />
+                      <div>
+                        <p>{notice.text}</p>
+                        <small>
+                          new capability · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd>, then <kbd>␣</kbd> on it, acknowledges
+                        </small>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
-                  <li className="cow-q-empty">Nothing is waiting on you.</li>
+                  <li className="cow-q-empty">{capNotices.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
                 ) : (
                   overview.queue.map((line) => (
                     <li
@@ -1767,6 +1981,13 @@ function OverviewScreen({
                 </small>
               </span>
             </>
+          ) : capSteps.origin !== null ? (
+            <>
+              <span className="cow-mode cow-m-prompt">CAP</span>
+              <span className="cow-noun">{titles.get(capSteps.origin.threadId) ?? ""}</span>
+              <span className="cow-sep">▸</span>
+              <span>{capSteps.origin.where === "sheet" ? "a new capability, in the sheet" : "a new capability is being set up under its line"} · nothing is saved until the last step</span>
+            </>
           ) : verbs.footer ? (
             verbs.footer
           ) : filter !== null ? (
@@ -1838,6 +2059,7 @@ function OverviewScreen({
                 <Verb keys="/" label="filter" onRun={startFilter} />
                 <Verb keys="m" label="Main's chat" onRun={() => openChat(main.thread.id)} />
                 <Verb keys="⇥" label="next ask" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
+                <Verb name="caps" keys="C" label={caps.notices.length > 0 ? `capabilities · ${caps.notices.length} new` : "capabilities"} onRun={() => run({ kind: "caps" })} />
                 <Verb keys="f" label="hints" onRun={startHints} />
                 <Verb keys="?" label="legend" onRun={() => setHelp(true)} />
               </span>
@@ -1846,6 +2068,7 @@ function OverviewScreen({
         </footer>
       </div>
       {sheet.node}
+      {capSheet.node}
       {reader.node}
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
@@ -1893,6 +2116,7 @@ export function CowPage() {
   const parks = useParks(underMain);
   const notes = parks.notes;
   const raised = useRaised(underMain);
+  const caps = useCaps();
 
   const projects = useMemo(() => projectIds(snapshot.threads, parks.projects.keys(), mainId), [snapshot.threads, parks.projects, mainId]);
   const overview = useMemo(
@@ -1912,7 +2136,7 @@ export function CowPage() {
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
                 { head: projects.has(thread.id), project: projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
-                { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id) },
+                { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id), outside: caps.outside.get(thread.id) },
               ),
             now,
             {
@@ -1921,7 +2145,7 @@ export function CowPage() {
               marked: (id) => parks.projects.has(id),
             },
           ),
-    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, raised.delivered, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
   );
 
   useEffect(() => {
@@ -2013,6 +2237,7 @@ export function CowPage() {
       truncated={snapshot.truncated}
       parks={parks}
       raised={raised}
+      caps={caps}
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
     />

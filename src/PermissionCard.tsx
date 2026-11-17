@@ -45,6 +45,7 @@ function Diff({ change }: { change: FileChange }) {
 export function PermissionBody({
   ask,
   draft,
+  save,
   files,
   textRef,
   disabled,
@@ -54,6 +55,8 @@ export function PermissionBody({
 }: {
   ask: PermissionAsk;
   draft: PermissionDraft;
+  /** "Allow once, and save as a capability" is marked. */
+  save: boolean;
   /** Null while the thread's timeline is being read. */
   files: readonly FileChange[] | null;
   textRef: RefObject<HTMLInputElement | null>;
@@ -136,6 +139,16 @@ export function PermissionBody({
           </div>
         );
       })}
+      {canSave(ask) ? (
+        <div className={save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-answer-option={ask.options.length + 1} data-cow-permission-save="" data-cow-chosen={save || undefined}>
+          <kbd>{ask.options.length + 1}</kbd>
+          <span className="cow-ans-mark">{save ? "◉" : "○"}</span>
+          <span>
+            Allow once, and save as a capability
+            <small> · so cow allows the like without asking: you choose the rule, the name and who it applies to, and confirm</small>
+          </span>
+        </div>
+      ) : null}
       {draft.confirming && chosen?.broad ? (
         <p className="cow-perm-confirm" data-cow-permission-confirm="" role="alert">
           <b>This grants more than this one request.</b> For the rest of this thread's session it may{" "}
@@ -147,8 +160,11 @@ export function PermissionBody({
   );
 }
 
+/** Whether a capability can be made from this request: it has to be one that can be allowed once. */
+export const canSave = (ask: PermissionAsk): boolean => ask.options.some((option) => option.action === "allow_once");
+
 /** The line of keys under the card. */
-export function PermissionKeys({ ask, draft }: { ask: PermissionAsk; draft: PermissionDraft }) {
+export function PermissionKeys({ ask, draft, save }: { ask: PermissionAsk; draft: PermissionDraft; save: boolean }) {
   if (draft.confirming) {
     return (
       <>
@@ -158,7 +174,7 @@ export function PermissionKeys({ ask, draft }: { ask: PermissionAsk; draft: Perm
   }
   return (
     <>
-      <kbd>1</kbd>–<kbd>{ask.options.length}</kbd> choose · <kbd>⏎</kbd> confirm · <kbd>Esc</kbd> cancel · a decision
+      <kbd>1</kbd>–<kbd>{ask.options.length + (canSave(ask) ? 1 : 0)}</kbd> choose · <kbd>⏎</kbd> {save ? "set up the capability" : "confirm"} · <kbd>Esc</kbd> cancel · a decision
       cannot be undone: once allowed it runs at once
     </>
   );

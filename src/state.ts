@@ -114,7 +114,20 @@ export interface Raised {
   brief: BriefMark | null;
   /** When cow delivered the person's answers to its other asks: messages of theirs that answer nothing else. */
   delivered?: readonly number[];
+  /** Decisions on its permission requests that cow did not make and the person has not acknowledged, oldest first. */
+  outside?: readonly OutsideFlag[];
 }
+
+/** A decision on a permission request that was made somewhere other than cow. */
+export interface OutsideFlag {
+  id: string;
+  /** "approved outside cow: run: echo x". */
+  text: string;
+  at: number;
+}
+
+/** Where a decision cow did not make may have been made: all cow can say about it. */
+export const OUTSIDE_WHERE = "in bb's own view, or by another thread";
 
 export interface Derived {
   state: LineState;
@@ -151,6 +164,8 @@ export interface Derived {
   brief?: BriefMark;
   /** Set when the line waits on the person because of its brief: disputes or judgement calls not yet read. */
   briefWaits?: true;
+  /** Set when decisions on its requests were made outside cow and are not acknowledged, whatever state the line shows. */
+  outside?: readonly OutsideFlag[];
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -239,9 +254,11 @@ export function derive(
   const asks = thread.archivedAt === null ? (raised?.asks ?? []) : [];
   const spokeAt = activity?.replies?.personSpokeAt ?? null;
   const messaged = asks.filter((ask) => messagedSince(ask, spokeAt, raised?.delivered)).map((ask) => ask.id);
-  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged);
+  const outside = thread.archivedAt === null ? (raised?.outside ?? []) : [];
+  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged, outside);
   return {
     ...derived,
+    ...(outside.length > 0 ? { outside } : {}),
     ...(asks.length > 0 ? { asks } : {}),
     ...(messaged.length > 0 ? { asksMessaged: messaged } : {}),
     ...(raised?.brief ? { brief: raised.brief } : {}),
@@ -260,6 +277,7 @@ function deriveLine(
   brief: BriefMark | null,
   /** The ids of the asks the person has messaged the thread since. */
   messaged: readonly string[],
+  outside: readonly OutsideFlag[],
 ): Derived {
   // The line shows its oldest ask: whether that one may be answered already is what it says.
   const firstMessaged = asks.length > 0 && messaged.includes(asks[0]!.id);
@@ -329,6 +347,21 @@ function deriveLine(
       since,
       doing: asksText(asks, firstMessaged),
       next: stuck ? `it has waited ${formatAge(now - since)} on you: press a` : firstMessaged ? "answer it, or say it was answered in chat: press a" : "answer it: press a",
+      waitingOnYou: true,
+      ...(blocked ? { blocked: { refusals } } : {}),
+    };
+  }
+
+  // A request of this thread's was approved or denied, and not through cow:
+  // the person is shown it until they acknowledge it, whatever the thread
+  // has gone on to do.
+  if (!asked && outside.length > 0) {
+    const first = outside[0]!;
+    return {
+      state: "wants",
+      since: first.at,
+      doing: `${first.text}${outside.length > 1 ? ` (and ${outside.length - 1} more)` : ""} · ${OUTSIDE_WHERE}`,
+      next: "acknowledge: Space",
       waitingOnYou: true,
       ...(blocked ? { blocked: { refusals } } : {}),
     };

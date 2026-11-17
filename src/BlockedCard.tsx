@@ -12,12 +12,14 @@ export interface BlockedState {
   /** What was refused when the card opened; it does not change under the user. */
   refusals: readonly Refusal[];
   draft: BlockedDraft;
+  /** "Save a capability for this" is marked. */
+  save: boolean;
   sending: boolean;
   /** Why Enter did nothing, or why sending failed. */
   note: string;
 }
 
-function Refused({ refusal, now }: { refusal: Refusal; now: number }) {
+function Refused({ refusal, now, covered }: { refusal: Refusal; now: number; covered: string | null }) {
   const lines = (refusal.diff ?? "").replace(/\n$/, "").split("\n");
   return (
     <div className="cow-blk-one" data-cow-refusal={refusal.kind}>
@@ -63,12 +65,21 @@ function Refused({ refusal, now }: { refusal: Refusal; now: number }) {
           {refusal.why} · {formatAge(Math.max(0, now - refusal.at))} ago
         </small>
       </p>
+      {covered !== null ? (
+        <p className="cow-perm-row cow-covered" data-cow-refusal-covered={covered}>
+          <span>covered by</span>
+          <small>
+            <b>{covered}</b> · a capability of this thread's: asked again as you, bb raises a request and cow allows it once
+          </small>
+        </p>
+      ) : null}
     </div>
   );
 }
 
 export function BlockedCard({
   state,
+  covered,
   now,
   textRef,
   onText,
@@ -76,6 +87,8 @@ export function BlockedCard({
   onLeaveText,
 }: {
   state: BlockedState;
+  /** For each refusal, the name of the capability that covers it, or null. */
+  covered: readonly (string | null)[];
   now: number;
   textRef: RefObject<HTMLTextAreaElement | null>;
   onText: (value: string) => void;
@@ -97,8 +110,8 @@ export function BlockedCard({
       <p className="cow-perm-kind">
         Blocked on a permission · bb refused {count === 1 ? "this" : `these ${count}`} without asking you
       </p>
-      {refusals.map((refusal) => (
-        <Refused key={`${refusal.id}:${refusal.what}`} refusal={refusal} now={now} />
+      {refusals.map((refusal, index) => (
+        <Refused key={`${refusal.id}:${refusal.what}`} refusal={refusal} now={now} covered={covered[index] ?? null} />
       ))}
       <p className="cow-ans-why">
         bb asks for permission only on a turn that a person started. Another thread started this one, so bb said no
@@ -123,6 +136,14 @@ export function BlockedCard({
           </div>
         );
       })}
+      <div className={state.save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-answer-option={BLOCKED_OPTIONS.length + 1} data-cow-blocked-save="" data-cow-chosen={state.save || undefined}>
+        <kbd>{BLOCKED_OPTIONS.length + 1}</kbd>
+        <span className="cow-ans-mark">{state.save ? "◉" : "○"}</span>
+        <span>
+          Save a capability for this
+          <small> · so that, asked again as you, the request is allowed without your answer; nothing is sent now</small>
+        </span>
+      </div>
       {chosen === "ask_again" || chosen === "carry_on" ? (
         <label className="cow-blk-msg">
           <span>
@@ -153,8 +174,8 @@ export function BlockedCard({
           "sending…"
         ) : (
           <>
-            <kbd>1</kbd>–<kbd>{BLOCKED_OPTIONS.length}</kbd> choose · <kbd>⏎</kbd>{" "}
-            {chosen === "dismiss" ? "dismiss" : chosen === null ? "confirm" : "send"} · <kbd>Esc</kbd> cancel
+            <kbd>1</kbd>–<kbd>{BLOCKED_OPTIONS.length + 1}</kbd> choose · <kbd>⏎</kbd>{" "}
+            {state.save ? "set up the capability" : chosen === "dismiss" ? "dismiss" : chosen === null ? "confirm" : "send"} · <kbd>Esc</kbd> cancel
             {chosen === "ask_again" || chosen === "carry_on" ? " · a sent message cannot be undone" : ""}
           </>
         )}

@@ -14,6 +14,10 @@ import { backOut, chatDigit, confirmAsk, emptyAskDraft, markChat, markOption, ne
 import type { RaisedData } from "./raisedData.ts";
 import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
 import { BlockedCard, type BlockedState } from "./BlockedCard.tsx";
+import type { StepsOrigin } from "./caps/CapSteps.tsx";
+import type { CapsData } from "./caps/data.ts";
+import { parentDirectory } from "./caps/paths.ts";
+import type { Proposal } from "./caps/steps.ts";
 import { clockNow } from "./clock.ts";
 import { parkNow, reparkNow } from "./park.ts";
 import type { Parks } from "./parks.ts";
@@ -26,7 +30,7 @@ import {
 } from "./permission.ts";
 import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
-import { chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
+import { BLOCKED_OPTIONS, type Refusal, chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
 import type { ParkRecord } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
@@ -59,6 +63,12 @@ export interface VerbHost {
   raised: RaisedData;
   /** Open a thread's brief over the page. */
   openBrief: (threadId: string) => void;
+  /** Capabilities: bb's permission requests are answered through here, so cow knows which decisions were made on its page. */
+  caps: CapsData;
+  /** For each refusal of a thread, the name of the capability that would cover it when asked again, or null. */
+  coverage: (threadId: string, refusals: readonly Refusal[]) => (string | null)[];
+  /** Start the steps that make a capability. */
+  startCap: (origin: StepsOrigin, proposal: Proposal | null) => void;
   now: number;
   /** The groups folded in this window: the cursor skips their members. */
   folded: ReadonlySet<string>;
@@ -347,6 +357,7 @@ export function useVerbs(host: VerbHost): Verbs {
       ask: null,
       draft: emptyDraft([]),
       permission: emptyPermissionDraft,
+      save: false,
       files: null,
       sending: false,
       note: "",
@@ -382,8 +393,25 @@ export function useVerbs(host: VerbHost): Verbs {
     );
   };
 
+  /** What a capability made from a request would start as: the command itself, or the directory of the file. */
+  const proposalFor = (kind: "command" | "file_change", what: string | null): Proposal | null => {
+    if (what === null) return null;
+    if (kind === "command") return { kind: "command", text: what };
+    const dir = parentDirectory(what);
+    return dir === null ? null : { kind: "dir", text: dir };
+  };
+
   const confirmPermissionAnswer = (state: Extract<Modal, { kind: "answer" }>, ask: PermissionAsk) => {
     const { threadId } = state;
+    if (state.save) {
+      const proposal = ask.subject.kind === "command" ? proposalFor("command", ask.subject.command) : proposalFor("file_change", state.files?.[0]?.path ?? null);
+      if (proposal === null) {
+        return setModal({ ...state, note: state.files === null ? "the change is still being read: try again in a moment" : "bb has not said which file, so there is no directory to propose: allow it once here, and make the capability with C" });
+      }
+      // The request stays open until the capability is saved; then it is allowed once.
+      setModal(null);
+      return host.startCap({ via: "card", threadId, where: "line", interactionId: ask.id }, proposal);
+    }
     const result = confirmPermission(state.permission, ask);
     if (result.kind === "incomplete") return setModal({ ...state, note: result.why });
     if (result.kind === "confirm") return setModal({ ...state, permission: result.draft, note: "" });
@@ -393,7 +421,7 @@ export function useVerbs(host: VerbHost): Verbs {
         current?.kind === "answer" ? { ...current, sending: false, note: `${what}: ${errorText(cause)}` } : current,
       );
     setModal({ ...state, sending: true, note: "" });
-    sdk.threads.interactions.resolve({ threadId, interactionId: ask.id, resolution }).then(() => {
+    host.caps.decide(threadId, ask.id, resolution).then(() => {
       if (resolution.decision !== "deny") {
         return close(
           resolution.decision === "allow_once"
@@ -448,6 +476,12 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const confirmAskAnswer = () => {
     if (modal?.kind !== "ask" || modal.sending || currentAsk === null) return;
+    // Granting a capability a thread asked for is not an answer in one key: it goes through the steps, and they answer the ask.
+    if (currentAsk.capability && modal.draft.option === 1 && !modal.draft.chat) {
+      const { capability } = currentAsk;
+      setModal(null);
+      return host.startCap({ via: "ask", threadId: modal.threadId, where: "line", askId: currentAsk.id }, { kind: capability.kind, text: capability.rule });
+    }
     const step = confirmAsk(modal.draft, currentAsk);
     if (step.kind === "incomplete") return setModal({ ...modal, note: step.why });
     if (step.kind === "stage") return setModal({ ...modal, draft: step.draft, note: "" });
@@ -471,6 +505,15 @@ export function useVerbs(host: VerbHost): Verbs {
   const confirmBlockedChoice = () => {
     if (modal?.kind !== "blocked" || modal.sending) return;
     const { threadId, refusals } = modal;
+    if (modal.save) {
+      // The first refusal nothing covers yet is the one to make a capability from.
+      const covered = host.coverage(threadId, refusals);
+      const refusal = refusals.find((_, index) => covered[index] === null) ?? refusals[0];
+      const proposal = refusal ? proposalFor(refusal.kind, refusal.what) : null;
+      if (proposal === null) return setModal({ ...modal, note: "there is no directory to propose for that file: make the capability with C" });
+      setModal(null);
+      return host.startCap({ via: "blocked", threadId, where: "line" }, proposal);
+    }
     const result = confirmBlocked(modal.draft);
     if (result.kind === "incomplete") return setModal({ ...modal, note: result.why });
     const failed = (what: string) => (cause: unknown) =>
@@ -523,7 +566,9 @@ export function useVerbs(host: VerbHost): Verbs {
           kind: "blocked",
           threadId,
           refusals,
-          draft: emptyBlockedDraft(refusals),
+          // Covered by a capability: asking again is marked, so a and Enter are all it takes.
+          draft: emptyBlockedDraft(refusals, host.coverage(threadId, refusals).every((name) => name !== null)),
+          save: false,
           sending: false,
           note: "",
         });
@@ -617,8 +662,13 @@ export function useVerbs(host: VerbHost): Verbs {
         if (key === "Enter") return confirmAnswer();
         if (request) {
           if (modal.sending || !/^[1-9]$/.test(key)) return;
+          // The digit after bb's own choices: allow once, and save as a capability.
+          if (Number(key) === request.options.length + 1 && request.options.some((option) => option.action === "allow_once")) {
+            setModal({ ...modal, permission: emptyPermissionDraft, save: true, note: "" });
+            return focusOverview();
+          }
           const permission = choosePermission(modal.permission, request, Number(key));
-          setModal({ ...modal, permission, note: "" });
+          setModal({ ...modal, permission, save: permission.chosen === null ? modal.save : false, note: "" });
           if (request.options[Number(key) - 1]?.text) answerRef.current?.focus();
           else focusOverview();
           return;
@@ -738,7 +788,10 @@ export function useVerbs(host: VerbHost): Verbs {
           // The caret goes to the end: an edit usually adds to the message.
           return field.setSelectionRange(field.value.length, field.value.length);
         }
-        if (/^[1-9]$/.test(key)) setModal({ ...modal, draft: chooseBlocked(modal.draft, Number(key)), note: "" });
+        if (!/^[1-9]$/.test(key)) return;
+        // The digit after the three choices: save a capability that covers this.
+        if (Number(key) === BLOCKED_OPTIONS.length + 1) return setModal({ ...modal, draft: { ...modal.draft, chosen: null }, save: true, note: "" });
+        setModal({ ...modal, draft: chooseBlocked(modal.draft, Number(key)), save: false, note: "" });
       },
       footer: (
         <>
@@ -753,6 +806,7 @@ export function useVerbs(host: VerbHost): Verbs {
         node: (
           <BlockedCard
             state={modal}
+            covered={host.coverage(modal.threadId, modal.refusals)}
             now={host.now}
             textRef={blockedRef}
             onText={(value) => setModal({ ...modal, draft: writeBlocked(modal.draft, value), note: "" })}

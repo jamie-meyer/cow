@@ -14,6 +14,8 @@ export interface AnswerState {
   draft: Draft;
   /** What is chosen on a permission request. */
   permission: PermissionDraft;
+  /** "Allow once, and save as a capability" is marked on a permission request. */
+  save: boolean;
   /** The files a permission request would change; null until they are read. */
   files: readonly FileChange[] | null;
   sending: boolean;
@@ -133,6 +135,7 @@ export function AnswerCard({
       <PermissionBody
         ask={ask}
         draft={state.permission}
+        save={state.save}
         files={state.files}
         textRef={textRef}
         disabled={state.sending}
@@ -141,7 +144,7 @@ export function AnswerCard({
         onCancel={onCancel}
       />
     );
-    keys = <PermissionKeys ask={ask} draft={state.permission} />;
+    keys = <PermissionKeys ask={ask} draft={state.permission} save={state.save} />;
   } else {
     const question = ask.questions[draft.step]!;
     const last = draft.step === ask.questions.length - 1;

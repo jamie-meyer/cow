@@ -1527,3 +1527,180 @@
   color: var(--cow-needs);
   font-weight: 600;
 }
+
+/* ---- capabilities ---------------------------------------------------- */
+
+/* The mark of a line whose thread holds a capability. */
+.cow-capmark {
+  flex: none;
+  padding-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font: 10.5px var(--cow-mono);
+  color: var(--cow-muted);
+}
+.cow-capmark .cow-g {
+  width: 11px;
+  height: 11px;
+}
+.cow-capmark-new {
+  color: var(--cow-needs);
+}
+.cow-capmark small {
+  font: inherit;
+  color: inherit;
+}
+.cow-allowed {
+  font-weight: 600;
+  color: var(--cow-run);
+}
+.cow-covered b {
+  color: var(--cow-run);
+}
+
+/* A new capability in the queue: not a thread, so it has no state glyph. */
+.cow-notices {
+  flex: none;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--cow-rule);
+}
+.cow-q-notice .cow-qn {
+  color: var(--cow-needs);
+}
+.cow-q-notice .cow-qn .cow-g {
+  width: 11px;
+  height: 11px;
+  vertical-align: -1px;
+}
+
+/* The steps that make one, and what c shows under a line. */
+.cow-cap-field {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: center;
+  margin: 3px 0;
+  font-size: 12.5px;
+  color: var(--cow-muted);
+}
+.cow-cap-field input {
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--cow-rule);
+  border-radius: 4px;
+  background: var(--cow-paper);
+  color: var(--cow-ink);
+  font: 12.5px/19px var(--cow-mono);
+}
+.cow-cap-field input:focus {
+  outline: none;
+  border-color: var(--cow-ink);
+}
+.cow-capsteps .cow-perm-row > span:first-child,
+.cow-held .cow-perm-row > span:first-child {
+  min-width: 76px;
+}
+.cow-held-row b {
+  color: var(--cow-ink);
+}
+.cow-cap-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font: 700 9.5px/16px var(--cow-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  color: var(--cow-paper);
+  background: var(--cow-needs);
+}
+
+/* The sheet. */
+.cow-cap-row {
+  padding: 3px 10px 4px 12px;
+  border-left: 3px solid transparent;
+  border-radius: 0 4px 4px 0;
+}
+.cow-cap-row.cow-cur {
+  background: var(--cow-paper2);
+  border-left-color: var(--cow-ink);
+}
+.cow-cap-row.cow-cap-new {
+  border-left-color: var(--cow-needs);
+}
+.cow-cap-row.cow-cap-gone .cow-cap-name,
+.cow-cap-row.cow-cap-gone code {
+  text-decoration: line-through;
+  color: var(--cow-muted);
+}
+.cow-sheet-body .cow-cap-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  font: 12px/20px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow-cap-line .cow-cap-name {
+  font: 600 14px/20px var(--cow-serif);
+  color: var(--cow-ink);
+}
+.cow-cap-line .cow-cap-tag {
+  margin-right: 0;
+}
+.cow-cap-line code {
+  font: 12px/20px var(--cow-mono);
+  color: var(--cow-ink);
+  overflow-wrap: anywhere;
+}
+.cow-sheet-body .cow-cap-note {
+  margin: 0;
+  font: 12px/18px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow-cap-history {
+  margin: 3px 0 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--cow-rule);
+}
+.cow-sheet-body .cow-caplog {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 34px 168px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 0 10px 0 12px;
+  border-left: 3px solid transparent;
+  font: 12.5px/19px var(--cow-sans);
+  color: var(--cow-ink);
+}
+.cow-cap-history .cow-caplog {
+  padding-left: 0;
+  border-left: 0;
+}
+.cow-caplog.cow-cur {
+  background: var(--cow-paper2);
+  border-left-color: var(--cow-ink);
+}
+.cow-caplog time,
+.cow-caplog-n {
+  font: 11px/19px var(--cow-mono);
+  color: var(--cow-faint);
+  white-space: nowrap;
+}
+.cow-caplog-n {
+  text-align: right;
+}
+.cow-caplog span:last-child {
+  overflow-wrap: anywhere;
+}
+.cow-sheet-body .cow-bf-check-bad {
+  color: var(--cow-fail);
+  font-weight: 600;
+}
+.cow-capsheet .cow-capsteps {
+  margin: 8px 0;
+}
