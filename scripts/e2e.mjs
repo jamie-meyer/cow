@@ -1845,6 +1845,9 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await shot("caps-c-line");
   await page.key("c");
   check("c again closes it", !(await page.eval(`!!document.querySelector("[data-cow-capsfor]")`)));
+  const statusHolds = await cow("status", "--main", ids.cmain);
+  const holdRows = statusHolds.stdout.split("\n").filter((entry) => entry.includes("[holds: cow test scratch]"));
+  check("bb cow status names, on each thread's line, the capabilities it holds", statusHolds.code === 0 && holdRows.length === 2 && holdRows.some((entry) => entry.includes(`(${chead})`)) && holdRows.some((entry) => entry.includes(`(${ckid})`)), holdRows.join(" / ").slice(0, 300));
   await select(chead);
   await page.key("c");
   await page.waitFor(`!!document.querySelector('[data-cow-capsfor="${chead}"]')`, { label: "what the head holds" });
@@ -2143,6 +2146,8 @@ async function capsChecks(page, ids, shot, chooseMain) {
   );
   check("it is in the queue until acknowledged, and in the log", (await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)).startsWith("approved outside cow: run: echo outside cow") && (await capLog()).some((entry) => entry.event.kind === "outside" && entry.event.threadId === ckid && entry.event.decision === "allow_once"));
   await shot("caps-outside");
+  const statusOutside = await cow("status", "--main", ids.cmain);
+  check("bb cow status shows the decision made outside cow, among what waits on the user", statusOutside.code === 0 && /approved outside cow: run: echo outside cow/.test(statusOutside.stdout.split("\nThreads (")[0]), statusOutside.stdout.split("\nThreads (")[0].slice(0, 300));
   await waitForThread(ckid, (t) => t.status === "idle", "the approved command run", 120_000);
   await sleep(1500);
   check("it stays flagged after the thread has carried on", (await page.eval(`${lineEl(ckid)}?.dataset.cowOutside`)) === "1" && (await page.eval(doing(ckid))).includes("approved outside cow"));

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { CowError } from "../src/actions.ts";
 import { type CliActions, cowCli } from "../src/cli.ts";
 import { derive } from "../src/state.ts";
-import { type StatusReport, statusReport, statusText } from "../src/status.ts";
+import { type StatusReport, statusReport, statusText, withCapabilities } from "../src/status.ts";
 import { buildOverview, lineOf } from "../src/tree.ts";
 import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, NOW, activity, thread } from "./fixtures.ts";
@@ -297,4 +297,20 @@ test("status shows a thread's own note, what it has not started, and what is und
   const text = statusText(report);
   assert.match(text, /Project \(proj\) \[project\]  .* → next, in its words: cut the release on Friday  \[under it: 1 wants, 1 running\]/);
   assert.match(text, /\n +not started 1: write the changelog\n/);
+});
+
+test("status says which capabilities a thread holds, and shows a decision made outside cow in the queue", () => {
+  const flag = { id: "note_1", text: "approved outside cow: run: echo cow", at: NOW - 60_000 };
+  const deriveWith = (t: (typeof THREADS)[number]) => derive(t, undefined, NOW, null, null, null, null, t.id === THREADS[1]!.id ? { asks: [], brief: null, outside: [flag] } : null);
+  const plain = statusReport(buildOverview(THREADS, "main", deriveWith, NOW), NOW, false);
+  const flagged = THREADS[1]!.id;
+  assert.ok(plain.queue.some((entry) => entry.id === flagged && entry.doing.startsWith("approved outside cow: run: echo cow")), JSON.stringify(plain.queue));
+  const report = withCapabilities(plain, new Map([[flagged, ["scratch", "push"]]]));
+  assert.deepEqual(report.threads.find((entry) => entry.id === flagged)?.capabilities, ["scratch", "push"]);
+  assert.deepEqual(report.main.capabilities, []);
+  const text = statusText(report);
+  assert.match(text, /approved outside cow: run: echo cow · in bb's own view, or by another thread/);
+  assert.ok(text.split("\n").some((row) => row.includes(`(${flagged})`) && row.endsWith("[holds: scratch, push]")), text);
+  // A thread that holds none says nothing about it.
+  assert.equal(statusText(plain).includes("[holds:"), false);
 });
