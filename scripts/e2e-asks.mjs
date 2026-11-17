@@ -1,7 +1,7 @@
 // End-to-end check of asks and briefs against a running bb. No browser.
 //
 // It makes two fixture threads titled "cow test" on the cheapest model, and
-// cow starts up to three hidden checker threads titled "cow check" for the
+// cow starts up to four hidden checker threads titled "cow check" for the
 // briefs they submit. It acts only on those, withdraws any ask it leaves
 // open, and archives the fixtures when it finishes.
 //
@@ -251,6 +251,33 @@ async function main() {
 
     const own = await cow(ids.briefer, "brief", "check", ids.briefer);
     check("a thread cannot order the audit of its own brief", own.code !== 0 && /its own brief/.test(own.stderr), own.stderr.trim());
+
+    // ---- what takes the brief out of the queue is the person's -------------
+    const markNow = async () => (await rpc("brief_marks", { threadIds: [ids.briefer] })).result.marks[ids.briefer];
+    const readArgs = { threadId: ids.briefer, version: 1, read: true };
+    const oldRead = await rpc("brief_read", readArgs);
+    const unsignedRead = await rpc("signed", { action: "brief_read", args: readArgs });
+    check(
+      "marking a brief as read is no longer a method, and through the signed method an unsigned call is refused: the brief is still unread",
+      oldRead.ok !== true && unsignedRead.ok === false && /only the person may do/.test(unsignedRead.error?.message ?? "") && (await markNow()).read === false,
+      `${JSON.stringify(oldRead).slice(0, 100)} | ${JSON.stringify(unsignedRead.error?.message ?? unsignedRead).slice(0, 100)}`,
+    );
+    // Anyone may order a check, and choose its model. One that cannot answer replaces the check that disputed the claim.
+    const rerun = await cow(null, "brief", "check", ids.briefer, "--model", "cow-test-no-such-model", "--runs", "1", "--wait", "--json");
+    for (const entry of (await rpc("brief_get", { threadId: ids.briefer })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
+    const rerunMark = await markNow();
+    check(
+      "a check run again before the person read the dispute does not take it out of their queue: the brief still waits, and says why",
+      rerun.code === 0 && rerunMark.state === "failed" && rerunMark.contradicted === 0 && rerunMark.earlierDisputes >= 1 && rerunMark.read === false && /NOTE: an earlier check of this version disputed \d+ claim/.test((await cow(null, "brief", "show", ids.briefer)).stdout),
+      `${JSON.stringify(rerunMark)} ${rerun.stderr.trim().slice(0, 120)}`,
+    );
+    const signedRead = await signer.call("brief_read", readArgs);
+    const readEntry = (await rpc("caps_log", { limit: 20 })).result.entries.find((entry) => entry.event.kind === "brief-read" && entry.event.threadId === ids.briefer);
+    check(
+      "signed by the enrolled key, it is marked as read, and the log names the key",
+      signedRead.ok === true && (await markNow()).read === true && readEntry?.by === signer.fingerprint && readEntry.event.version === 1,
+      JSON.stringify(signedRead.error ?? readEntry ?? null).slice(0, 160),
+    );
 
     // ---- a checker told to drop the format, and one that cannot run ------
     writeFileSync(join(storage, "brief.json"), JSON.stringify(HOSTILE, null, 2));

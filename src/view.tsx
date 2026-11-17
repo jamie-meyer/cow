@@ -858,8 +858,9 @@ function readWindowMains(): WindowMains {
  * Which thread is Main in this window. The server's record is read once, as
  * the place to start; after that the window follows only its own choices.
  */
-function useMainState(scopedProjectId: string | null) {
+function useMainState(scopedProjectId: string | null, signer: Signer) {
   const rpc = useRpc<typeof rpcContract>();
+  const sign = signer.call;
   const [stored, setStored] = useState<MainState | null>(null);
   const [own, setOwn] = useState<WindowMains>(readWindowMains);
   const [error, setError] = useState<string | null>(null);
@@ -891,10 +892,11 @@ function useMainState(scopedProjectId: string | null) {
   const choose = useCallback(
     (thread: ThreadFacts) => {
       setOwn((current) => chooseInWindow(current, thread.projectId, thread.id));
-      // Remembered on the server as where a new window starts.
-      return rpc.call("main_choose", { projectId: thread.projectId, threadId: thread.id }).then(setStored);
+      // Remembered on the server as where a new window starts: that is signed, so a page that is
+      // not enrolled changes only its own window.
+      return sign("main_choose", { projectId: thread.projectId, threadId: thread.id }).then(setStored);
     },
-    [rpc],
+    [sign],
   );
   return { loaded: stored !== null, projectId: resolved.projectId, mainId: resolved.mainId, error, load, choose };
 }
@@ -1546,15 +1548,18 @@ function OverviewScreen({
   const paneLine = pane === null ? null : ([main, ...listed(overview)].find((line) => line.thread.id === pane) ?? null);
   const paneReply = paneLine?.derived.reply?.seq ?? null;
   const autoSeen = useRef(new Set<string>());
+  // Marking is signed, so it waits for this page's key to be read; a page that
+  // is not enrolled tries once, and says why the reply still waits.
+  const signing = signer.status;
   useEffect(() => {
-    if (paneLine === null || paneReply === null) return;
-    const key = `${paneLine.thread.id}:${paneReply}`;
+    if (paneLine === null || paneReply === null || signing === "loading") return;
+    const key = `${paneLine.thread.id}:${paneReply}:${signing === "enrolled"}`;
     if (autoSeen.current.has(key)) return;
     autoSeen.current.add(key);
     verbs.markSeen(paneLine, false);
-    // Only a new pane or a new reply marks anything.
+    // Only a new pane, a new reply, or this page becoming enrolled marks anything.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane, paneReply]);
+  }, [pane, paneReply, signing]);
 
   const toggleFold = (id: string) =>
     setFolded((current) => {
@@ -2185,7 +2190,8 @@ export function CowPage() {
   const { store, snapshot } = useThreadStore();
   // bb names a project when the page is opened inside one.
   const scopedProjectId = context.projectId ?? null;
-  const mains = useMainState(scopedProjectId);
+  const signer = useSigner();
+  const mains = useMainState(scopedProjectId, signer);
   const [picking, setPicking] = useState(false);
   const [projectNames, setProjectNames] = useState<ReadonlyMap<string, string>>(new Map());
 
@@ -2214,9 +2220,8 @@ export function CowPage() {
           [mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.doneListedMs)],
     [snapshot.threads, snapshot.status, mainId, now],
   );
-  const parks = useParks(underMain);
+  const parks = useParks(underMain, signer);
   const notes = parks.notes;
-  const signer = useSigner();
   const raised = useRaised(underMain, signer);
   const caps = useCaps(signer);
 

@@ -279,7 +279,12 @@ the page. `bb cow status` shows each thread's note and list.
 
 - Only the user can answer a question or an ask, grant a permission, deal
   with a refused permission, make, delete or acknowledge a capability, or
-  mark a reply or a brief as seen; those are done on cow's page, and the
-  ones that matter most are signed there with a key only their browser has.
+  mark a reply or a brief as seen, or dismiss a refused permission; those
+  are done on cow's page and signed there with a key only their browser
+  has, and cow refuses them from anything else.
+- Parking or archiving a thread takes it out of the user's queue. Do it only
+  for a thread whose work is yours to set aside, give the real reason, and
+  never to put away something that is waiting for the user to see: a reply
+  to them, a failure, a refused permission, a brief with disputes.
 - There is no undo from the CLI. `bb cow resume` reverses a park;
   `bb thread unarchive <thread>` reverses an archive (the reason is kept).

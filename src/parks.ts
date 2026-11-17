@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
+import type { Signer } from "./signing/page.ts";
 import {
   type ArchiveNote,
   type Dismissal,
@@ -49,7 +50,7 @@ export interface Parks {
 }
 
 /** Load the notes on `threadIds`, and again whenever that list or any note changes. */
-export function useParks(threadIds: readonly string[] | null): Parks {
+export function useParks(threadIds: readonly string[] | null, signer: Signer): Parks {
   const rpc = useRpc<typeof rpcContract>();
   const [notes, setNotes] = useState<ReadonlyMap<string, ParkRecord> | null>(null);
   const [archives, setArchives] = useState<ReadonlyMap<string, ArchiveNote>>(new Map());
@@ -62,6 +63,7 @@ export function useParks(threadIds: readonly string[] | null): Parks {
   const ids = useRef(threadIds);
   ids.current = threadIds;
   const request = useRef(0);
+  const sign = signer.call;
 
   const reload = useCallback(() => {
     const wanted = ids.current;
@@ -122,7 +124,8 @@ export function useParks(threadIds: readonly string[] | null): Parks {
 
   const setDismissal = useCallback(
     async (threadId: string, dismissal: Dismissal | null) => {
-      await rpc.call("dismissal_set", { threadId, dismissal });
+      // Dismissing takes a line out of the queue, so it is the person's: signed.
+      await sign("dismissal_set", { threadId, dismissal });
       request.current += 1;
       setDismissals((current) => {
         const next = new Map(current);
@@ -132,12 +135,13 @@ export function useParks(threadIds: readonly string[] | null): Parks {
       });
       reload();
     },
-    [rpc, reload],
+    [sign, reload],
   );
 
   const setSeen = useCallback(
     async (threadId: string, value: Seen | null) => {
-      await rpc.call("seen_set", { threadId, seen: value });
+      // So is marking a reply as seen, whether Space did it or opening the chat.
+      await sign("seen_set", { threadId, seen: value });
       request.current += 1;
       setSeenMap((current) => {
         const next = new Map(current);
@@ -147,7 +151,7 @@ export function useParks(threadIds: readonly string[] | null): Parks {
       });
       reload();
     },
-    [rpc, reload],
+    [sign, reload],
   );
 
   const setProject = useCallback(

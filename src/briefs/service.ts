@@ -7,7 +7,7 @@ import { storagePath } from "../asks/ask.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { BRIEF_LIMITS, BRIEF_SHAPE, type Brief, type Evidence, briefSchema, clip, validateBrief } from "./brief.ts";
 import { checkerPrompt, parseCheckerReply } from "./checker.ts";
-import { type BriefMark, type CheckRun, type Review, VERDICTS, markOf, review } from "./review.ts";
+import { type BriefMark, type CheckRun, type Review, VERDICTS, disputeCount, markOf, review } from "./review.ts";
 
 const PREFIX = "brief:";
 const RUN_PREFIX = "check-run:";
@@ -57,6 +57,13 @@ export const briefRecordSchema = z.object({
   earlierChecks: z.number().int().min(0),
   /** When the person opened this version with its latest check; null until they have. */
   readAt: z.number().nullable().default(null),
+  /**
+   * The most claims any earlier check of this version disputed while the
+   * person had not read it: kept when a check is run again unread, so that
+   * running one again cannot take a dispute out of their queue. Back to 0
+   * when a check is run again after they have read it.
+   */
+  earlierDisputes: z.number().int().min(0).default(0),
 });
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
 
@@ -243,7 +250,9 @@ export function createBriefs(deps: BriefDeps): Briefs {
         }
       }
       // A new check may say something new, so the brief is the person's to read again.
-      const next = { ...record, check: { model, provider, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null };
+      // What the check being replaced disputed, and the person has not read, is not lost with it.
+      const earlierDisputes = record.readAt !== null ? 0 : Math.max(record.earlierDisputes, disputeCount(briefView(record).mark));
+      const next = { ...record, check: { model, provider, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null, earlierDisputes };
       await write(next);
       return next;
     });
@@ -319,6 +328,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
           check: null,
           earlierChecks: 0,
           readAt: null,
+          earlierDisputes: 0,
         };
         await write(made);
         return made;
@@ -390,5 +400,5 @@ export function createBriefs(deps: BriefDeps): Briefs {
 export function briefView(record: BriefRecord): { record: BriefRecord; review: Review; mark: BriefMark } {
   const seen = review(record.brief, record.check);
   const at = Math.max(record.submittedAt, ...(record.check?.runs ?? []).map((run) => run.finishedAt ?? 0));
-  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null) };
+  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0) };
 }

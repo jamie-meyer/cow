@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Brief, validateBrief } from "../src/briefs/brief.ts";
 import { checkerPrompt, parseCheckerReply } from "../src/briefs/checker.ts";
-import { type Check, type ClaimVerdict, disputeOf, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
+import { type Check, type ClaimVerdict, briefWaitText, briefWaits, disputeOf, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
 import { CHECK_TIMEOUT_MS, briefView } from "../src/briefs/service.ts";
 import { Refusal } from "../src/kv.ts";
 import { NOW } from "./fixtures.ts";
@@ -497,4 +497,53 @@ test("a checker that cannot be started is a failed run", async () => {
   const view = briefView(record);
   assert.equal(view.review.state, "failed");
   assert.match(view.review.failures[0] ?? "", /could not be started: no such model/);
+});
+
+test("running a check again cannot take a dispute the person has not read out of their queue", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: { ...RAW, judgementCalls: [] } });
+  w.reply("chk_1", answerAll("not-supported"));
+  const disputed = briefView(await w.briefs.get("child")).mark;
+  const count = disputed.contradicted + disputed.notEstablished;
+  assert.ok(count > 0 && briefWaits(disputed));
+  // Anyone can order a check, with any model: here one that cannot answer.
+  await w.briefs.check({ caller: null, threadId: "child", model: "no-such-model" });
+  const running = briefView(await w.briefs.get("child")).mark;
+  assert.deepEqual([running.state, running.earlierDisputes, briefWaits(running)], ["running", count, true]);
+  w.checkers.set("chk_2", { state: "error", reply: null, tools: [] });
+  await w.briefs.checkerStopped("chk_2");
+  const failed = briefView(await w.briefs.get("child"));
+  assert.deepEqual([failed.mark.state, failed.mark.contradicted + failed.mark.notEstablished, failed.mark.earlierDisputes], ["failed", 0, count]);
+  assert.equal(briefWaits(failed.mark), true);
+  assert.match(briefWaitText(failed.mark), /disputed by an earlier check that was run again unread/);
+  // Nor does a check that comes back clean, however many times it is run.
+  await w.briefs.check({ caller: "main", threadId: "child" });
+  w.reply("chk_3", answerAll("supported"));
+  const clean = briefView(await w.briefs.get("child"));
+  assert.deepEqual([clean.mark.state, clean.mark.contradicted + clean.mark.notEstablished, clean.mark.earlierDisputes, briefWaits(clean.mark)], ["checked", 0, count, true]);
+  assert.match(reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: clean.record.earlierDisputes }, clean.review), /NOTE: an earlier check of this version disputed/);
+  // The person opening it is what ends the wait; a check they order after that starts from nothing.
+  await w.briefs.read("child", 1);
+  assert.equal(briefWaits(briefView(await w.briefs.get("child")).mark), false);
+  await w.briefs.check({ caller: null, threadId: "child" });
+  w.reply("chk_4", answerAll("supported"));
+  const after = briefView(await w.briefs.get("child")).mark;
+  assert.deepEqual([after.earlierDisputes, briefWaits(after)], [undefined, false]);
+});
+
+test("a judgement call waits through a check that is run again, though not through the first check", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  // The first check is still running: the brief waits for its verdicts.
+  const first = briefView(await w.briefs.get("child")).mark;
+  assert.deepEqual([first.state, first.rechecked, briefWaits(first)], ["running", undefined, false]);
+  w.reply("chk_1", answerAll("supported"));
+  const checked = briefView(await w.briefs.get("child")).mark;
+  assert.deepEqual([checked.state, checked.judgementCalls, briefWaits(checked)], ["checked", 1, true]);
+  // Ordered again by anyone, the running check does not take the judgement call out of the queue.
+  await w.briefs.check({ caller: null, threadId: "child" });
+  const again = briefView(await w.briefs.get("child")).mark;
+  assert.deepEqual([again.state, again.rechecked, briefWaits(again)], ["running", true, true]);
 });

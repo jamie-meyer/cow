@@ -3,12 +3,16 @@ import { webcrypto } from "node:crypto";
 import { test } from "node:test";
 import { createLogStore } from "../src/caps/logstore.ts";
 import { Refusal } from "../src/kv.ts";
-import { ACTION_ARGS, type Dispatch, runSigned, sha256Hex, verifyP256 } from "../src/signing/backend.ts";
+import { eventText } from "../src/caps/log.ts";
+import { attentionRpcContract } from "../src/raised-backend.ts";
+import type { Dismissal, Seen } from "../src/shared.ts";
+import { ACTION_ARGS, type Dispatch, queueDispatch, runSigned, sha256Hex, signingRpcContract, verifyP256 } from "../src/signing/backend.ts";
+import { rpcContract } from "../server.ts";
 import { canonical } from "../src/signing/canonical.ts";
 import { type Envelope, PERSON_ACTIONS, type PublicKey, SIGNATURE_WINDOW_MS, fingerprintText, formatFingerprint, notEnrolledText, signedText } from "../src/signing/envelope.ts";
 import { MAX_REQUESTS, createKeys } from "../src/signing/keys.ts";
 import { NOW } from "./fixtures.ts";
-import { memoryKv } from "./memory.ts";
+import { memoryKv, world as raisedWorld } from "./memory.ts";
 
 /** A page's key, made and used the way a browser does. */
 async function page() {
@@ -72,7 +76,7 @@ test("what is signed is the same text whatever order the fields come in", () => 
 
 test("every action only the person may do has its arguments defined, and nothing else is an action", () => {
   assert.deepEqual(Object.keys(ACTION_ARGS).sort(), [...PERSON_ACTIONS].sort());
-  for (const action of ["cap_create", "cap_delete", "cap_restore", "cap_ack", "permission_decide", "send", "ask_answer", "ask_close", "key_approve", "key_refuse", "key_remove"]) {
+  for (const action of ["cap_create", "cap_delete", "cap_restore", "cap_ack", "permission_decide", "send", "ask_answer", "ask_close", "seen_set", "dismissal_set", "brief_read", "main_choose", "key_approve", "key_refuse", "key_remove"]) {
     assert.ok((PERSON_ACTIONS as readonly string[]).includes(action), action);
   }
 });
@@ -308,4 +312,158 @@ test("a page that cannot act says why, and how to change that", () => {
   assert.match(pending, /touch \/data\/plugins\/cow\/reset-enrollment/);
   assert.match(notEnrolledText("refused", "aaaa-bbbb-cccc-dddd", ""), /was refused/);
   assert.match(notEnrolledText("unavailable", null, ""), /cannot hold a signing key/);
+});
+
+// ---- what takes a line out of the person's queue ------------------------------
+
+const BRIEF = { summary: "Did it.", claims: [{ text: "It works", label: "inferred", evidence: [{ description: "the run", text: "ok" }] }] };
+
+/** The real dispatch for seen, dismissed and read, over storage that lives in the test, with a brief to read. */
+async function queueWorld() {
+  const kv = memoryKv();
+  const w = world(kv);
+  const raised = raisedWorld(kv);
+  raised.settings.onSubmit = false;
+  await raised.briefs.submit({ caller: "child", threadId: null, raw: BRIEF });
+  const seen = new Map<string, Seen>();
+  const dismissals = new Map<string, Dismissal>();
+  const mains = new Map<string, string>();
+  let published = 0;
+  const dispatch = queueDispatch(
+    w.log,
+    {
+      setSeen: async (threadId, value) => void (value === null ? seen.delete(threadId) : seen.set(threadId, value)),
+      setDismissal: async (threadId, value) => void (value === null ? dismissals.delete(threadId) : dismissals.set(threadId, value)),
+      readBrief: (threadId, version, read) => raised.briefs.read(threadId, version, read),
+      chooseMain: async (projectId, threadId) => {
+        if (threadId === null) mains.delete(projectId);
+        else mains.set(projectId, threadId);
+        return { mains: Object.fromEntries(mains), currentProjectId: threadId === null ? null : projectId };
+      },
+    },
+    () => void (published += 1),
+  );
+  const call = (envelope: unknown) => runSigned(w.keys, dispatch as unknown as Dispatch, envelope);
+  const readAt = async () => (await raised.briefs.get("child")).readAt;
+  return { ...w, call, seen, dismissals, mains, readAt, published: () => published };
+}
+const SEEN = { threadId: "child", seen: { seq: 41, at: NOW } };
+const DISMISSAL = { threadId: "child", dismissal: { throughSeq: 17, at: NOW } };
+const READ = { threadId: "child", version: 1, read: true };
+const MAIN = { projectId: "proj_1", threadId: "main" };
+
+test("marking a reply as seen, dismissing a refusal, marking a brief as read and recording Main are not methods anyone can call: only the signed one reaches them", () => {
+  const methods = [...Object.keys(rpcContract), ...Object.keys(attentionRpcContract), ...Object.keys(signingRpcContract)];
+  for (const gone of ["seen_set", "dismissal_set", "brief_read", "main_choose"]) assert.ok(!methods.includes(gone), `${gone} is still an RPC method`);
+  assert.ok(methods.includes("signed"));
+});
+
+test("unsigned, or signed by a key that is not enrolled, none of the three does anything or is logged", async () => {
+  const w = await queueWorld();
+  const first = await page();
+  const stranger = await page();
+  await w.keys.enrol(first.key, "Chrome");
+  for (const [action, args] of [["seen_set", SEEN], ["dismissal_set", DISMISSAL], ["brief_read", READ], ["main_choose", MAIN]] as const) {
+    await refused(w.call({ action, args }), "unsigned");
+    await refused(w.call(args), "unsigned");
+    await refused(w.call({ ...(await first.sign(action, args, w.clock.now)), sig: Buffer.alloc(64).toString("base64url") }), "bad_signature");
+    await refused(w.call(await stranger.sign(action, args, w.clock.now)), "unknown_key");
+    // Signed for one thread, it cannot be turned on another.
+    await refused(w.call({ ...(await first.sign(action, args, w.clock.now)), args: { ...args, threadId: "other" } }), "bad_signature");
+  }
+  assert.deepEqual([w.seen.size, w.dismissals.size, w.mains.size, await w.readAt(), w.published()], [0, 0, 0, null, 0]);
+  assert.deepEqual(await w.kinds(), [["key-enrolled", null]]);
+});
+
+test("signed by an enrolled key, each is done and logged with that key's fingerprint; so is taking it back", async () => {
+  const w = await queueWorld();
+  const first = await page();
+  await w.keys.enrol(first.key, "Chrome");
+  const sign = (action: string, args: unknown) => first.sign(action, args, w.clock.now);
+
+  assert.equal(await w.call(await sign("seen_set", SEEN)), null);
+  assert.deepEqual(w.seen.get("child"), SEEN.seen);
+  assert.equal(await w.call(await sign("dismissal_set", DISMISSAL)), null);
+  assert.deepEqual(w.dismissals.get("child"), DISMISSAL.dismissal);
+  assert.equal(await w.call(await sign("brief_read", READ)), null);
+  assert.equal(typeof (await w.readAt()), "number");
+
+  // The undo of each is the same action, signed and logged the same way.
+  await w.call(await sign("seen_set", { threadId: "child", seen: null }));
+  await w.call(await sign("dismissal_set", { threadId: "child", dismissal: null }));
+  await w.call(await sign("brief_read", { ...READ, read: false }));
+  assert.deepEqual([w.seen.size, w.dismissals.size, await w.readAt()], [0, 0, null]);
+  assert.equal(w.published(), 6);
+
+  const entries = (await w.log.all()).slice(1);
+  assert.deepEqual(
+    entries.map((entry) => [entry.by, entry.event]),
+    [
+      [first.fingerprint, { kind: "seen", threadId: "child", seq: 41 }],
+      [first.fingerprint, { kind: "refusals-dismissed", threadId: "child", throughSeq: 17 }],
+      [first.fingerprint, { kind: "brief-read", threadId: "child", version: 1, read: true }],
+      [first.fingerprint, { kind: "seen", threadId: "child", seq: null }],
+      [first.fingerprint, { kind: "refusals-dismissed", threadId: "child", throughSeq: null }],
+      [first.fingerprint, { kind: "brief-read", threadId: "child", version: 1, read: false }],
+    ],
+  );
+  assert.deepEqual(await w.log.check(), { intact: true, entries: 7 });
+  const title = () => "Refunds";
+  assert.deepEqual(
+    entries.map((entry) => eventText(entry.event, title)),
+    [
+      "marked a reply of “Refunds” as seen: it no longer waits",
+      "dismissed what bb refused “Refunds”: it no longer reads as blocked",
+      "opened the brief of “Refunds”, version 1: it no longer waits",
+      "took back marking a reply of “Refunds” as seen: it waits again",
+      "showed again what bb refused “Refunds”: it reads as blocked again",
+      "marked the brief of “Refunds”, version 1, as not read: it waits again",
+    ],
+  );
+});
+
+test("a signed call for a brief that is not there, or with arguments in the wrong form, is refused and not logged", async () => {
+  const w = await queueWorld();
+  const first = await page();
+  await w.keys.enrol(first.key, "Chrome");
+  const sign = (action: string, args: unknown) => first.sign(action, args, w.clock.now);
+  await refused(w.call(await sign("brief_read", { ...READ, version: 4 })), "brief_not_found");
+  await refused(w.call(await sign("brief_read", { ...READ, threadId: "grandchild" })), "brief_not_found");
+  await refused(w.call(await sign("brief_read", { threadId: "child", version: 1 })), "bad_arguments");
+  await refused(w.call(await sign("seen_set", { threadId: "child", seen: { seq: "41" } })), "bad_arguments");
+  await refused(w.call(await sign("seen_set", { threadId: "child" })), "bad_arguments");
+  await refused(w.call(await sign("dismissal_set", { threadId: "", dismissal: null })), "bad_arguments");
+  assert.deepEqual([w.seen.size, w.dismissals.size, await w.readAt(), w.published()], [0, 0, null, 0]);
+  assert.deepEqual(await w.kinds(), [["key-enrolled", null]]);
+});
+
+test("a signed mark cannot be replayed to take a line out of the queue again after the person took it back", async () => {
+  const w = await queueWorld();
+  const first = await page();
+  await w.keys.enrol(first.key, "Chrome");
+  const mark = await first.sign("seen_set", SEEN, w.clock.now);
+  await w.call(mark);
+  await w.call(await first.sign("seen_set", { threadId: "child", seen: null }, w.clock.now));
+  await refused(w.call(mark), "replayed");
+  assert.equal(w.seen.size, 0);
+});
+
+test("recording which thread is Main, where a new window starts, is signed and logged; forgetting it too", async () => {
+  const w = await queueWorld();
+  const first = await page();
+  await w.keys.enrol(first.key, "Chrome");
+  assert.deepEqual(await w.call(await first.sign("main_choose", MAIN, w.clock.now)), { mains: { proj_1: "main" }, currentProjectId: "proj_1" });
+  assert.equal(w.mains.get("proj_1"), "main");
+  await w.call(await first.sign("main_choose", { projectId: "proj_1", threadId: null }, w.clock.now));
+  assert.equal(w.mains.size, 0);
+  await refused(w.call(await first.sign("main_choose", { projectId: "", threadId: "main" }, w.clock.now)), "bad_arguments");
+  const entries = (await w.log.all()).slice(1);
+  assert.deepEqual(
+    entries.map((entry) => [entry.by, entry.event]),
+    [
+      [first.fingerprint, { kind: "main-chosen", projectId: "proj_1", threadId: "main" }],
+      [first.fingerprint, { kind: "main-chosen", projectId: "proj_1", threadId: null }],
+    ],
+  );
+  assert.equal(eventText(entries[0]!.event, () => "Main"), "chose “Main” as Main: a new window starts there");
 });

@@ -298,7 +298,8 @@ export function useVerbs(host: VerbHost): Verbs {
         remember({ kind: "seen", threadId: id, title: line.thread.title, before });
         say("marked as seen: u takes it back");
       },
-      (cause: unknown) => say(`not marked as seen: ${errorText(cause)}`),
+      // Opening its chat tried to mark it, without being asked to: said as what is still true of the line.
+      (cause: unknown) => say(asked ? `not marked as seen: ${errorText(cause)}` : `its reply still waits on you: ${errorText(cause)}`),
     );
   };
 

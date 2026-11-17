@@ -1,8 +1,39 @@
 # Changelog
 
 What changed for someone who uses cow. Versions are tags in this repository:
-`v0.2.0` is the commit `bb plugin install` gives you for a range that allows
-0.2.0.
+`v0.2.1` is the commit `bb plugin install` gives you for a range that allows
+0.2.1.
+
+## 0.2.1
+
+What takes a line out of your queue is now yours alone to do.
+
+- **Marking a reply as seen, dismissing a refused permission and marking a
+  brief as read are signed**, and so is taking each back. In 0.2.0 they were
+  plain methods of cow's interface, so any local process, a sandboxed agent
+  included, could make its own reply, refusal or disputed brief leave your
+  queue. Now they are refused without a signature from an enrolled key, by
+  every route, and each one done is in the log with the key that signed it.
+  Opening a chat or a brief from the page, which marks these as a side
+  effect, signs the mark the same way.
+- **Recording which thread is Main is signed too.** A window keeps its own
+  Main as before, but where a new window starts could be changed by any
+  caller, and a new window could then open on a tree that is not yours.
+- **Running a brief's check again cannot take it out of your queue.** A new
+  check used to replace the old one outright, so a check that failed, or
+  came back clean, removed a dispute you had not read. Now the brief keeps
+  waiting, and says an earlier check disputed it, until you open it.
+- **A page whose key is not enrolled** still reads everything. `Space`,
+  dismissing a refusal, and opening a chat or a brief there say why nothing
+  was marked. Choosing a Main there changes that window only.
+- **Every method that is not signed is listed**, with what an agent calling
+  it could hide or change, in `docs/reference.md`. Parking and archiving
+  stay open to agents and still take a line out of the queue: the Parked
+  shelf and Done are where such a line is, with its reason.
+- The log now has an entry for each of these marks, so it grows with use.
+
+After updating, reload any cow page that was open: a page from 0.2.0 can no
+longer mark anything seen or read. Nothing stored changes shape.
 
 ## 0.2.0
 

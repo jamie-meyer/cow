@@ -100,7 +100,7 @@ export function useRaised(threadIds: readonly string[] | null, signer: Signer): 
       close: async (askId) => gone(await signer.call("ask_close", { id: askId })),
       brief: async (threadId) => (await rpc.call("brief_get", { threadId })).record,
       markRead: async (threadId, version) => {
-        await rpc.call("brief_read", { threadId, version });
+        await signer.call("brief_read", { threadId, version, read: true });
         reload();
       },
       check: async (threadId) => {

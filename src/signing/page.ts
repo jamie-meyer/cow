@@ -20,6 +20,10 @@ export interface ActionResult {
   send: null;
   ask_answer: Ask;
   ask_close: Ask;
+  seen_set: null;
+  dismissal_set: null;
+  brief_read: null;
+  main_choose: { mains: Record<string, string>; currentProjectId: string | null };
   key_approve: EnrolledKey;
   key_refuse: null;
   key_remove: null;

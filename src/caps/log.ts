@@ -1,8 +1,10 @@
 // The capability log: every creation, deletion and restoring of a
 // capability, every notice acknowledged, every request cow allowed through a
 // capability, every decision made through cow's page, every decision cow saw
-// made somewhere else, and every capability a thread asked for. Entries are
-// only ever appended. Pure: the hash function is passed in.
+// made somewhere else, every capability a thread asked for, and everything
+// else the person did on the page that is signed: a message sent, an ask
+// answered, a reply marked as seen, a refusal dismissed, a brief read, a key
+// enrolled. Entries are only ever appended. Pure: the hash function is passed in.
 //
 // Each entry carries its number and the hash of the entry before it, so an
 // entry taken out of the middle, or changed, shows as a break. That is all
@@ -40,6 +42,14 @@ const eventSchema = z.union([
   /** An ask was answered on cow's page, or closed there as already answered in chat. */
   z.object({ kind: z.literal("ask-answered"), threadId: z.string(), askId: z.string(), what }),
   z.object({ kind: z.literal("ask-closed"), threadId: z.string(), askId: z.string() }),
+  /** A thread's reply was marked as seen on cow's page, up to `seq` in its event log; null: the mark was taken back. */
+  z.object({ kind: z.literal("seen"), threadId: z.string(), seq: z.number().nullable() }),
+  /** What bb refused a thread was dismissed on cow's page, up to `throughSeq` in its event log; null: it is shown again. */
+  z.object({ kind: z.literal("refusals-dismissed"), threadId: z.string(), throughSeq: z.number().nullable() }),
+  /** A version of a thread's brief was marked as read on cow's page, by opening it; `read` false: it waits again. */
+  z.object({ kind: z.literal("brief-read"), threadId: z.string(), version: z.number(), read: z.boolean() }),
+  /** A thread was recorded as its project's Main, where a new window starts; a null thread: the record was forgotten. */
+  z.object({ kind: z.literal("main-chosen"), projectId: z.string(), threadId: z.string().nullable() }),
   /** A page's key was enrolled: the first one by itself, any later one by a page already enrolled. */
   z.object({ kind: z.literal("key-enrolled"), fingerprint: z.string(), how: z.enum(["first", "approved"]), label: z.string() }),
   /** A page asked for its key to be enrolled. Anyone can ask; only an enrolled page can approve. */
@@ -82,7 +92,28 @@ export function nextEntry(last: Pick<LogEntry, "seq" | "hash"> | null, event: Lo
 }
 
 /** What an entry needs a signature for: these kinds are written only for a call a key signed. */
-export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"];
+export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "key-refused", "key-removed"];
+
+/**
+ * The marks: light things the page signs many times a day, often as a side
+ * effect of opening a chat or a brief. They are entries like any other; a
+ * listing counts its length in the other entries, so that marks never push
+ * a capability, a decision or a key out of what is read.
+ */
+export const MARK_KINDS: readonly LogEvent["kind"][] = ["seen", "refusals-dismissed", "brief-read", "main-chosen"];
+
+/**
+ * The newest `limit` entries that are not marks, with the marks made since
+ * the oldest of them (the newest `limit` of those at most), newest first.
+ */
+export function newestEntries(entries: readonly LogEntry[], limit: number): LogEntry[] {
+  const isMark = (entry: LogEntry) => MARK_KINDS.includes(entry.event.kind);
+  const rest = entries.filter((entry) => !isMark(entry)).slice(-limit);
+  const marks = entries.filter(isMark);
+  // With fewer entries than the limit, every mark is recent enough.
+  const since = rest.length < limit ? 0 : (rest[0]?.seq ?? 0);
+  return [...rest, ...marks.filter((entry) => entry.seq > since).slice(-limit)].sort((a, b) => b.seq - a.seq);
+}
 
 /** The thread whose tree an entry belongs to, or null when it belongs to none (a key, a reset). */
 export function entryThread(event: LogEvent): string | null {
@@ -155,6 +186,14 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return `answered an ask of ${on(event.threadId)}: ${event.what}`;
     case "ask-closed":
       return `closed an ask of ${on(event.threadId)} as already answered in chat`;
+    case "seen":
+      return event.seq === null ? `took back marking a reply of ${on(event.threadId)} as seen: it waits again` : `marked a reply of ${on(event.threadId)} as seen: it no longer waits`;
+    case "refusals-dismissed":
+      return event.throughSeq === null ? `showed again what bb refused ${on(event.threadId)}: it reads as blocked again` : `dismissed what bb refused ${on(event.threadId)}: it no longer reads as blocked`;
+    case "brief-read":
+      return event.read ? `opened the brief of ${on(event.threadId)}, version ${event.version}: it no longer waits` : `marked the brief of ${on(event.threadId)}, version ${event.version}, as not read: it waits again`;
+    case "main-chosen":
+      return event.threadId === null ? "forgot which thread is Main for a project: a new window asks" : `chose ${on(event.threadId)} as Main: a new window starts there`;
     case "key-enrolled":
       return event.how === "first" ? `key ${event.fingerprint} enrolled by first use: ${event.label}` : `key ${event.fingerprint} enrolled, approved from an enrolled page: ${event.label}`;
     case "key-requested":

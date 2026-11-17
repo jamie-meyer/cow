@@ -17,6 +17,7 @@ import { CAPS_CHANGED, CAP_LIMITS, VIAS, scopeSchema } from "../caps/cap.ts";
 import type { LogStore } from "../caps/logstore.ts";
 import type { Caps } from "../caps/service.ts";
 import { Refusal } from "../kv.ts";
+import { type Dismissal, type Seen, dismissalSchema, seenSchema } from "../shared.ts";
 import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
 
@@ -54,6 +55,10 @@ export const ACTION_ARGS = {
   send: z.object({ threadId: id, text: z.string().min(1).max(20_000) }),
   ask_answer: z.object({ id, option: z.number().int().min(1).nullable(), text: z.string().max(4000).nullable() }),
   ask_close: z.object({ id }),
+  seen_set: z.object({ threadId: id, seen: seenSchema.nullable() }),
+  dismissal_set: z.object({ threadId: id, dismissal: dismissalSchema.nullable() }),
+  brief_read: z.object({ threadId: id, version: z.number().int().min(1), read: z.boolean() }),
+  main_choose: z.object({ projectId: id, threadId: id.nullable() }),
   key_approve: z.object({ fingerprint }),
   key_refuse: z.object({ fingerprint }),
   key_remove: z.object({ fingerprint }),
@@ -86,6 +91,7 @@ const REFUSAL_CODES: Record<string, "conflict" | "forbidden" | "invalid" | "not_
   notice_not_found: "not_found",
   thread_not_found: "not_found",
   ask_not_found: "not_found",
+  brief_not_found: "not_found",
   request_not_found: "not_found",
   key_not_found: "not_found",
   name_taken: "conflict",
@@ -127,7 +133,52 @@ export async function runSigned(keys: Keys, dispatch: Dispatch, raw: unknown): P
   return (dispatch[action] as (input: unknown, by: string) => Promise<unknown>)(args.data, by);
 }
 
-export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks): Keys {
+/**
+ * The light things that decide what the person's queue shows, as the rest of
+ * the backend does them: seen, dismissed, read, and which Main a new window
+ * starts on. They are reached only from the dispatch below: none is an RPC
+ * method or a CLI command.
+ */
+export interface QueueMarks {
+  setSeen(threadId: string, seen: Seen | null): Promise<void>;
+  setDismissal(threadId: string, dismissal: Dismissal | null): Promise<void>;
+  readBrief(threadId: string, version: number, read: boolean): Promise<unknown>;
+  /** Record a project's Main, or with null forget it. Returns what is now recorded. */
+  chooseMain(projectId: string, threadId: string | null): Promise<unknown>;
+}
+
+/** The part of the dispatch that marks things in the queue: each is carried out, then logged under the key that signed it. */
+export function queueDispatch(log: LogStore, marks: QueueMarks, changed: () => void): Pick<Dispatch, "seen_set" | "dismissal_set" | "brief_read" | "main_choose"> {
+  return {
+    main_choose: async (args, by) => {
+      const recorded = await marks.chooseMain(args.projectId, args.threadId);
+      await log.append({ kind: "main-chosen", projectId: args.projectId, threadId: args.threadId }, by);
+      changed();
+      return recorded;
+    },
+    seen_set: async (args, by) => {
+      await marks.setSeen(args.threadId, args.seen);
+      await log.append({ kind: "seen", threadId: args.threadId, seq: args.seen?.seq ?? null }, by);
+      changed();
+      return null;
+    },
+    dismissal_set: async (args, by) => {
+      await marks.setDismissal(args.threadId, args.dismissal);
+      await log.append({ kind: "refusals-dismissed", threadId: args.threadId, throughSeq: args.dismissal?.throughSeq ?? null }, by);
+      changed();
+      return null;
+    },
+    brief_read: async (args, by) => {
+      // A brief or a version that does not exist is refused here, and nothing is logged.
+      await marks.readBrief(args.threadId, args.version, args.read);
+      await log.append({ kind: "brief-read", threadId: args.threadId, version: args.version, read: args.read }, by);
+      changed();
+      return null;
+    },
+  };
+}
+
+export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks): Keys {
   const changed = () => bb.realtime.publish(CAPS_CHANGED, {});
   const resetPath = join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "reset-enrollment");
   const keys = createKeys({
@@ -180,6 +231,7 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
       changed();
       return closed;
     },
+    ...queueDispatch(log, marks, changed),
     key_approve: (args, by) => keys.approve(args.fingerprint, by),
     key_refuse: async (args, by) => {
       await keys.refuse(args.fingerprint, by);

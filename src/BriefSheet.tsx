@@ -9,7 +9,7 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Ask } from "./asks/ask.ts";
 import type { Label } from "./briefs/brief.ts";
-import { type ReviewedClaim, type Verdict, review } from "./briefs/review.ts";
+import { type ReviewedClaim, type Verdict, earlierDisputesText, review } from "./briefs/review.ts";
 import type { BriefRecord } from "./briefs/service.ts";
 import { type SheetItem, checkLine, moveStop, sheetItems } from "./briefs/sheet.ts";
 import type { Command } from "./keys.ts";
@@ -215,6 +215,12 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <p className={`cow-bf-check cow-bf-check-${check.tone}`} data-cow-brief-check={seen.state} data-cow-brief-runs={seen.runs.done}>
           {check.text}
         </p>
+        {record.earlierDisputes > 0 ? (
+          <p className="cow-bf-check cow-bf-check-bad" data-cow-brief-earlier={record.earlierDisputes}>
+            {earlierDisputesText(record.earlierDisputes)[0]?.toUpperCase()}
+            {earlierDisputesText(record.earlierDisputes).slice(1)}. This check replaced that one.
+          </p>
+        ) : null}
         {seen.failed.map((failure, index) => (
           <div key={index} className="cow-bf-failure" data-cow-brief-failure="">
             <p>
@@ -322,7 +328,12 @@ export function useBriefSheet(host: SheetHost): BriefSheetControl {
   // Having it open is having read it: the line stops waiting. Not while a check still runs.
   const unread = record !== null && record !== "none" && record.readAt === null && !record.check?.runs.some((run) => run.status === "running") ? record.version : null;
   useEffect(() => {
-    if (threadId !== null && unread !== null) void raised.markRead(threadId, unread).catch(() => undefined);
+    // Marking it read takes it out of the queue, so it is signed: a page that is not enrolled says why it still waits.
+    if (threadId !== null && unread !== null) {
+      void raised.markRead(threadId, unread).catch((cause: unknown) =>
+        setOpen((current) => (current?.threadId === threadId ? { ...current, note: `this brief still waits on you: ${errorText(cause)}` } : current)),
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, unread, record !== null && record !== "none" ? record.check?.startedAt : null]);
 

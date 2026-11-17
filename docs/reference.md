@@ -125,9 +125,9 @@ in the state wants you, and is in the queue. A worker that finished a turn
 its parent started is done, as before.
 
 It stays until you have seen it. cow records the turn you last saw, per
-thread, in the plugin's own storage and not on the thread. That record is
-not signed: see "What is not" under "Only you: signed calls". It is
-set when you:
+thread, in the plugin's own storage and not on the thread. Setting that
+record, and taking it back, is a signed call: see "Only you: signed calls".
+It is set when you:
 
 - open the thread's chat from the page (`Enter`), or have it open when the
   reply arrives;
@@ -137,7 +137,9 @@ set when you:
 
 A message you send the thread later, from anywhere in bb, also clears it:
 you evidently read it. A reply that comes after the one you saw waits on
-you again.
+you again. On a page whose key is not enrolled none of these marks anything:
+`Space` says "not marked as seen: this page's key … is not enrolled", and
+opening the chat says the reply still waits on you, and why.
 
 Main, when it has no parent, keeps bb's own unread record, as before:
 opening its chat reads it. A Main that has a parent is treated like any
@@ -390,7 +392,8 @@ happens:
   that turn;
 - the thread starts a new turn, whoever started it: whoever runs the thread
   has moved it on;
-- you dismiss it, or the thread is archived.
+- you dismiss it, or the thread is archived. Dismissing, and taking a
+  dismissal back, are signed calls.
 
 So a refusal the agent worked around stays on the page only until that
 thread's next turn, and never longer than you let it: dismiss it. The cost of
@@ -569,7 +572,15 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   it was the checker or the brief that went wrong. None of it counts as a
   verdict.
 - The thread a brief is from cannot order its own audit. The thread above it
-  can, and so can you.
+  can, and so can you. That rule goes by the name the caller gives, which is
+  the caller's own word, so cow does not rest on it: see the next point.
+- Running a check again takes nothing out of your queue. If the check it
+  replaces disputed claims and you had not opened the brief, the brief keeps
+  waiting whatever the new check says (failed, or clean), and says "N
+  disputed by an earlier check that was run again unread"; the sheet and
+  `bb cow brief show` say the same above the new check's result. A
+  judgement call keeps waiting while the new check runs. Only you opening
+  the brief ends the wait.
 
 A claim is **disputed** when the checker's verdict is weaker than the agent's
 label warrants:
@@ -613,7 +624,12 @@ decision, puts nothing in the queue.
 | `q`, `Esc` | close; the cursor returns to the line |
 
 The sheet updates by itself when a check finishes. Opening a brief is what
-marks it read; a new check, or a new version, makes it yours to read again.
+marks it read, and that mark is a signed call: on a page whose key is not
+enrolled the sheet opens, says "this brief still waits on you", and why. A
+new check, or a new version, makes it yours to read again. A new version
+replaces the one that was waiting: if its own check finds nothing to
+dispute and it lists no judgement call, nothing waits, and the earlier
+version's disputes are read with `bb cow brief show <thread> --version <n>`.
 
 **What a check is, and is not.** It is one model's reading of the evidence
 the agent chose to attach, done without the agent's conversation. "Supported"
@@ -667,6 +683,12 @@ always on the page. Each line there shows the name, the reason, how long it
 has been parked (one square per full week) and its pick-up. Threads under a
 parked thread go with it and are counted on its line.
 
+Parking takes what the line was waiting on you for out of the queue: a
+reply, a failure, a refusal, a brief. Its own open ask stays in the queue;
+an ask of a thread under it does not. An agent can park a thread too
+(`bb cow park`), and parking is not signed, so the shelf is where to look
+for work an agent set aside: see "What is not signed, method by method".
+
 Parked work comes back by itself, as an entry in the queue:
 
 - when its date arrives; or
@@ -686,7 +708,10 @@ empty line it archives without a reason. `Esc` cancels. Dropping parked work
 that came back (`x`) asks the same way before it stops and archives it.
 
 The reason is cow's note on the thread. It shows on the thread's line under
-Done ("archived: …"). If you undo the archive the note stays on the thread,
+Done ("archived: …"), where an archived line is listed for two days and
+counted after that. An archived thread waits on you for nothing, an open ask
+included. An agent can archive a thread too, with `bb cow archive` or with
+bb's own `bb thread archive`; neither is signed. If you undo the archive the note stays on the thread,
 so archiving it again offers the same reason; clear the line to archive
 without one.
 
@@ -694,7 +719,8 @@ without one.
 
 `u` takes back the last park, resume, archive (it unarchives), dismissal of
 a refused permission, or mark as seen made with `Space`, then the one
-before, for as long as the page stays open. Five things cannot be undone, and they say so: stopping a turn,
+before, for as long as the page stays open. Taking back a dismissal or a
+mark as seen is signed, like making it. Five things cannot be undone, and they say so: stopping a turn,
 answering a question, answering an ask, deciding a permission request, and sending a message.
 Deleting a capability has its own undo, `u` in the capabilities sheet.
 Undoing a park that stopped a turn, or a drop, restores the line but the turn
@@ -913,9 +939,16 @@ cow records and shows what happens, whoever did it:
 - **The log.** Every capability made, deleted or put back, every notice
   acknowledged, every request allowed through a capability (when, on which
   thread, what, by which capability), every decision made through cow's page,
-  every message sent and ask answered as you, every decision cow saw made
-  somewhere else, every capability a thread asked for, and every key
-  enrolled, asked for, refused or removed, and every reset. Each entry for
+  every message sent and ask answered as you, every reply marked as seen,
+  refusal dismissed and brief marked as read (and each of those taken back),
+  every Main recorded, every decision cow saw made somewhere else, every
+  capability a thread asked for, and every key enrolled, asked for, refused
+  or removed, and every reset. Marks made by opening a chat or a brief are
+  entries like any other, so the log grows with use. A listing (the sheet
+  reads 500, `bb cow caps log` prints 50) counts its length in the entries
+  that are not such marks, and adds the marks made since the oldest of
+  them, so marks never push a capability, a decision or a key out of what
+  is read. Each entry for
   something only you may do names the key that signed it. The sheet shows it
   newest first (`Tab`), and no key, command or interface method edits or
   clears it. Entries are numbered and each carries
@@ -955,29 +988,25 @@ The page proves it is yours with a signature.
   putting back a capability; acknowledging a notice or a decision made
   outside cow; deciding a permission request; every message cow sends as you
   ("ask again as me", "carry on without it", the reason for a denial, `I` and
-  `i`); answering an ask, or closing one as already answered in chat; and
-  approving, refusing or removing a key. The list is `PERSON_ACTIONS` in
-  `src/signing/envelope.ts`. None of these is a method of cow's interface any
-  more. There is one method, `signed`, and it acts only when the call carries
+  `i`); answering an ask, or closing one as already answered in chat;
+  marking a reply as seen and taking that back; dismissing what bb refused
+  a thread and taking that back; marking a brief as read; recording which
+  thread is a project's Main, which is where a new window starts; and
+  approving, refusing or removing a key. Opening a chat or a brief on the
+  page, which marks a reply seen or a brief read as a side effect, signs
+  that mark the same way. The list is `PERSON_ACTIONS` in
+  `src/signing/envelope.ts`. None of these is a method of cow's interface.
+  There is one method, `signed`, and it acts only when the call carries
   a signature, by an enrolled key, over the action's name, all of its
   arguments, a time and a nonce. A call signed more than two minutes ago, or
   before cow last started, is refused; so is one that was already used.
 - **What is not.** What agents are meant to do stays unsigned: `bb cow ask`,
-  withdrawing or closing their own ask, `brief submit`, `next`, `todo`,
-  `park`, `archive`, `project`, `cap request`, and everything that only
-  reads. Typing into a chat's own composer is bb's, not cow's.
-- **Also not signed: the page's lighter verbs.** Parking and resuming,
-  archiving with a reason, marking a reply seen, dismissing a refused
-  permission, marking a brief read, running a brief's check again, the
-  project mark, changing a list of work not started, and recording which
-  thread is Main are plain methods of cow's interface (`park_set`,
-  `thread_archive`, `seen_set`, `dismissal_set`, `brief_read`, `brief_check`,
-  `project_set`, `todo_change`, `main_choose`, `archive_note_set`). Any local
-  process can call them, a sandboxed agent included, and none is written to
-  the log. So an agent that calls cow's interface directly can take a line
-  out of your queue (mark its reply seen, dismiss its refusal, mark its brief
-  read, park or archive it) without the page having been touched. It cannot
-  grant, decide, answer or send anything that way.
+  withdrawing or closing their own ask, `brief submit`, `brief check`,
+  `next`, `todo`, `park`, `resume`, `archive`, `project`, `cap request`, and
+  everything that only reads. So do the page's own ways of doing the same
+  things. Each is in the table under "What is not signed, method by
+  method", with what it can change for you. Typing into a chat's own
+  composer is bb's, not cow's.
 - **The log names the key.** Each log entry for one of those actions records
   the fingerprint of the key that signed it, and `C`, `Tab` shows it. cow
   writes such an entry only for a verified signature.
@@ -999,7 +1028,12 @@ and removing are signed like everything else.
 above. A notice at the top says so, with its own key and how to get
 enrolled, and each verb that needs a signature says the same instead of
 acting ("not sent: this page's key … is not enrolled, so this page can only
-read. Approve it from a page that is enrolled …").
+read. Approve it from a page that is enrolled …"). `Space` on a reply says
+"not marked as seen: …"; dismissing a refusal says "not dismissed: …" on its
+card; an opened chat says "its reply still waits on you: …"; an opened brief
+says "this brief still waits on you: …". Choosing a Main there changes that
+window only. Such a page can still park, resume, archive, mark a project and
+change a list of work not started: those are not signed for anyone.
 
 **If something else enrolled first.** On a cow with no key, whatever opens it
 first holds it, and an agent could be first. Then your own page is the one
@@ -1017,6 +1051,61 @@ every request, writes the reset in the log, and the next page to open is
 enrolled. The path is under bb's data directory and outside thread storage
 because bb's command sandbox does not let a thread write there.
 
+### What is not signed, method by method
+
+Everything below is open to any local process, a sandboxed agent included,
+by `bb cow`, by `bb plugin rpc call` or by HTTP. Two things hold for all of
+it. Nothing here is written to the log, apart from `cap request`. And the
+CLI's rules about whose thread a command may touch go by the thread the
+caller names in `BB_THREAD_ID`, which bb sets for a thread and the thread
+can change or clear: a caller that names nobody is taken for you at a
+terminal and may touch any thread, so those rules guide a well-behaved
+agent and stop no other.
+
+**Methods of the interface** (what the page calls)
+
+| Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
+| --- | --- | --- | --- |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks), asks, briefs, capabilities, the log, the keys | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
+| `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
+| `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
+| `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, their open asks included. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask stays in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. Removing a note only puts a line back |
+| `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Done with its reason for two days, and counted there after that. cow could not stop this by signing it: `bb thread archive` is bb's and does the same |
+| `archive_note_set` | sets or forgets the reason kept for an archived thread | the page, when an archive is undone or redone | the reason shown under Done can be changed or removed. It archives nothing and moves nothing |
+| `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it changes whose its replies are: one that ended a turn you did not start stops reading "replied to you" and leaves the queue, and the line reads done, under Done, instead of idle in the tree. Marking only adds to what waits on you |
+| `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
+| `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's, which a caller can make fail by naming a model that does not exist. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
+
+Recording which thread is Main (`main_choose`) was one of these until 0.2.1.
+A window keeps the Main chosen in it, but a new window starts on the
+recorded one, so a caller could have a new window open on another thread's
+tree, with a queue that is not yours. It is signed now. Marking a reply as
+seen, dismissing a refusal and marking a brief as read were three more.
+
+**Commands of `bb cow`** (what an agent is meant to use)
+
+| Command | What it does | What an agent running it could hide from you or change |
+| --- | --- | --- |
+| `status`, `asks`, `brief show`, `caps`, `caps log`, `todo list`, `help` | read | nothing |
+| `ask` | raises an ask for the caller's thread or one under it | adds to your queue. It hides nothing |
+| `ask withdraw <id>` | takes an open ask out of your queue, unanswered | **the ask leaves your queue**, and nothing on the page says it was there; `bb cow asks --all` still lists it as withdrawn. Meant for the thread that asked and the threads above it; a caller that names nobody can withdraw any ask |
+| `ask close <id> --answered <text>` | closes an ask as answered in chat, recording the answer the caller says it was given | the same, with the caller's account of your answer kept on the ask. Closing one from the page as you is the signed `ask_close` |
+| `brief submit` | stores a new version of a thread's brief and has it checked | the new version replaces the one that waited. If its check disputes nothing and it lists no judgement call, nothing waits, and the disputes of the version before are no longer in front of you; every version is kept and `bb cow brief show <thread> --version <n>` prints it |
+| `brief check` | as `brief_check` above; refused to the thread the brief is from when it names itself | as `brief_check`: it costs a run and cannot take a waiting brief out of your queue |
+| `cap request` | raises an ask for a capability and writes "requested" in the log | adds to your queue and grants nothing |
+| `next`, `todo add`, `todo done`, `todo rm` | the thread's own line of what is next, and its list of work not started | the next-move column of a line that waits on nothing shows the agent's words, marked as its own. A line with a note or a list stays in the tree instead of going to Done. Nothing leaves the queue |
+| `project`, `project --clear` | as `project_set` above | as `project_set` |
+| `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date |
+| `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Done, with its reason, for two days |
+
+What follows from this: **the queue is everything cow knows waits on you,
+minus what has been parked or archived.** Nothing else of cow's that is
+unsigned takes an entry out of it, apart from a thread withdrawing or
+closing an ask, replacing its brief with a new version, or taking a project
+mark off. What bb's own commands can do to it is under "What cow cannot
+guarantee". So the Parked shelf and Done are the two places to look
+for something an agent set aside, and each line there says why it is there.
+
 ### What cow cannot guarantee
 
 What was tried, on bb 0.49.0, from inside a sandboxed agent's own turn (a
@@ -1026,9 +1115,10 @@ sandbox). `npm run e2e` runs it every time: see "the probe" in
 
 | Route | Result |
 | --- | --- |
-| the old methods (`cap_create`, `cap_ack`, `permission_decide`, `ask_answer`), by `curl` and by `bb plugin rpc call` | refused: they no longer exist |
-| `signed` with no signature: make a capability, acknowledge a notice, delete a capability, decide another thread's permission request, answer an ask, approve a key; by `curl` and by `bb plugin rpc call` | refused: "this is something only the person may do, so the call has to be signed by a key enrolled with cow" |
-| `signed` with a made-up signature that names the enrolled page's key | refused: "the signature does not match the call" |
+| the old methods (`cap_create`, `cap_ack`, `permission_decide`, `ask_answer`, and since 0.2.1 `seen_set`, `dismissal_set`, `brief_read`), by `curl` and by `bb plugin rpc call` | refused: they no longer exist ("has no rpc method") |
+| `signed` with no signature: make a capability, acknowledge a notice, delete a capability, decide another thread's permission request, answer an ask, approve a key, mark a reply as seen, dismiss a refusal, mark a brief as read; by `curl` and by `bb plugin rpc call` | refused: "this is something only the person may do, so the call has to be signed by a key enrolled with cow" |
+| `signed` with a made-up signature that names the enrolled page's key, for each of those | refused: "the signature does not match the call" |
+| what was marked seen, dismissed or read after all of that | unchanged, and nothing in the log. On 0.2.0 the same script marked all three, by both routes, and logged nothing |
 | `key_enrol` with a key of its own | accepted as a **request**: it shows in your queue under whatever name the caller gave, and does nothing until an enrolled page approves it |
 | creating the reset file | blocked by the sandbox: "Operation not permitted" |
 | `bb thread interactions approve <request> <thread>` | **worked**, as bb allows any thread to do; cow flagged it "approved outside cow" |
@@ -1039,16 +1129,28 @@ So, plainly:
 
 - **Prevented: forging your actions through cow.** A sandboxed agent cannot
   make, delete or acknowledge a capability, decide a permission request
-  through cow, answer an ask as you, send as you through cow, or enrol a key.
-  What cow logs as done by a key was signed by that key.
-- **Still only visible: bb's own commands.** Any thread can approve or deny
-  another thread's permission request with `bb thread interactions`, and can
-  send a thread a message as you with `bb thread tell` once it clears the
-  variable that names it. Those are bb's, and cow cannot stop them. An
-  approval or denial made that way is flagged "outside cow" on the line and
-  in the queue until you acknowledge it; a message sent that way is not
-  flagged. Deciding a request in bb's own chat is flagged the same way,
-  because bb records no one for either.
+  through cow, answer an ask as you, send as you through cow, enrol a key,
+  mark a reply as seen, dismiss a refusal, mark a brief as read, or record a
+  Main. What cow logs as done by a key was signed by that key.
+- **Still only visible: parking and archiving.** An agent can park or
+  archive a thread, and that takes its line out of your queue. The line is
+  on the Parked shelf or under Done afterwards, with the reason given. See
+  the table above.
+- **Still only visible, or not even that: bb's own commands.** Any thread
+  can approve or deny another thread's permission request with
+  `bb thread interactions`, and can send a thread a message as you with
+  `bb thread tell` once it clears the variable that names it. Those are
+  bb's, and cow cannot stop them. An approval or denial made that way is
+  flagged "outside cow" on the line and in the queue until you acknowledge
+  it. Deciding a request in bb's own chat is flagged the same way, because
+  bb records no one for either. A message sent as you is not flagged, and
+  it does what a message of yours does: the reply before it counts as read,
+  what bb refused that thread stops counting, and an open ask of that
+  thread says you have messaged since. For a Main with no parent, cow goes
+  by bb's own record of what you have read, which bb's own commands set (`bb thread read`).
+  And `bb plugin config cow` is reachable: a caller that sets the checker's
+  model to one that does not exist makes every later check fail, and a
+  failed check disputes nothing.
 - **What it rests on.**
   - *The browser's key store.* The private key cannot be exported through
     the browser, but it is in the browser profile's files on disk. bb's

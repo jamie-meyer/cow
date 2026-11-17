@@ -29,9 +29,11 @@ const markSchema = z.object({
   judgementCalls: z.number(),
   at: z.number(),
   read: z.boolean(),
+  earlierDisputes: z.number().optional(),
+  rechecked: z.literal(true).optional(),
 });
 
-/** What the page reads, and what anyone may do. Answering an ask, and closing one as answered in chat, are the person's: they are signed calls (see signing/backend.ts). */
+/** What the page reads, and what anyone may do. Answering an ask, closing one as answered in chat, and marking a brief as read are the person's: they are signed calls (see signing/backend.ts). */
 export const attentionRpcContract = defineRpcContract({
   /** Asks, oldest first: the open ones, or with `all`, every one. */
   asks_list: {
@@ -51,11 +53,6 @@ export const attentionRpcContract = defineRpcContract({
   brief_marks: {
     input: z.object({ threadIds: z.array(id).max(5000) }),
     output: z.object({ marks: z.record(z.string(), markSchema) }),
-  },
-  /** Record that the user opened this version of a thread's brief: it stops waiting on them. With `read` false, it waits again. */
-  brief_read: {
-    input: z.object({ threadId: id, version: z.number().int().min(1), read: z.boolean().optional() }),
-    output: z.null(),
   },
   /** Start a new check of a thread's latest brief. */
   brief_check: {
@@ -233,10 +230,6 @@ export function registerAttention(bb: BbPluginApi): Attention {
       return { record: await refusing(() => briefs.get(threadId, version)), versions };
     },
     brief_marks: async ({ threadIds }) => ({ marks: Object.fromEntries(await briefs.marks(threadIds)) }),
-    brief_read: async ({ threadId, version, read }) => {
-      await refusing(() => briefs.read(threadId, version, read ?? true));
-      return null;
-    },
     brief_check: async ({ threadId, ...overrides }) => ({
       record: await refusing(() => briefs.check({ caller: null, threadId, ...overrides })),
     }),

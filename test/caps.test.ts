@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { type Capability, type Rule, addedText, readName, readRule, ruleText, scopeText, sentence, suggestName } from "../src/caps/cap.ts";
 import { MAX_COMMAND, RUNNERS, joinWords, readCommandRule, splitWords } from "../src/caps/command.ts";
-import { type LogEntry, type LogEvent, SIGNED_KINDS, checkChain, entryThread, eventText, nextEntry, outsideText } from "../src/caps/log.ts";
+import { type LogEntry, type LogEvent, MARK_KINDS, SIGNED_KINDS, checkChain, entryThread, eventText, newestEntries, nextEntry, outsideText } from "../src/caps/log.ts";
 import { covers, coversResolved, requestText } from "../src/caps/match.ts";
 import { MAX_PATH, PROTECTED_IN_HOME, directoryRefusal, isInside, parentDirectory, readDirectoryRule, readPath } from "../src/caps/paths.ts";
 import { ancestorsOf, applies, held, holders, sourceText } from "../src/caps/scope.ts";
@@ -530,7 +530,7 @@ test("an entry records the key that signed it, and changing that breaks the chai
   assert.equal(checkChain([{ ...signed, by: "eeee-ffff-0000-1111" }, unsigned], sha).intact, false);
   assert.equal(checkChain([{ ...signed, by: null }, unsigned], sha).intact, false);
   // The kinds that record one of the person's actions are the ones that must be signed.
-  for (const kind of ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"] as const) assert.ok(SIGNED_KINDS.includes(kind), kind);
+  for (const kind of ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "key-refused", "key-removed"] as const) assert.ok(SIGNED_KINDS.includes(kind), kind);
   for (const kind of ["auto-allowed", "outside", "requested", "enrollment-reset", "key-requested"] as const) assert.ok(!SIGNED_KINDS.includes(kind), kind);
 });
 
@@ -550,4 +550,26 @@ test("an entry reads as a sentence, and a decision made elsewhere says where it 
   assert.equal(outsideText("deny", "run: echo cow"), "denied outside cow: run: echo cow");
   assert.equal(outsideText("allow_for_session", "change /tmp/a"), "approved for the session outside cow: change /tmp/a");
   assert.match(eventText({ ...EVENTS[1]!, links: "not-followed" } as LogEvent, title), /symbolic links could not be followed/);
+});
+
+test("a listing of the log counts its length in entries that are not marks, so marks push nothing out of what is read", () => {
+  // Two capability events, then forty marks, as opening forty chats leaves.
+  const all: LogEntry[] = [];
+  const add = (event: LogEvent) => void all.push(nextEntry(all.at(-1) ?? null, event, 1000 + all.length, sha, "aaaa-bbbb-cccc-dddd"));
+  add({ kind: "seen", threadId: "old", seq: 1 });
+  add({ kind: "deleted", capabilityId: "cap_1", name: "one", scopeThreadId: null });
+  add({ kind: "deleted", capabilityId: "cap_2", name: "two", scopeThreadId: null });
+  for (let n = 0; n < 40; n += 1) add({ kind: n % 2 ? "seen" : "brief-read", threadId: "kid", ...(n % 2 ? { seq: n } : { version: 1, read: true }) } as LogEvent);
+  for (const kind of ["seen", "refusals-dismissed", "brief-read", "main-chosen"] as const) assert.ok(MARK_KINDS.includes(kind), kind);
+  // Asked for one entry: the newest that is not a mark, and the marks made since it.
+  const one = newestEntries(all, 1);
+  assert.equal(one.filter((entry) => !MARK_KINDS.includes(entry.event.kind)).map((entry) => entry.seq).join(), "3");
+  assert.equal(one.length, 2);
+  assert.equal(one[0]!.seq, 43);
+  // Asked for more than there are: everything, newest first, the mark before them included.
+  const every = newestEntries(all, 50);
+  assert.equal(every.length, 43);
+  assert.deepEqual([every[0]!.seq, every.at(-1)!.seq], [43, 1]);
+  // Marks are bounded too.
+  assert.equal(newestEntries(all, 2).length, 4);
 });

@@ -83,7 +83,7 @@ function briefJson(record: BriefRecord) {
 }
 
 const briefText = (record: BriefRecord): string =>
-  reviewText({ threadId: record.threadId, version: record.version, summary: record.brief.summary }, briefView(record).review);
+  reviewText({ threadId: record.threadId, version: record.version, summary: record.brief.summary, earlierDisputes: record.earlierDisputes }, briefView(record).review);
 
 /** The overview with asks and briefs on it. */
 export async function attend(attention: Attention, report: StatusReport, projectId: string | null) {

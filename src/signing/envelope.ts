@@ -28,6 +28,22 @@ export const PERSON_ACTIONS = [
   /** Answer an ask, or close one as already answered in chat. */
   "ask_answer",
   "ask_close",
+  /**
+   * Take a line out of the queue of what waits on the person, or put it back:
+   * mark a thread's reply as seen (null takes the mark back), dismiss what bb
+   * refused a thread (null shows it again), and mark a brief as read (or not).
+   * Opening a chat or a brief on the page does the first and the last, and
+   * signs them the same way.
+   */
+  "seen_set",
+  "dismissal_set",
+  "brief_read",
+  /**
+   * Record which thread is a project's Main: where every new window starts.
+   * A window's own choice needs no signature; what other windows start from
+   * does, or a new window could be opened on a tree that is not the person's.
+   */
+  "main_choose",
   /** Approve or refuse a page that asks for its key to be enrolled; remove an enrolled key. */
   "key_approve",
   "key_refuse",

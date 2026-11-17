@@ -13,7 +13,9 @@
 // and for a scratch directory it creates under /tmp and removes, and deletes
 // them when it finishes. What it did stays in cow's capability log, which
 // nothing clears. One fixture is told to call cow's interface from inside
-// its sandbox, to check that whatever that achieves is logged and shown.
+// its sandbox, to check that whatever that achieves is logged and shown, and
+// that it cannot do what only the person may: the capability and key actions,
+// and marking a reply as seen, dismissing a refusal or marking a brief read.
 //
 // For asks and briefs it uses three more fixtures under a Main of their own,
 // and cow starts two hidden checker threads, titled "cow check", the first
@@ -26,8 +28,8 @@
 // itself, and approves its browser's key with it. Whoever uses this bb has
 // their own page enrolled again, by first use, when they next open cow.
 //
-// Choosing a Main records it on the server as where a new cow window starts.
-// The check puts that record back at once, each time, for the fixtures'
+// Choosing a Main records it on the server as where a new cow window starts,
+// by a signed call. The check puts that record back at once, each time, for the fixtures'
 // project only, and no window that is already open is moved by it. A Main
 // you choose in another project while it runs is left alone.
 //
@@ -263,8 +265,8 @@ async function reset(ids) {
     if (thread.archivedAt) await bb("thread", "unarchive", id);
     await rpc("park_set", { threadId: id, park: null });
     await rpc("archive_note_set", { threadId: id, note: null });
-    await rpc("dismissal_set", { threadId: id, dismissal: null });
-    await rpc("seen_set", { threadId: id, seen: null });
+    await signer.must("dismissal_set", { threadId: id, dismissal: null });
+    await signer.must("seen_set", { threadId: id, seen: null });
     await cow("next", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
@@ -376,7 +378,7 @@ async function prepareRaised(ids) {
     checkers.push(...(await briefOf(id)).check.runs.map((entry) => entry.threadId));
   }
   // Every run starts with both unread.
-  for (const id of [ids.briefer, ids.asker]) await rpc("brief_read", { threadId: id, version: (await briefOf(id)).version, read: false });
+  for (const id of [ids.briefer, ids.asker]) await signer.must("brief_read", { threadId: id, version: (await briefOf(id)).version, read: false });
 
   const call = JSON.parse((await cowAs(ids.amain, "ask", "--question", "Keep the old endpoint for a week?", "--option", "keep it", "--option", "remove it now", "--json")).stdout).ask;
   await set("checkerProvider", "cow-test-no-such-provider");
@@ -647,6 +649,8 @@ async function raisedChecks(page, ids, shot, chooseMain) {
     (await page.eval(lineState(ids.briefer))) === "done" && (await page.eval(briefMark(ids.briefer))) === "disputed" && (await briefOf(ids.briefer)).readAt !== null,
     await page.eval(lineState(ids.briefer)),
   );
+  const readMark = await markBy("brief-read", ids.briefer);
+  check("opening the brief signed that: the log holds it as read, under this page's key", readMark?.event.read === true && readMark.by !== null && readMark.by === (await pageKeyNow()), JSON.stringify(readMark));
 
   // -- a failed check, and a judgement call answered in place --
   await page.key("g");
@@ -761,7 +765,7 @@ async function prepareReading(ids) {
     await cow("project", id, "--clear");
     for (const ask of await openAsksOf(id)) await cow("ask", "withdraw", ask.id);
     const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
-    if (end !== undefined) await rpc("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+    if (end !== undefined) await signer.must("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
   }
   // A brief is submitted without a check: only its evidence link is used here.
   const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
@@ -1418,7 +1422,15 @@ const CAPPED = ["cmain", "chead", "ckid"];
 let restoreCaps = async () => undefined;
 
 const capState = () => rpc("caps_state", null);
-const capLog = async (limit = 60) => (await rpc("caps_log", { limit })).entries;
+/** The log, newest first, with everything in it. */
+const fullLog = async (limit = 60) => (await rpc("caps_log", { limit })).entries;
+/** What the page signs when a line is only marked: a reply seen, a refusal dismissed, a brief read, a Main chosen. */
+const MARK_KINDS = ["seen", "refusals-dismissed", "brief-read", "main-chosen"];
+/** The log without those marks, so that "the newest entry" means the newest thing done about a capability, a request, an ask or a key. */
+const capLog = async (limit = 60) => (await fullLog(500)).filter((entry) => !MARK_KINDS.includes(entry.event.kind)).slice(0, limit);
+/** The key of this check's browser, and the newest mark of one kind it signed for a thread. */
+const pageKeyNow = async () => (await signer.state()).keys.find((key) => /headless Chrome/.test(key.label))?.fingerprint ?? null;
+const markBy = async (kind, threadId) => (await fullLog(200)).find((entry) => entry.event.kind === kind && entry.event.threadId === threadId) ?? null;
 const lastApproval = async (id) => {
   const events = await api(`/threads/${id}/events?types=system/interaction/lifecycle&limit=20&order=desc`);
   return events.map((event) => event.data?.interaction).find((interaction) => interaction?.resolution) ?? null;
@@ -1452,7 +1464,7 @@ async function prepareCaps(ids) {
   for (const name of CAPPED) {
     await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle after the reset`);
     const end = (await api(`/threads/${ids[name]}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
-    if (end !== undefined) await rpc("seen_set", { threadId: ids[name], seen: { seq: end, at: Date.now() } });
+    if (end !== undefined) await signer.must("seen_set", { threadId: ids[name], seen: { seq: end, at: Date.now() } });
   }
   // The denials above were made outside cow, which flags them a moment later.
   await sleep(1500);
@@ -1512,7 +1524,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
     await sleep(1500);
     await waitForThread(id, (t) => t.status === "idle" && !t.hasPendingInteraction, "at rest", 120_000);
     const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
-    if (end !== undefined) await rpc("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+    if (end !== undefined) await signer.must("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
     await page.waitFor(`${lineEl(id)}?.dataset.cowReply === undefined && !${stateOf(id)}?.startsWith("run")`, { label: "its reply seen", timeout: 30_000 }).catch(() => undefined);
   };
   const said = async (id) => ((await api(`/threads/${id}/output`)).output ?? "").trim();
@@ -1634,6 +1646,26 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await shot("keys-unenrolled", otherTab);
   const waitingRoom = await roomAt(otherTab);
   check("with the not-enrolled notice showing, the list keeps most of the page's height, at 1280x800 and at 700 wide", roomy(waitingRoom), JSON.stringify(waitingRoom));
+  // What takes a line out of the queue is signed too: on this page Space marks nothing, and says why.
+  const headEnd = (await api(`/threads/${chead}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+  await signer.must("seen_set", { threadId: chead, seen: null });
+  let notSeen = "";
+  try {
+    await otherTab.waitFor(`${lineEl(chead)}?.dataset.cowReply === ""`, { label: "a reply waiting, on the page that is not enrolled", timeout: 20_000 });
+    await otherTab.eval(`${lineEl(chead)}.click(); true`);
+    await sleep(200);
+    await otherTab.key(" ");
+    await otherTab.waitFor(`(document.querySelector("[data-cow-message]")?.textContent ?? "").startsWith("not marked as seen")`, { label: "why it was not marked", timeout: 10_000 });
+    notSeen = await otherTab.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
+  } catch (cause) {
+    notSeen = `(${cause instanceof Error ? cause.message : String(cause)})`;
+  }
+  check(
+    "on a page that is not enrolled, Space on a reply marks nothing and says why: this page can only read",
+    /not marked as seen: this page's key .* is not enrolled, so this page can only read/.test(notSeen) && ((await rpc("notes_list", { threadIds: [chead] })).seen[chead] ?? null) === null,
+    notSeen.slice(0, 160),
+  );
+  if (headEnd !== undefined) await signer.must("seen_set", { threadId: chead, seen: { seq: headEnd, at: Date.now() } });
   const refusedSay = await sayFrom(otherTab, "this must not be sent");
   await otherTab.key("Escape");
   check("its verbs explain themselves instead of acting: saying something to Main is not sent, and says why and how to get enrolled", /^not sent: this page's key .* is not enrolled, so this page can only read\. Approve it from a page that is enrolled/.test(refusedSay) && (await userRows(ids.cmain)).length === mainRows, refusedSay);
@@ -2265,6 +2297,28 @@ async function capsChecks(page, ids, shot, chooseMain) {
     "enrol-key": { key: agentKey.key, label: "made by a fixture" },
     "unsigned-approve": unsigned("key_approve", { fingerprint: agentKey.fingerprint }),
   };
+  // The three light things that take a line out of the person's queue: a reply marked as seen, a
+  // refusal dismissed, a brief marked as read. Each is tried as the method it used to be, by HTTP
+  // and by bb plugin rpc call, then through the signed method with no signature and a made-up one.
+  const briefTarget = ids.briefer ?? ckid;
+  const briefVersion = (await briefOf(briefTarget))?.version ?? null;
+  // The brief is unread when the fixture tries, so that marking it read would show.
+  if (briefVersion !== null) await signer.must("brief_read", { threadId: briefTarget, version: briefVersion, read: false });
+  const light = {
+    seen: ["seen_set", { threadId: chead, seen: { seq: 999999999, at: Date.now() } }],
+    dismiss: ["dismissal_set", { threadId: chead, dismissal: { throughSeq: 999999999, at: Date.now() } }],
+    read: ["brief_read", { threadId: briefTarget, version: briefVersion ?? 1, read: true }],
+  };
+  for (const [name, [action, tried]] of Object.entries(light)) {
+    bodies[`old-${name}`] = tried;
+    bodies[`unsigned-${name}`] = unsigned(action, tried);
+    bodies[`forged-${name}`] = { action, args: tried, at: Date.now(), nonce: "0123456789abcdef0123456789abcdef", key: enrolledPage, sig: "A".repeat(86) };
+  }
+  const lightState = async () => {
+    const notes = await rpc("notes_list", { threadIds: [chead] });
+    return JSON.stringify([notes.seen[chead] ?? null, notes.dismissals[chead] ?? null, (await briefOf(briefTarget))?.readAt ?? null]);
+  };
+  const lightBefore = await lightState();
   for (const [name, body] of Object.entries(bodies)) writeFileSync(join(probeDir, `${name}.json`), JSON.stringify(body));
   const rpcUrl = `${BB}/api/v1/plugins/${PLUGIN}/rpc`;
   const post = (name, method) => `curl -s -m 8 -X POST ${rpcUrl}/${method} -H content-type:application/json -d @${probeDir}/${name}.json`;
@@ -2286,6 +2340,15 @@ async function capsChecks(page, ids, shot, chooseMain) {
     ["reset-file", `sh -c 'mkdir -p "${dirname(resetPath)}" && touch "${resetPath}" && echo CREATED-THE-RESET-FILE'`],
     ["bb-approve", `bb thread interactions approve ${probeRequest.id} ${chead}`],
   ];
+  // The light actions are a script and a turn of their own: bb keeps only the start and the end of a long output.
+  const lightRoutes = Object.entries(light).flatMap(([name, [action]]) => [
+    [`old-${name}`, post(`old-${name}`, action)],
+    [`bb-rpc-${name}`, `bb plugin rpc call ${PLUGIN} ${action} --input-file ${probeDir}/old-${name}.json --json`],
+    [`unsigned-${name}`, post(`unsigned-${name}`, "signed")],
+    [`bb-rpc-signed-${name}`, `bb plugin rpc call ${PLUGIN} signed --input-file ${probeDir}/unsigned-${name}.json --json`],
+    [`forged-${name}`, post(`forged-${name}`, "signed")],
+  ]);
+  writeFileSync(join(probeDir, "light.sh"), `${lightRoutes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-130; echo`).join("\n")}\n`);
   writeFileSync(join(probeDir, "run.sh"), `${routes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-240; echo`).join("\n")}\n`);
   const keysBefore = (await signer.state()).keys.map((key) => key.fingerprint).sort().join(" ");
   await sayTo(ckid, `run: sh ${probeDir}/run.sh`);
@@ -2294,8 +2357,14 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const probeRows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(".cow-e2e-probe/run.sh"));
   const probeOutput = String(probeRows.at(-1)?.output ?? "");
   const got = Object.fromEntries(routes.map(([name]) => [name, (new RegExp(`ROUTE ${name}: (.*)`).exec(probeOutput)?.[1] ?? "(no output)").trim()]));
+  await sayTo(ckid, `run: sh ${probeDir}/light.sh`);
+  await sleep(3000);
+  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the second probe done", 180_000);
+  const lightRows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(".cow-e2e-probe/light.sh"));
+  const lightOutput = String(lightRows.at(-1)?.output ?? "");
+  for (const [name] of lightRoutes) got[name] = (new RegExp(`ROUTE ${name}: (.*)`).exec(lightOutput)?.[1] ?? "(no output)").trim();
   console.log("what each route gave a sandboxed fixture:");
-  for (const [name] of routes) console.log(`  ${name.padEnd(22)} ${got[name].slice(0, 200)}`);
+  for (const [name] of [...routes, ...lightRoutes]) console.log(`  ${name.padEnd(22)} ${got[name].slice(0, 200)}`);
   rmSync(probeDir, { recursive: true, force: true });
   await sleep(2500);
   const afterProbe = await capState();
@@ -2322,6 +2391,17 @@ async function capsChecks(page, ids, shot, chooseMain) {
     /pending/.test(got["enrol-key"]) && only.test(got["unsigned-approve"]) && keysAfter.keys.map((key) => key.fingerprint).sort().join(" ") === keysBefore && keysAfter.requests.some((request) => request.fingerprint === agentKey.fingerprint && request.status === "pending"),
     `${got["enrol-key"].slice(0, 80)} | ${got["unsigned-approve"].slice(0, 90)}`,
   );
+  const lightAfter = await lightState();
+  const lightLogged = (await fullLog(300)).filter((entry) => (entry.event.kind === "seen" && entry.event.seq === 999999999) || (entry.event.kind === "refusals-dismissed" && entry.event.throughSeq === 999999999));
+  for (const [name, what] of [["seen", "mark a reply as seen"], ["dismiss", "dismiss what bb refused a thread"], ["read", "mark a brief as read"]]) {
+    check(
+      `nor ${what}: the method is gone, by HTTP and by bb plugin rpc call, and through the signed method an unsigned or forged call is refused`,
+      !/"ok":true/.test(got[`old-${name}`]) && /error|unknown|not found/i.test(got[`bb-rpc-${name}`]) && only.test(got[`unsigned-${name}`]) && only.test(got[`bb-rpc-signed-${name}`]) && /signature does not match/.test(got[`forged-${name}`]),
+      [got[`old-${name}`], got[`bb-rpc-${name}`], got[`unsigned-${name}`], got[`forged-${name}`]].map((line) => line.slice(0, 80)).join(" | "),
+    );
+  }
+  check("the second probe ran too, inside the fixture's sandbox", lightRows.length >= 1 && lightRoutes.every(([name]) => got[name] !== "(no output)"), lightOutput.slice(0, 200));
+  check("nothing it tried took a line out of the queue: what is seen, dismissed and read is as it was, and nothing was logged", lightAfter === lightBefore && lightLogged.length === 0, `${lightBefore} -> ${lightAfter}`);
   await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"]')`, { label: "the fixture's request in the queue" });
   check("that request is in the person's queue, under the name the fixture gave it", (await page.eval(`document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"] p').textContent`)).includes("made by a fixture"));
   await shot("keys-agent-request");
@@ -2344,7 +2424,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await select(chead);
   await page.key(" ");
   await page.waitFor(`${lineEl(chead)}?.dataset.cowOutside === undefined`, { label: "acknowledged" });
-  const signedEntries = (await capLog(200)).filter((entry) => ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"].includes(entry.event.kind));
+  const signedEntries = (await fullLog(300)).filter((entry) => ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "key-refused", "key-removed"].includes(entry.event.kind));
   const enrolledNow = new Set((await signer.state()).keys.map((key) => key.fingerprint));
   check(
     "every log entry for one of the person's actions names the key that signed it",
@@ -2434,13 +2514,13 @@ async function main() {
     let now = await rpc("main_state", null);
     for (const project of ourProjects) {
       if (now.mains[project] !== before.mains[project]) {
-        now = await rpc("main_choose", { projectId: project, threadId: before.mains[project] ?? null });
+        now = await signer.must("main_choose", { projectId: project, threadId: before.mains[project] ?? null });
       }
     }
     const current = before.currentProjectId;
     const movedByUs = now.currentProjectId === null || ourProjects.includes(now.currentProjectId);
     if (current && now.currentProjectId !== current && movedByUs && now.mains[current]) {
-      await rpc("main_choose", { projectId: current, threadId: now.mains[current] });
+      await signer.must("main_choose", { projectId: current, threadId: now.mains[current] });
     }
   };
 
@@ -2479,7 +2559,7 @@ async function main() {
   // The run starts with that one seen; the page's own ways of seeing a reply
   // are checked on the group head.
   const resetEnd = (await api(`/threads/${ids.perms}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
-  if (resetEnd !== undefined) await rpc("seen_set", { threadId: ids.perms, seen: { seq: resetEnd, at: Date.now() } });
+  if (resetEnd !== undefined) await signer.must("seen_set", { threadId: ids.perms, seen: { seq: resetEnd, at: Date.now() } });
 
   const page = await connect(PORT, "");
   const shot = async (name, from = page) => {
@@ -2709,6 +2789,12 @@ async function main() {
   await page.key("y");
   await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, { label: "the mark undone" });
   check("undone, the reply waits on you again", (await seenOf(ids.quiet)) === null);
+  const seenMarks = (await fullLog(200)).filter((entry) => entry.event.kind === "seen" && entry.event.threadId === ids.quiet).slice(0, 2);
+  check(
+    "the mark and its undo were both signed by this page's key, and are in the log",
+    seenMarks.length === 2 && seenMarks[0].event.seq === null && seenMarks[1].event.seq === quietEnd && seenMarks.every((entry) => entry.by !== null) && seenMarks[0].by === (await pageKeyNow()),
+    JSON.stringify(seenMarks.map((entry) => [entry.event, entry.by])),
+  );
   await page.key("Enter");
   await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.quiet}"`, {
     label: "the head's chat",
@@ -3503,7 +3589,7 @@ async function main() {
   /** See the fixture's reply, as the user would, so that the line is at rest. */
   const seeReply = async (id) => {
     const seq = await lastTurnEnd(id);
-    if (seq !== null) await rpc("seen_set", { threadId: id, seen: { seq, at: Date.now() } });
+    if (seq !== null) await signer.must("seen_set", { threadId: id, seen: { seq, at: Date.now() } });
   };
   const lineNext = (id) => `(document.querySelector('.cow-main [data-cow-line="${id}"] .cow-nx')?.textContent ?? "")`;
   const cardOpen = `!!document.querySelector("[data-cow-answer]")`;
@@ -3656,6 +3742,12 @@ async function main() {
   await page.key("y");
   await page.waitFor(`${lineState(ids.perms)} === "blocked"`, { label: "the dismissal undone" });
   check("undone, the line is blocked again", (await dismissal(ids.perms)) === null && (await page.eval(inQueue(ids.perms))));
+  const dismissMarks = (await fullLog(200)).filter((entry) => entry.event.kind === "refusals-dismissed" && entry.event.threadId === ids.perms).slice(0, 2);
+  check(
+    "the dismissal and its undo were both signed by this page's key, and are in the log",
+    dismissMarks.length === 2 && dismissMarks[0].event.throughSeq === null && typeof dismissMarks[1].event.throughSeq === "number" && dismissMarks[0].by !== null && dismissMarks[0].by === (await pageKeyNow()),
+    JSON.stringify(dismissMarks.map((entry) => [entry.event, entry.by])),
+  );
 
   await select(ids.perms);
   await page.key("a");
@@ -4346,7 +4438,7 @@ async function main() {
   check("archiving it twice is refused", twice.code !== 0 && /already archived/.test(twice.stderr), twice.stderr);
   // -- a Main that is archived: the CLI says so, and a new window starts over --
   const namedArchived = await cow("status", "--main", ids.fails);
-  await rpc("main_choose", { projectId: PROJECT_OF.main, threadId: ids.fails });
+  await signer.must("main_choose", { projectId: PROJECT_OF.main, threadId: ids.fails });
   const storedArchived = await cow("status");
   check(
     "bb cow status on an archived Main, named or stored, gives no overview: it says the Main is archived and what to do",
@@ -4400,7 +4492,7 @@ async function main() {
   await fresh.eval(`localStorage.removeItem("cow:dismissed"); true`);
   await fresh.close();
   check("on the tested bb, with cow's theme or on a page that was not told otherwise, the first window showed no version aside", !(await page.eval(`!!document.querySelector('[data-cow-aside^="bb:"]')`)));
-  await rpc("main_choose", { projectId: PROJECT_OF.main, threadId: ids.main });
+  await signer.must("main_choose", { projectId: PROJECT_OF.main, threadId: ids.main });
   await restoreStored();
   // Back to where the page's own checks left things.
   await bb("thread", "unarchive", ids.fails);
@@ -4669,21 +4761,28 @@ async function main() {
   await restoreSettings();
   await restoreReading();
   await restoreCaps();
+  // What only a signed call takes back is taken back while this check's key is still enrolled:
+  // the stored Mains, and what was marked as seen or dismissed.
+  await ownKey();
+  await restoreStored();
+  const after = await rpc("main_state", null);
+  check("what the run changed in the stored Mains is still as it was", ours(after) === ours(before), JSON.stringify(after));
+  if (!flag("keep")) {
+    for (const id of Object.values(ids)) {
+      await signer.must("dismissal_set", { threadId: id, dismissal: null });
+      await signer.must("seen_set", { threadId: id, seen: null });
+    }
+  }
   // No key of this check stays enrolled: the next page to open cow is enrolled by first use.
   await signer.resetEnrollment();
   check("the check leaves no key enrolled", (await signer.state()).keys.length === 0);
   for (const name of [...RAISED, ...READING, ...CAPPED]) {
     if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   }
-  await restoreStored();
-  const after = await rpc("main_state", null);
-  check("what the run changed in the stored Mains is still as it was", ours(after) === ours(before), JSON.stringify(after));
   if (!flag("keep")) {
     for (const id of Object.values(ids)) {
       await rpc("park_set", { threadId: id, park: null });
       await rpc("archive_note_set", { threadId: id, note: null });
-      await rpc("dismissal_set", { threadId: id, dismissal: null });
-      await rpc("seen_set", { threadId: id, seen: null });
       await cow("project", id, "--clear");
       await bb("thread", "archive", id);
       // Archiving leaves a thread that is waiting on its question running.
@@ -4704,7 +4803,8 @@ async function main() {
 
 main().catch(async (error) => {
   console.error(error);
-  // Whatever went wrong, the next cow window must start where it did before.
+  // Whatever went wrong, the next cow window must start where it did before. Recording that is signed.
+  await ownKey().catch(() => undefined);
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));

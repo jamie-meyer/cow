@@ -32,13 +32,14 @@ const mainStateSchema = z.object({
 });
 export type MainState = z.infer<typeof mainStateSchema>;
 
+/**
+ * What the page reads, and the notes anyone may leave: an agent leaves the
+ * same ones with `bb cow`. What takes a line out of the person's queue
+ * (seen, dismissed, a brief read), and recording which thread is Main, are
+ * not here: those are signed calls.
+ */
 export const rpcContract = defineRpcContract({
   main_state: { input: z.null(), output: mainStateSchema },
-  /** Make a thread its project's Main; a null thread forgets that project's Main. */
-  main_choose: {
-    input: z.object({ projectId: id, threadId: id.nullable() }),
-    output: mainStateSchema,
-  },
   /** cow's notes on these threads; threads without one are left out. */
   notes_list: {
     input: z.object({ threadIds: z.array(id).max(MAX_NOTE_LIST) }),
@@ -57,11 +58,6 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: id, project: projectMarkSchema.nullable() }),
     output: z.null(),
   },
-  /** Record the reply of a thread the person has seen, or with null, forget it. */
-  seen_set: {
-    input: z.object({ threadId: id, seen: seenSchema.nullable() }),
-    output: z.null(),
-  },
   /** Take an item off a thread's list of work not started, or move it one place. */
   todo_change: {
     input: z.object({ threadId: id, itemId: id, change: z.enum(["remove", "up", "down"]) }),
@@ -75,11 +71,6 @@ export const rpcContract = defineRpcContract({
   /** Record why a thread was archived, or with a null note, forget it. */
   archive_note_set: {
     input: z.object({ threadId: id, note: archiveNoteSchema.nullable() }),
-    output: z.null(),
-  },
-  /** Dismiss a thread's refused permissions up to a place in its event log, or with null, show them again. */
-  dismissal_set: {
-    input: z.object({ threadId: id, dismissal: dismissalSchema.nullable() }),
     output: z.null(),
   },
   /**
@@ -104,7 +95,6 @@ export default async function plugin(bb: BbPluginApi) {
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   const caps = registerCaps(bb, log);
-  registerSigning(bb, log, caps, attention.asks);
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -124,9 +114,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.rpc.register(rpcContract, {
-    main_state: () => readState(),
-    main_choose: async ({ projectId, threadId }) => {
+  const chooseMain = async (projectId: string, threadId: string | null): Promise<MainState> => {
       const state = await readState();
       const { [projectId]: _previous, ...others } = state.mains;
       const next: MainState =
@@ -139,7 +127,20 @@ export default async function plugin(bb: BbPluginApi) {
       // Nothing is published: each window keeps the Main chosen in it.
       await bb.storage.kv.set(STATE_KEY, next);
       return next;
-    },
+  };
+
+  // Which Main a new window starts on decides whose queue it shows, so recording it is the person's too.
+  // Marking a reply as seen, dismissing a refusal and marking a brief as read take a line out of the
+  // person's queue, so they are the person's: reached only as signed calls, never as methods here.
+  registerSigning(bb, log, caps, attention.asks, {
+    setSeen: actions.setSeen,
+    setDismissal: actions.setDismissal,
+    readBrief: (threadId, version, read) => attention.briefs.read(threadId, version, read),
+    chooseMain,
+  });
+
+  bb.rpc.register(rpcContract, {
+    main_state: () => readState(),
     notes_list: ({ threadIds }) => actions.notes(threadIds),
     park_set: async ({ threadId, park }) => {
       await actions.setPark(threadId, park);
@@ -149,16 +150,8 @@ export default async function plugin(bb: BbPluginApi) {
       await actions.setArchiveNote(threadId, note);
       return null;
     },
-    dismissal_set: async ({ threadId, dismissal }) => {
-      await actions.setDismissal(threadId, dismissal);
-      return null;
-    },
     project_set: async ({ threadId, project }) => {
       await actions.setProject(threadId, project);
-      return null;
-    },
-    seen_set: async ({ threadId, seen }) => {
-      await actions.setSeen(threadId, seen);
       return null;
     },
     todo_change: async ({ threadId, itemId, change }) => {

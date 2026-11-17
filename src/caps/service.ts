@@ -12,7 +12,7 @@ import { toAskDetail } from "../answer.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { type PermissionResolution, permissionSummary } from "../permission.ts";
 import { type Capability, type Rule, type RuleDraft, type Scope, type Via, addedText, capabilitySchema, isActive, readName, readNote, readRule, ruleDraft, ruleText } from "./cap.ts";
-import { type ChainCheck, type LogEntry, entryCapability, outsideText } from "./log.ts";
+import { type ChainCheck, type LogEntry, entryCapability, newestEntries, outsideText } from "./log.ts";
 import type { LogStore } from "./logstore.ts";
 import { type Request, type Resolved, covers, coversResolved, requestText } from "./match.ts";
 import { type Places, directoryRefusal, readPath } from "./paths.ts";
@@ -412,7 +412,7 @@ export function createCaps(deps: CapDeps): Caps {
       const check = await deps.log.check();
       const wanted = filter.capabilityId === undefined ? all : all.filter((entry) => entryCapability(entry.event) === filter.capabilityId);
       const limit = Math.max(1, Math.min(filter.limit ?? MAX_LOG_PAGE, MAX_LOG_PAGE));
-      return { entries: wanted.slice(-limit).reverse(), total: wanted.length, check };
+      return { entries: newestEntries(wanted, limit), total: wanted.length, check };
     },
 
     async heldBy(threadId) {

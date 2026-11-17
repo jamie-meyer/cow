@@ -143,10 +143,21 @@ export interface BriefMark {
   at: number;
   /** The person has opened this version with this check. */
   read: boolean;
+  /**
+   * Set when an earlier check of this version disputed claims and the check
+   * was run again before the person had read them: how many it disputed. A
+   * check anyone can order must not be a way to take a dispute out of the
+   * queue, so the brief waits on the person whatever the new check says.
+   */
+  earlierDisputes?: number;
+  /** Set when this is not the version's first check: a check that was run again. */
+  rechecked?: true;
 }
 
-export function markOf(version: number, seen: Review, at = 0, read = false): BriefMark {
+export function markOf(version: number, seen: Review, at = 0, read = false, earlierDisputes = 0, rechecked = false): BriefMark {
   return {
+    ...(earlierDisputes > 0 ? { earlierDisputes } : {}),
+    ...(rechecked ? { rechecked: true as const } : {}),
     version,
     state: seen.state,
     contradicted: seen.disputes.filter((entry) => entry.dispute === "contradicted").length,
@@ -164,12 +175,23 @@ export const disputeCount = (mark: BriefMark): number => mark.contradicted + mar
  * Whether a brief is the person's to read: the checker disputes a claim, or
  * the agent left them a decision, and they have not opened it yet. A brief
  * that checked clean waits on nobody. Disputes exist only once a check has
- * answered, so a failed check adds nothing here; while one runs, the brief
- * waits for it.
+ * answered, so a failed check adds nothing here; while a version's first
+ * check runs, the brief waits for it. Anyone can order a check again, so
+ * doing that takes nothing out of the queue: a dispute the person never read
+ * keeps the brief waiting through the new check and whatever it says, and a
+ * judgement call waits while the new check runs too, until they open it.
  */
 export function briefWaits(mark: BriefMark): boolean {
-  if (mark.read || mark.state === "running") return false;
+  if (mark.read) return false;
+  if ((mark.earlierDisputes ?? 0) > 0) return true;
+  if (mark.state === "running" && !mark.rechecked) return false;
   return disputeCount(mark) > 0 || mark.judgementCalls > 0;
+}
+
+/** What a brief says of disputes an earlier check found and the person never read; empty when there are none. */
+export function earlierDisputesText(count: number): string {
+  if (count <= 0) return "";
+  return `an earlier check of this version disputed ${count} ${count === 1 ? "claim" : "claims"}, and the check was run again before you had read ${count === 1 ? "it" : "them"}`;
 }
 
 /** What a waiting brief's line says. */
@@ -178,6 +200,8 @@ export function briefWaitText(mark: BriefMark): string {
   const disputed = disputeCount(mark);
   if (disputed > 0) parts.push(`${disputed} disputed`);
   if (mark.judgementCalls > 0) parts.push(`${mark.judgementCalls} ${mark.judgementCalls === 1 ? "judgement call" : "judgement calls"}`);
+  const earlier = mark.earlierDisputes ?? 0;
+  if (earlier > 0) parts.push(`${earlier} disputed by an earlier check that was run again unread`);
   return `brief: ${parts.join(", ")}`;
 }
 
@@ -215,7 +239,7 @@ function claimLines(entry: ReviewedClaim): string[] {
  * claims, then what was left undone. The agent's label is given as what the
  * agent says, never as a check.
  */
-export function reviewText(head: { threadId: string; version: number; summary: string }, seen: Review): string {
+export function reviewText(head: { threadId: string; version: number; summary: string; earlierDisputes?: number }, seen: Review): string {
   const out: string[] = [`Brief v${head.version} from ${head.threadId}`, `  ${cut(head.summary, 1200)}`, ""];
   const checker = seen.model ?? "bb's default model";
   if (seen.state === "unchecked") out.push("NOT CHECKED: no checker has audited this brief. Nothing below is verified.");
@@ -229,6 +253,9 @@ export function reviewText(head: { threadId: string; version: number; summary: s
       out.push(...failure.answer.slice(0, SHOW_LIMITS.answer).split("\n").map((line) => `    | ${line}`));
     }
   }
+
+  const earlier = earlierDisputesText(head.earlierDisputes ?? 0);
+  if (earlier !== "") out.push(`  NOTE: ${earlier}. This check replaced that one.`);
 
   out.push("", `Disputes (${seen.disputes.length})`);
   if (seen.disputes.length === 0) out.push(seen.state === "checked" ? "    none" : "    unknown: there is no check to dispute anything");

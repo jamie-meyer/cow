@@ -47,7 +47,7 @@ committed to this repository, and there is no release asset to download.
 Check that it is there:
 
 ```sh
-bb plugin list        # cow@0.2.0  running
+bb plugin list        # cow@0.2.1  running
 bb cow help
 ```
 
@@ -64,7 +64,7 @@ Other ways bb can install it, and when to prefer them:
 | Command | Follows | Use it when |
 | --- | --- | --- |
 | `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.0` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
+| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.1` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
 
@@ -173,8 +173,9 @@ new one sits in your queue until you acknowledge it.
 **Signing.** bb does not tell a plugin who is calling it, and serves a
 plugin's interface to any local process. So everything only you may do
 (answering an ask, deciding a permission request, sending a message as you,
-making or deleting a capability, approving a key) is accepted only when it is
-signed by a key your browser holds. The first page to open cow is enrolled;
+making or deleting a capability, approving a key, and taking a line out of
+your queue by marking a reply seen, dismissing a refusal or reading a brief)
+is accepted only when it is signed by a key your browser holds. The first page to open cow is enrolled;
 any other browser asks and is approved from an enrolled one. This has limits,
 stated in [What cow stores and sends](#what-cow-stores-and-sends).
 
@@ -300,7 +301,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, whether it is marked a project |
 | the same database, table `plugin_settings` | the four settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -378,34 +379,59 @@ An agent **can**, through cow:
 - ask for a capability, which raises an ask and grants nothing;
 - write a "next" note, a list of work not started, and the project mark, on
   its own thread and the threads under it;
-- park, resume and archive threads with a reason, and read everything: the
-  overview, asks, briefs, capabilities and the log;
+- **park, resume and archive threads with a reason. This takes a line out of
+  your queue**, with whatever it was waiting on you for. It stays on the
+  page: a parked line is on the Parked shelf with its reason and comes back
+  to the queue on its date or every four weeks, and an archived line is
+  listed under Done with its reason for two days and counted after that;
+- withdraw or close its own ask, and replace its own brief with a new
+  version, which is checked again. Either can take that ask or that brief
+  out of your queue;
+- order a new check of a brief, which costs a model run. Since 0.2.1 that
+  cannot take a brief out of your queue: disputes you have not read keep it
+  there whatever the new check says;
+- read everything: the overview, asks, briefs, capabilities and the log;
 - ask for a key to be enrolled, which shows in your queue under whatever
   name the caller gave and does nothing until an enrolled page approves it;
-- by calling cow's interface directly instead of the CLI: mark a reply as
-  seen, dismiss a refused permission, mark a brief as read, order a check of
-  any brief, change which thread a new window starts on as Main, and park or
-  archive any thread. **These are not signed and not logged.** They cannot
-  grant or send anything, but they can take a line out of your queue without
-  you having seen it.
+- do the unsigned things above to any thread, not only its own, by calling
+  cow's interface directly or by clearing the variable that names its
+  thread: the CLI's rules about whose thread a command may touch go by the
+  caller's own word. None of the unsigned things is logged.
 
 An agent **cannot**, through cow: make, delete, restore or acknowledge a
 capability; decide a permission request; answer an ask or close one as you;
-send a message as you; approve, refuse or remove a key. Those are one method,
-`signed`, which acts only on a call signed by an enrolled key over the
-action, all of its arguments, a time and a nonce. A call signed more than two
-minutes ago, signed before cow last started, or already used, is refused. The
-list is `PERSON_ACTIONS` in `src/signing/envelope.ts`.
+send a message as you; mark a reply as seen, dismiss a refused permission
+or mark a brief as read, or take any of those back; record which thread is
+Main; approve, refuse or remove a key. Those are one method, `signed`, which
+acts only on a call signed by an enrolled key over the action, all of its
+arguments, a time and a nonce. A call signed more than two minutes ago,
+signed before cow last started, or already used, is refused. Each one done
+is in the log with the fingerprint of the key that signed it. The list is
+`PERSON_ACTIONS` in `src/signing/envelope.ts`, and every method that is not
+signed is listed, with what it can change for you, under "What is not
+signed, method by method" in [docs/reference.md](docs/reference.md).
 
 ### The limits of signing and capabilities
 
+- **Signing covers what cow's page does, not everything that empties your
+  queue.** Parking and archiving are open to agents and take a line out of
+  it; look at the Parked shelf and at Done for what was set aside. An ask
+  under a parked thread does not show until the thread is resumed.
 - **bb's own commands are outside cow.** Any thread can approve or deny
   another thread's permission request with `bb thread interactions`, and can
   send a thread a message as you with `bb thread tell` once it clears the
   variable that names it. cow cannot stop either. A request decided that way
-  is flagged "approved outside cow" in your queue until you acknowledge it. A
-  message sent that way is not flagged. Deciding a request in bb's own chat
-  is flagged the same way, because bb records no one for either.
+  is flagged "approved outside cow" in your queue until you acknowledge it.
+  Deciding a request in bb's own chat is flagged the same way, because bb
+  records no one for either. A message sent as you is not flagged, and cow
+  takes it for yours: the reply before it counts as read, and what bb
+  refused that thread stops counting. `bb thread archive` archives any
+  thread, and for a Main with no parent cow goes by bb's own record of what
+  you have read.
+- **The log grows with use.** Opening a chat or a brief signs a mark, and
+  each is an entry. The sheet reads the newest 500 entries that are not
+  such marks, with the marks made since the oldest of them; older entries
+  stay in storage and are not shown.
 - **The key is in your browser profile's files.** It cannot be exported
   through the browser, but bb's sandbox lets a thread read most of the disk.
   An agent that parsed those files could take the key and sign as you, and
@@ -461,10 +487,16 @@ list is `PERSON_ACTIONS` in `src/signing/envelope.ts`.
   the rows a copy of the plugin left in bb's database after the end-to-end
   checks.
 - *What an agent can and cannot do.* `npm run e2e` has a fixture thread try
-  each signed action from inside bb's sandbox, unsigned and with a forged
-  signature, and checks every one is refused; it also approves a request with
-  `bb thread interactions` and checks cow flags it. The unsigned methods were
-  called from a sandboxed shell against a copy.
+  each signed action from inside bb's sandbox, by HTTP and by
+  `bb plugin rpc call`, unsigned and with a forged signature, and checks
+  every one is refused and nothing changed; it also approves a request with
+  `bb thread interactions` and checks cow flags it. For marking a reply
+  seen, dismissing a refusal and marking a brief read, the same script was
+  run by a sandboxed fixture against 0.2.0, where all three worked by both
+  routes, and against 0.2.1, where none does. What the unsigned methods can
+  change was read from the code, and for parking, archiving and running a
+  check again it is pinned by unit tests (`test/set-aside.test.ts`,
+  `test/briefs.test.ts`).
 - *The checker's message.* It is one function, `checkerPrompt` in
   `src/briefs/checker.ts`.
 
@@ -518,7 +550,9 @@ bb plugin update cow        # install it; bb asks first
 
 An update replaces cow's code and keeps what it stored: Mains, notes on
 threads, asks, briefs, capabilities, the log, enrolled keys and settings.
-Reload any cow page that was open, since a page keeps the code it loaded.
+Reload any cow page that was open, since a page keeps the code it loaded: a
+page from before 0.2.1 can no longer mark a reply as seen, dismiss a refusal
+or mark a brief as read until it is reloaded.
 [CHANGELOG.md](CHANGELOG.md) says what each version changes.
 
 A range such as `^0.2.0` stops before 0.3.0. To move to a later range, remove
