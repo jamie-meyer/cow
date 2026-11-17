@@ -28,6 +28,8 @@ const OWN = "capown:";
 
 /** Capabilities in force at once; more than this is not something a person reads. */
 export const MAX_CAPABILITIES = 200;
+/** How long after it was deleted a capability is still given to the page. */
+export const DELETED_SHOWN_MS = 24 * 60 * 60_000;
 /** The log entries the page and the CLI are given at once, newest first. */
 export const MAX_LOG_PAGE = 500;
 
@@ -59,7 +61,7 @@ type Pending = z.infer<typeof pendingSchema>;
 
 const placesSchema = z.object({ home: z.string().nullable(), dataDir: z.string().nullable() });
 export const capStateSchema = z.object({
-  /** Every capability, deleted ones included: the page shows a deleted one while its notice is unacknowledged. */
+  /** Every capability in force, and the deleted ones the page still has a use for: those with a notice not yet acknowledged, and those deleted in the last day. */
   capabilities: z.array(capabilitySchema),
   notices: z.array(noticeSchema),
   uses: z.record(z.string(), useSchema),
@@ -411,7 +413,11 @@ export function createCaps(deps: CapDeps): Caps {
         if (use.success) uses[key.slice(USE.length)] = use.data;
       }
       const notices = (await readAll(NOTICE, noticeSchema)).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
-      return { capabilities: await capabilities(), notices, uses, places: await deps.places() };
+      // A deleted capability is of use to the page while its notice waits, and for a day, for undo. The log keeps the rest.
+      const waiting = new Set(notices.map((notice) => notice.capabilityId));
+      const since = deps.now() - DELETED_SHOWN_MS;
+      const shown = (await capabilities()).filter((capability) => isActive(capability) || waiting.has(capability.id) || (capability.deletedAt ?? 0) >= since);
+      return { capabilities: shown, notices, uses, places: await deps.places() };
     },
 
     async log(filter = {}) {

@@ -246,6 +246,20 @@ test("a notice outlives its capability: one made and deleted unseen still has to
   assert.equal(state.capabilities[0]!.deletedAt !== null, true);
 });
 
+test("the page is given a deleted capability for a day, and for as long as its notice waits", async () => {
+  const w = world();
+  const seen = await w.caps.create(input());
+  await w.caps.acknowledge((await w.caps.state()).notices[0]!.id);
+  const unseen = await w.caps.create(input({ name: "other", rule: { kind: "dir", text: "/tmp/other" } }));
+  await w.caps.remove(seen.id);
+  await w.caps.remove(unseen.id);
+  assert.deepEqual((await w.caps.state()).capabilities.map((capability) => capability.name), ["scratch", "other"]);
+  w.clock.now += 25 * 60 * 60_000;
+  assert.deepEqual((await w.caps.state()).capabilities.map((capability) => capability.name), ["other"]);
+  // It is still in storage: its history and undo do not depend on the page having it.
+  assert.equal((await w.caps.restore(seen.id)).deletedAt, null);
+});
+
 test("a capability deleted between the look and the answer allows nothing", async () => {
   const w = world();
   const made = await w.caps.create(input());

@@ -8,6 +8,13 @@
 // It also runs `bb cow` against the same fixtures, and leaves and removes
 // notes of what is next on them.
 //
+// For capabilities it uses three more fixtures under a Main of their own. It
+// makes capabilities that apply only to those fixtures, for `echo` commands
+// and for a scratch directory it creates under /tmp and removes, and deletes
+// them when it finishes. What it did stays in cow's capability log, which
+// nothing clears. One fixture is told to call cow's interface from inside
+// its sandbox, to check that whatever that achieves is logged and shown.
+//
 // For asks and briefs it uses three more fixtures under a Main of their own,
 // and cow starts two hidden checker threads, titled "cow check", the first
 // time: the briefs they audit are kept and used again. While it runs it sets

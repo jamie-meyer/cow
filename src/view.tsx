@@ -1695,6 +1695,8 @@ function OverviewScreen({
     return <HeldCard threadId={id} held={heldOf(id)} fresh={freshCaps} use={caps.uses.get(id) ?? null} outside={caps.outside.get(id) ?? []} titleOf={(thread) => titles.get(thread) ?? threads.find((other) => other.id === thread)?.title ?? thread} now={now} key={line?.thread.id} />;
   };
   const capNotices = caps.notices.filter((notice) => notice.kind === "capability");
+  // Always in sight: a capability nobody remembers making shows as a number that went up.
+  const inForce = caps.capabilities.filter((capability) => capability.deletedAt === null).length;
   // What waits on the person: the lines in the queue, and the capabilities they have not acknowledged.
   const waiting = overview.queue.length + capNotices.length;
   const row = (line: Line, flat: boolean) => {
@@ -2061,7 +2063,7 @@ function OverviewScreen({
                 <Verb keys="/" label="filter" onRun={startFilter} />
                 <Verb keys="m" label="Main's chat" onRun={() => openChat(main.thread.id)} />
                 <Verb keys="⇥" label="next ask" off={overview.queue.length === 0} onRun={() => run({ kind: "ask", by: 1 })} />
-                <Verb name="caps" keys="C" label={caps.notices.length > 0 ? `capabilities · ${caps.notices.length} new` : "capabilities"} onRun={() => run({ kind: "caps" })} />
+                <Verb name="caps" keys="C" why="how many capabilities are in force, and how many notices wait: C opens them" label={`capabilities ${inForce}${caps.notices.length > 0 ? ` · ${caps.notices.length} to acknowledge` : ""}`} onRun={() => run({ kind: "caps" })} />
                 <Verb keys="f" label="hints" onRun={startHints} />
                 <Verb keys="?" label="legend" onRun={() => setHelp(true)} />
               </span>

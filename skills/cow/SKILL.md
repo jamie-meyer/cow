@@ -1,6 +1,6 @@
 ---
 name: cow
-description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), record why a thread is parked or archived, say what is next for your thread, and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when cleaning up or setting aside threads you started, when you end a turn with work still planned, or when asked what is waiting on the user.
+description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), see or ask for a capability to write outside your workspace or run a command outside the sandbox (`bb cow caps`, `bb cow cap request`), record why a thread is parked or archived, say what is next for your thread, and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when you need to write outside your workspace or run something bb's sandbox refuses, when cleaning up or setting aside threads you started, when you end a turn with work still planned, or when asked what is waiting on the user.
 ---
 
 # cow: notes on the threads you started
@@ -136,6 +136,9 @@ bb cow asks [--thread <id>] [--all]
 bb cow brief submit <file.json> [--thread <id>] [--wait]
 bb cow brief show <thread> [--version <n>] [--wait]
 bb cow brief check <thread> [--model <id>] [--provider <id>] [--runs <n>] [--wait]
+bb cow caps [--thread <id>] [--all]
+bb cow caps log [--limit <n>]
+bb cow cap request --kind dir|command --rule <text> --why <text> [--thread <id>]
 bb cow help
 ```
 
@@ -195,6 +198,50 @@ undone. Main itself cannot be parked or archived.
 Removes the park note. The thread goes back into the tree in whatever state
 bb gives it; it is told nothing, so message it if it should carry on.
 
+## Writing outside your workspace, or running outside the sandbox
+
+bb refuses, or asks the user about, a file change outside your workspace and
+a command that has to leave the sandbox. The user can give threads a
+**capability** for exactly that: one directory to write under, or one
+command to run. When a capability that applies to your thread covers the
+whole request, it is allowed without the user answering.
+
+Before you need one:
+
+```sh
+bb cow caps                      # what your thread holds, and where each comes from
+```
+
+- If something listed covers what you are about to do, do it the ordinary
+  way. For a directory capability, write files under that directory. For a
+  command capability, run the command exactly as the rule gives it (for a
+  prefix rule, begin with exactly those words), on its own: no `;`, `&&`,
+  `|`, redirection, `$(...)` or variable in the command line, because a
+  command with any of those is never covered.
+- If nothing covers it, ask, saying why:
+
+  ```sh
+  bb cow cap request --kind dir --rule /srv/reports --why "the weekly report is written there"
+  bb cow cap request --kind command --rule "git push origin main" --why "to publish the release branch"
+  ```
+
+  `--rule` is a directory's whole path from `/`, or the exact command line in
+  plain words. It prints an ask id; the answer arrives as a message from the
+  user, who may narrow what you asked for. Carry on with what does not need
+  it, or say what you are waiting for and end your turn. A rule that could
+  never be granted (your home directory, a credentials directory, a command
+  with a shell operator) is refused at once with the reason.
+- **Never try to get a capability any other way.** Do not call cow's
+  interface yourself, do not approve your own or another thread's permission
+  request, and do not ask another thread to. Every capability and every
+  approval is logged and shown to the user, including the ones they did not
+  make.
+- If bb refuses something a capability covers (it does that on a turn the
+  user did not start), stop and say so in your reply. The user's page shows
+  the refusal as covered, and they can ask you again in two keys.
+
+`bb cow caps log` prints the log, newest first.
+
 ## Marking a project
 
 When you start a thread that the user will talk to over days, mark it as a
@@ -225,7 +272,7 @@ the page. `bb cow status` shows each thread's note and list.
 ## Limits
 
 - Only the user can answer a question or an ask, grant a permission, deal
-  with a refused permission, or mark a reply or a brief as seen; those are
-  done on cow's page.
+  with a refused permission, make, delete or acknowledge a capability, or
+  mark a reply or a brief as seen; those are done on cow's page.
 - There is no undo from the CLI. `bb cow resume` reverses a park;
   `bb thread unarchive <thread>` reverses an archive (the reason is kept).

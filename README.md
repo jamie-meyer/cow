@@ -10,8 +10,9 @@ the manner of vim.
 
 Early. The page shows every thread's state and acts on it: you can answer a
 question, grant or deny a permission request, deal with a permission bb
-refused without asking, park work and get it back, stop a turn, archive with
-a reason, and undo. A thread with threads under it is drawn as a group that
+refused without asking, give threads capabilities so that what you have
+already agreed to is allowed without asking again, park work and get it back,
+stop a turn, archive with a reason, and undo. A thread with threads under it is drawn as a group that
 folds. A file named anywhere on the page opens in cow's own reader, read
 with the keyboard. A thread you talk to over days is a project, and is never
 shown as done. An agent can leave the same notes with the `bb cow` CLI, and say what
@@ -27,7 +28,9 @@ what it reported. A thread you talk to yourself replies to you: see
 "Replies addressed to you". The queue holds only what is yours: asks,
 questions, permission requests, permissions bb refused without asking,
 failures, briefs with disputes or judgement calls you have not read, replies
-addressed to you that you have not seen, and parked work that has come back.
+addressed to you that you have not seen, parked work that has come back,
+capabilities you have not acknowledged, and permission requests that were
+decided somewhere other than cow.
 
 ## Install for development
 
@@ -72,6 +75,8 @@ Moving and looking:
 | `I` | say something to the selected thread |
 | `Tab`, `Shift+Tab` | next, previous entry in the queue |
 | `1` to `9` | jump to that place in the queue |
+| `c` | show the capabilities the line's thread holds, and where each comes from; see "Capabilities" |
+| `C` | open the capabilities sheet: every capability, and the log |
 | `M` | choose a different Main for this window |
 | `?` | the legend and this key map |
 
@@ -93,6 +98,7 @@ verb takes no hint, and its key says why it does not apply.
 | `x` | parked work that came back | drops it: asks for a reason, then stops and archives it |
 | `e` | a done, idle or failed line | asks for a reason, then archives the thread in bb |
 | `Space` | a line that replied to you | marks the reply as seen: the line stops waiting on you |
+| `Space` | a line whose request was decided outside cow | acknowledges it: see "Capabilities" |
 | `x` | a not-started item | removes it from its thread's list, after `y` |
 | `J`, `K` | a not-started item | moves it down, up its list |
 | `P` | any line but Main | marks it as a project, or takes the mark off; see "Projects" |
@@ -386,6 +392,7 @@ for asking. Under that are the decisions bb offers, numbered:
 | Allow for the rest of this session | offered when bb offers it; wider than the one request |
 | Deny | the agent is told no, and carries on with its turn |
 | Deny, and tell it why | a denial, then the text you type, sent to the thread as a message |
+| Allow once, and save as a capability | cow's own choice, after bb's: opens the steps that make a capability from this request, and allows the request once when it is saved; see "Capabilities" |
 
 Granting is deliberate. A digit only marks a decision and `Enter` confirms
 it, so no single key grants anything. "Allow for the rest of this session"
@@ -397,6 +404,10 @@ message.
 No decision can be undone. Once allowed, the command runs or the file is
 written at once, and a session grant lasts until the thread's session ends.
 The card says so.
+
+The page sends your decision to bb through cow's backend, which writes it in
+the capability log. That is how cow can tell a decision made on its page from
+one made somewhere else.
 
 Two limits come from bb, not from cow:
 
@@ -432,6 +443,7 @@ three choices, numbered. A digit marks one and `Enter` carries it out.
 | Ask again as me | sends the thread a message, as you, telling it to do exactly that again |
 | Tell it to carry on without it | sends a message, as you, saying the permission will not be granted and to go another way or report back |
 | Dismiss | clears the blocked state and tells the thread nothing; `u` undoes it |
+| Save a capability for this | opens the steps that make a capability covering what was refused; nothing is sent. Once it is covered, the card opens with "Ask again as me" marked; see "Capabilities" |
 
 **Ask again as me** is the way to grant what bb refused. cow cannot approve a
 refusal after the fact, because bb raised no request to approve. But a
@@ -467,6 +479,277 @@ other way. A denial you made yourself is never shown as a refusal. cow reads
 the latest hundred or so events of a thread, so a refusal further back than
 that in a very long turn is not seen. Refused tools other than the shell and
 file edits are not detected.
+
+## Capabilities
+
+A worker sometimes needs to write outside its workspace, or to run a command
+outside bb's sandbox, and to do it more than once. A **capability** is a
+named grant you give to threads for that. When bb raises a permission request
+on a thread, and a capability that applies to that thread covers the whole
+request, cow answers bb "allow once" for you and writes it in a log. Nothing
+wider is ever answered: no session grant, and nothing that outlives the one
+request.
+
+A capability is one of two kinds:
+
+| Kind | Covers |
+| --- | --- |
+| Write a directory | creating and changing files anywhere under one absolute directory |
+| Run a command | one command bb asks about, given as the exact command line, or as a prefix of its words (`git push origin` covers `git push origin main`) |
+
+It has a name, an optional note, who it applies to, when and how it was
+made, and a count of what it has allowed. It applies to one of:
+
+- one thread, and no other;
+- a thread and every thread under it, now and later;
+- every thread under a Main, now and later (not the Main itself).
+
+On this bb, "bb asks about a command" means the agent asked to run it outside
+the workspace sandbox. Credentials are not part of this: bb writes the
+environment values a plugin contributes into the thread's event log
+unmasked, so cow hands out none.
+
+**This is not a security boundary.** bb does not tell a plugin who is calling
+it, so cow cannot stop a local process, an agent included, from making a
+capability through the same interface the page uses. What cow does is make
+every such act visible: see "What cow cannot guarantee" below, which says
+what was tried and what worked.
+
+### Making, viewing and deleting
+
+Only you do these, on the page. There is no `bb cow` command and no agent
+tool that makes, changes, grants, deletes or acknowledges a capability.
+
+**From a permission request.** The card (`a` on the line) has one more
+choice after bb's own: "Allow once, and save as a capability". Its digit
+marks it and `Enter` opens the steps under the line:
+
+1. **The rule**, proposed from the request: the directory the file is in, or
+   the exact command. Edit it: delete from the end of a directory to widen it
+   to a parent; for a command, `Tab` switches between the exact line and a
+   prefix, and you cut the line down to the words that must match.
+2. **A name**: what the log and each line will call it. Names in force
+   differ.
+3. **A note**, or nothing.
+4. **Who it applies to**: the thread, the thread and everything under it, or
+   everything under Main. A digit marks one.
+5. **One sentence** that says exactly what will be allowed for whom, such as
+   "The thread “billing” and every thread under it, now and later, may create
+   and change files anywhere under /srv/reports, each time bb asks, without
+   asking you." `Enter` here is the confirmation: it saves the capability and
+   answers the request it came from "allow once". `Esc` goes back a step at a
+   time, and out of the first step with nothing saved and the request still
+   waiting.
+
+**From a permission bb refused.** The blocked card has a fourth choice,
+"Save a capability for this", with the same steps. Nothing is sent to the
+thread. Once saved, the refusal reads as covered: see "Using one".
+
+**From the sheet.** `C` opens the capabilities sheet over the whole page:
+
+| Key in the sheet | Does |
+| --- | --- |
+| `j` `k`, `g g`, `G` | move between the lines |
+| `n` | make one from scratch, through the same steps, starting with its kind. "Who it applies to" is offered around the line the cursor was on when you pressed `C` |
+| `x` | delete the one under the cursor, after a confirmation that names the threads that lose it; `y` confirms |
+| `u` | put back the one deleted last from this sheet, after `y`. It counts as new again |
+| `Enter` | its history, in place: when it was made, each request it allowed, when it was acknowledged, deleted or put back |
+| `Space` | acknowledge what is marked new on the line |
+| `Tab` | the log, and back |
+| `f` | hints on what is in the sheet |
+| `q`, `Esc` | close |
+
+Each capability is one line: its name, its kind, the rule, who it applies to,
+how often it has been used and when last, and when and how it was made. A
+capability that was deleted before you acknowledged it stays listed, struck
+through, until you do.
+
+**On a line.** A thread that holds any capability carries a small key mark
+after its title, with the number of requests capabilities have allowed on it.
+`c` on any line shows which capabilities apply to that thread and where each
+comes from: its own, from a named thread above it, or from Main. `c` or `Esc`
+closes it. The `C` entry in the bar at the bottom always says how many
+capabilities are in force.
+
+**From an agent's request.** An agent cannot make a capability, but it can
+ask for one:
+
+```sh
+bb cow caps [--thread <id>] [--all] [--json]     # what a thread holds, and where each comes from
+bb cow caps log [--limit <n>] [--json]           # the log, newest first
+bb cow cap request --kind dir|command --rule <text> --why <text> [--thread <id>]
+```
+
+`cap request` raises an ask on the page ("asks for a capability: write under
+/srv/reports") with two answers, grant it and refuse. Granting opens the same
+steps, starting from what was asked for, which you can narrow or widen; when
+you save, the thread is told what was granted. A rule that could never be
+granted is refused when the agent asks, with the reason, and no ask is
+raised. `caps` and `caps log` only read.
+
+### What is refused
+
+A directory rule is refused, with the reason, when it is:
+
+- relative, or starts with `~` (only a shell expands that), or has a `..` in
+  it, or has a control character in it, or is longer than 1,024 characters;
+- the root of the filesystem;
+- your home directory, or a directory that contains it (shell start-up files
+  live in the home directory itself);
+- one of the protected places, inside one, or a directory that contains
+  one. The protected places are bb's data directory (which holds cow's own
+  storage and every thread's storage, worktrees bb manages included) and,
+  under your home directory: `.bb`, `.claude`, `.codex`, `.ssh`, `.aws`,
+  `.azure`, `.kube`, `.docker`, `.config`, `.gnupg`, `.password-store`,
+  `.local/share/keyrings` and `Library/Keychains`. These comparisons ignore
+  case and Unicode form, because the disk does. The list is in one place,
+  `PROTECTED_IN_HOME` in `src/caps/paths.ts`;
+- on the machine bb's server runs on: a directory that is a symbolic link to
+  any of the above.
+
+A command rule, exact or prefix, is refused unless it is **plain words**:
+
+- words of letters, digits and `_ @ % + = : , . / -`, separated by spaces or
+  tabs; text in single quotes; text in double quotes that has no `$`,
+  backtick, backslash or `!` in it;
+- so anything else outside single quotes is refused: `; & | < > ( ) { } [ ]
+  * ? ~ ! # $ ^`, the backtick and the backslash, a line break or any other
+  control character, an unclosed quote, a first word that is a variable
+  assignment (`NAME=value`), and a word that starts with `=`.
+
+A prefix rule must also have at least two words, and may not start with a
+shell or a command whose job is to run another command (`sh`, `bash`, `zsh`,
+`env`, `sudo`, `xargs`, `eval`, `exec`, `nohup`, `time` and the like: the
+list is `RUNNERS` in `src/caps/command.ts`). That list catches the plain
+mistake and nothing more. A prefix such as `python -c` or `node -e` is
+accepted and covers whatever code follows it; the sentence in the last step
+says "whatever follows them" for that reason.
+
+### Using one: the exact rules
+
+When bb raises a permission request, cow looks at the capabilities in force
+that apply to the thread. A request is **covered** only when:
+
+- **Directory rule, file change.** bb names at least one file; every path is
+  absolute, has no `..` in it and no control character; and every path is
+  inside the directory, compared segment by segment and exactly, so
+  `/srv/reports-old/a` is not under `/srv/reports`, and neither is
+  `/srv/Reports/a`. The directory itself is not inside itself. A directory
+  rule never covers a command, whatever the command would write.
+- **Symbolic links.** When the thread runs on the machine bb's server runs
+  on, cow follows the links in the directory and in each path (through the
+  deepest part that exists) and requires each file to really be inside where
+  the directory really is, and outside every protected place. So a link
+  inside the directory that leads out of it is not covered, while a
+  directory under `/tmp` on macOS, which is itself a link, still works. On
+  any other machine cow cannot look, the answer stands on the paths as
+  written, and the log entry says "symbolic links could not be followed".
+  Either way a link made after cow looked and before the write is not seen.
+- **Exact command rule.** The request's command line equals the rule
+  character for character. A second space is a different command.
+- **Prefix rule.** The request's command line is plain words, as above, with
+  no operator or expansion anywhere in it, and its first words are the
+  rule's, word for word. Quoting does not matter (`git push 'origin' main`
+  begins with `git push origin`); `git push originx` does not.
+- **A command with a shell operator or expansion in it is never covered.**
+  No rule can be made from one, and no prefix reaches past one.
+- bb offers "allow once" for the request. cow never answers anything else.
+- The capability is read again from storage at the moment of answering, and
+  must still be in force and unchanged.
+
+Anything cow cannot read with certainty is not covered: a kind of request
+other than a command or a file change, a file change bb has not named the
+files of, a path or a command outside the grammar above. An uncovered
+request shows the ordinary permission card, as before. The rule does not
+look at the directory a command runs in.
+
+When a request is allowed this way it never reaches you. The thread's line
+says "allowed by <name>" for ten minutes, while it has nothing to ask you,
+and its key mark counts it.
+
+**Deleting takes effect at once.** Nothing cow granted outlives the single
+request it answered, so the next request needs you again.
+
+**Refusals on turns you did not start.** bb refuses those without asking, so
+there is no request for a capability to answer. When everything bb refused a
+thread is covered by its capabilities, its line says "covered by <name>" and
+its card opens with "Ask again as me" already marked: `a`, then `Enter`. The
+request bb raises when the thread tries again is then allowed. cow never
+sends that message by itself. Whether a refusal is covered is judged on the
+paths as written; the links are followed when the request comes.
+
+### The log, the notices, and approvals cow did not make
+
+Because cow cannot tell who calls it, it records and shows instead:
+
+- **The log.** Every capability made, deleted or put back, every notice
+  acknowledged, every request allowed through a capability (when, on which
+  thread, what, by which capability), every decision made through cow's page,
+  every decision cow saw made somewhere else, and every capability a thread
+  asked for. The sheet shows it newest first (`Tab`), and no key, command or
+  interface method edits or clears it. Entries are numbered and each carries
+  the hash of the one before, so an entry removed from the middle, or
+  changed, shows as "the log is broken at entry N". The chain holds no
+  secret: see the limits.
+- **A notice for every new capability.** Making one, or putting a deleted one
+  back, raises "capability added: <name>: <rule> for <whom>" in the queue,
+  for the ones you just made yourself too. It stays until you acknowledge it
+  with `Space` in the sheet, which is logged. Until then the capability is
+  marked new in the sheet, on `c`, and on the line of every thread that holds
+  it. A notice outlives its capability: one made and deleted before you saw
+  it still waits.
+- **Approvals cow did not make.** cow knows the requests it answered: the ones
+  you decided on its page, and the ones a capability allowed. When a
+  permission request it was watching is decided any other way, the thread's
+  line reads "approved outside cow: run: … · in bb's own view, or by another
+  thread" (or "denied outside cow"), wants you, and is in the queue until you
+  press `Space` on it. It is logged, and so is the acknowledgement. If you
+  approve a request in bb's own chat, this is what you will see; cow cannot
+  tell that from another thread running `bb thread interactions approve`,
+  because bb records no one for either.
+
+### What cow cannot guarantee
+
+What was tried, on bb 0.49.0, from inside a sandboxed agent's own turn
+(a fixture thread running ordinary commands in bb's command sandbox):
+
+| Route | Result |
+| --- | --- |
+| `bb plugin rpc call cow cap_create --input-file …`, a bare `bb` command | **worked**: the capability was made |
+| `curl` to `http://127.0.0.1:38886/api/v1/plugins/cow/rpc/cap_create` | **worked**: the capability was made |
+| the same call to `cap_ack`, on the notice of the capability it had made | **worked**: the notice left the queue |
+| the same call to `cap_delete` | **worked** |
+| the same call to `permission_decide`, on another thread's pending request | **worked**: the request was approved, and logged as a decision made on cow's page |
+| `bb thread interactions approve <request> <thread>`, bypassing cow | **worked**, as bb allows any thread to do; cow flagged it "approved outside cow" |
+| opening bb's database, where cow's storage is, for writing | blocked by the sandbox |
+| `bb plugin config cow`, to see whether plugin management is reachable | reachable. `bb plugin disable cow` and `bb plugin remove cow`, which would stop cow or delete its storage and its log, were not run |
+
+So, plainly:
+
+- **An agent that sets out to can give itself a capability**, with one
+  command. cow does not prevent it. The capability is in the log, raises a
+  notice, and is counted in the bar at the bottom and marked on every line it
+  applies to.
+- **The same agent can then acknowledge its own notice.** After that nothing
+  is in your queue. What still shows it: the log (an "added" entry and an
+  "acknowledged" entry you did not make), the sheet, the number of
+  capabilities in force, the mark on the lines, and "allowed by" each time it
+  is used.
+- **An agent that approves a request through cow's own interface is recorded
+  as you.** The log says "allowed once on cow's page", and nothing is
+  flagged. Only a decision that goes round cow is flagged.
+- **The log is evidence against a caller of the interface, not against
+  someone who can write cow's storage.** A sandboxed agent could not. A
+  process outside the sandbox could rewrite the whole log with hashes that
+  check out, or remove the plugin and its storage. A missing or broken log is
+  itself the sign.
+- **Requests are watched only while cow runs.** A request raised and decided
+  while the plugin is disabled, or reloading, is not flagged. What is still
+  pending when cow loads is looked at then.
+- cow reads bb 0.49 with the Claude Code provider, as elsewhere on this page.
+
+The log and the notices are for noticing. What you allow is still decided by
+what you put in a rule and who you give it to.
 
 ## Parking
 
@@ -521,6 +804,7 @@ without one.
 a refused permission, or mark as seen made with `Space`, then the one
 before, for as long as the page stays open. Five things cannot be undone, and they say so: stopping a turn,
 answering a question, answering an ask, deciding a permission request, and sending a message.
+Deleting a capability has its own undo, `u` in the capabilities sheet.
 Undoing a park that stopped a turn, or a drop, restores the line but the turn
 stays stopped. bb archives the threads under a thread along with it; undo
 brings those back too.
@@ -548,7 +832,7 @@ colours and font alone.
 
 | Mark | State | Means |
 | --- | --- | --- |
-| ● | wants you | it has an ask open for you, it asked a question or for permission, its brief has disputes or judgement calls you have not read, or it finished with a reply addressed to you that you have not seen |
+| ● | wants you | it has an ask open for you, it asked a question or for permission, one of its permission requests was decided outside cow, its brief has disputes or judgement calls you have not read, or it finished with a reply addressed to you that you have not seen |
 | ⊘ | blocked on a permission | bb refused it a command or a file change without asking you; `a` asks again as you |
 | ▶ | running | a turn is in progress |
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
@@ -564,11 +848,13 @@ Two more marks sit beside a title, and say nothing about the thread's state:
 | --- | --- |
 | ▤ and ✓, ▶ or ✕ | the thread submitted a brief, and a checker disputed none of its claims (✓), is auditing it now (▶), or failed to give a usable answer (✕: nothing in it is verified) |
 | ▤ ≠ 2 | the checker disputes that many of the brief's claims |
+| a key, and 3× | the thread holds a capability; capabilities have allowed that many of its requests. "new" beside it: one you have not acknowledged |
 
 When several things wait on you at once, a line shows the first of: a
 failure; a question or permission request raised in its chat, which holds a
-running turn; an open ask; a permission bb refused; a brief with disputes or
-judgement calls; a reply addressed to you. The others are still there when
+running turn; an open ask; a request of its own that was decided outside cow;
+a permission bb refused; a brief with disputes or judgement calls; a reply
+addressed to you. The others are still there when
 that one is dealt with.
 
 A line does not read done for a moment between its turn ending and cow
@@ -856,7 +1142,8 @@ The CLI has no undo: `bb cow resume` reverses a park, and
 `bb thread unarchive` reverses an archive. Answering questions, granting
 permissions and dealing with refused ones stay with you, on the page.
 `bb cow ask`, `asks` and `brief` are described under "Asks" and "Briefs and
-the checker".
+the checker"; `bb cow caps`, `caps log` and `cap request` under
+"Capabilities".
 
 The plugin ships a skill, `skills/cow/SKILL.md`, that tells agents about
 these commands.
@@ -864,7 +1151,7 @@ these commands.
 ## Develop
 
 ```sh
-npm test            # unit tests: states, projects, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker, the reader, scrolling the chat
+npm test            # unit tests: states, projects, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker, the reader, scrolling the chat, capabilities (rules, refusals, matching, scope, the log, the steps)
 npm run typecheck
 ```
 
@@ -874,11 +1161,14 @@ the cheapest model. It sets cow's checker model while it runs and puts it
 back. See the top of `scripts/e2e-asks.mjs`.
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
-fourteen cheap fixture threads titled "cow test", and the first time cow starts
+seventeen cheap fixture threads titled "cow test", and the first time cow starts
 two hidden checker threads for the briefs it submits. It acts only on those (it answers,
 stops and archives them for real, grants them permission to run `echo` and to
-write one file under `/tmp`, and runs `bb cow` on them), and archives them
-afterwards. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it. With `--only-reader` it makes four fixtures and checks
+write small files under `/tmp`, and runs `bb cow` on them), and archives them
+afterwards. It makes capabilities that apply only to those fixtures, for
+`echo` commands and a scratch directory under `/tmp`, and deletes them; what
+it did stays in the capability log, which nothing clears. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it. With `--only-caps` it makes three fixtures and checks only capabilities.
+With `--only-reader` it makes four fixtures and checks
 only the reader, projects, asks answered in chat and scrolling the chat; its
 `--environment` must then be a checkout of cow, because the fixture links to
 cow's own files, and it writes and removes a `.cow-e2e` folder there.
@@ -890,7 +1180,8 @@ bb plugin disable cow   # unload it; your choice of Main is kept
 bb plugin remove cow    # uninstall it and delete what it stored
 ```
 
-cow stores five things: which thread was last chosen as Main for each
+cow stores six things: capabilities, their notices and their log, in the
+plugin's own storage; which thread was last chosen as Main for each
 project; which reply of each thread you have seen; its notes on a thread
 (why it is parked, why it was archived, which refused permissions you
 dismissed, what the thread says is next and has not started, whether it is a
@@ -898,6 +1189,7 @@ project), kept in that thread's plugin metadata; asks and briefs, with the check
 the plugin's own storage; and, in each window's session storage, the Main
 that window shows and the groups folded in it. When a thread is deleted in
 bb, cow deletes its record of which reply you saw and its notes on it.
+Capabilities and the log are kept.
 
 ## License
 
