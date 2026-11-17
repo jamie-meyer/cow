@@ -5,6 +5,7 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createActions } from "./src/actions.ts";
+import { registerAttention } from "./src/raised-backend.ts";
 import { cowCli } from "./src/cli.ts";
 import {
   archiveNoteSchema,
@@ -133,5 +134,5 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(cowCli(actions));
+  bb.cli.register(cowCli(actions, registerAttention(bb)));
 }

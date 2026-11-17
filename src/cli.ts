@@ -4,6 +4,7 @@
 
 import { PluginCliError, cliCommand, defineCli } from "@get-bb/plugin-sdk";
 import { type Actions, CowError, MAX_REASON } from "./actions.ts";
+import { type Attention, attend, attentionCommands, elsewhereText } from "./raised-cli.ts";
 import { pickUpText } from "./park.ts";
 import { MAX_NEXT, MAX_TODOS, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
@@ -139,7 +140,7 @@ function planCommands(actions: CliActions) {
   };
 }
 
-export function cowCli(actions: CliActions) {
+export function cowCli(actions: CliActions, attention?: Attention) {
   return defineCli({
     name: "cow",
     summary: "🐄 cow's notes on threads: park, resume, archive with a reason, what is next, and the overview",
@@ -159,10 +160,13 @@ export function cowCli(actions: CliActions) {
         },
         async run(input, ctx) {
           const main = input.options.main === undefined ? null : threadId(input.options.main);
-          const report = await acting(() => actions.status(main, ctx.projectId ?? null));
+          const plain = await acting(() => actions.status(main, ctx.projectId ?? null));
+          // Asks and briefs are put on the overview: an open ask is a place in the queue.
+          const attended = attention ? await attend(attention, plain, ctx.projectId ?? null, Date.now()) : null;
+          const report = attended ?? plain;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }
-            : { exitCode: 0, stdout: statusText(report) };
+            : { exitCode: 0, stdout: statusText(report) + elsewhereText(attended?.asksElsewhere ?? 0) };
         },
       }),
       archive: cliCommand({
@@ -232,6 +236,7 @@ export function cowCli(actions: CliActions) {
           return print(input.options.json, { threadId: id, title: done.title }, `resumed “${done.title}” (${id}): it is back in the tree`);
         },
       }),
+      ...(attention ? attentionCommands(attention) : {}),
     },
   });
 }

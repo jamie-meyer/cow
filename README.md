@@ -436,6 +436,141 @@ colours and font alone.
 
 The limits live in one place, `LIMITS` in `src/state.ts`.
 
+## Asks
+
+A question an agent writes in prose scrolls away. An **ask** is one question
+from a thread to you that stays open until you answer it or the thread
+withdraws it. Agents raise one with the CLI:
+
+```sh
+bb cow ask --question <text> [--option <label>[::<detail>]]... [--options-only]
+           [--risk low|medium|high] [--proof <path>]... [--context <text>] [--thread <id>]
+bb cow asks [--thread <id>] [--all] [--json]
+bb cow ask withdraw <id>
+```
+
+- A thread asks for itself, or for a thread under it; asking for an unrelated
+  thread is refused. Several asks can be open on one thread, and each is
+  answered separately. `ask` prints the ask's id.
+- Up to 9 options. You can answer in your own words as well, unless the ask
+  was made with `--options-only`. `--proof` names files in the thread's
+  storage for you to look at.
+- `bb cow status` lists every open ask under "Waiting on the user", oldest
+  first, and a thread with an open ask reads as `wants`. The page does not
+  show asks yet.
+- **Only you answer.** There is no `bb cow answer`: a command cannot tell
+  your terminal from an agent's, because an agent can clear the variable that
+  names its thread. Answers go through the plugin's RPC (`ask_answer`), which
+  the page will call.
+- The answer reaches the asking thread as a message from you that quotes the
+  question and gives the answer, and starts its next turn if it had gone
+  idle.
+
+Asks are kept in the plugin's own storage, not on the thread, so the thread
+that asked cannot edit the record of what you answered. They survive a
+plugin reload and a restart of bb. An answer is recorded before it is sent:
+if sending fails, cow sends it again the next time it loads.
+
+cow does not use bb's own question forms for this. A form takes over the
+thread's composer until it is answered, expires after seven days at most, and
+is cancelled whenever the plugin reloads; an ask has to outlast all three.
+The cost is that bb itself does not show the thread as waiting: only cow
+does.
+
+## Briefs and the checker
+
+A report in prose is hard to judge, and an agent's own "I checked this" is
+not a check. A **brief** is a finished job's report as a list of claims, each
+with the evidence for it, and cow has a separate agent audit it.
+
+```sh
+bb cow brief submit <file.json> [--thread <id>] [--wait]
+bb cow brief show <thread> [--version <n>] [--wait] [--json]
+bb cow brief check <thread> [--model <id>] [--provider <id>] [--runs <n>] [--wait]
+```
+
+The file:
+
+```json
+{
+  "summary": "One paragraph: what was asked and what was done.",
+  "claims": [
+    {
+      "id": "limit",
+      "text": "Login is limited to 5 attempts a minute per IP.",
+      "label": "checked",
+      "evidence": [
+        { "description": "the rule as deployed", "text": "rate: 5/min key: ip path: /login" },
+        { "description": "probe output", "path": "probe.txt" }
+      ]
+    }
+  ],
+  "judgementCalls": [{ "text": "Is 5 a minute too strict for the office NAT?", "askId": "ask_1a2b3c4d" }],
+  "notDone": ["Not tried against production traffic."]
+}
+```
+
+| Field | Rules |
+| --- | --- |
+| `summary` | one paragraph, up to 1200 characters |
+| `claims` | 1 to 30; `text` up to 400 characters; `id` optional (`c1`, `c2`, … when left out) |
+| `label` | the agent's own word: `checked`, `inferred` or `not-checked`. A `checked` claim needs evidence |
+| `evidence` | up to 6 per claim, each a one-line `description` and exactly one of `text` (an excerpt) or `path` (a text file in the thread's storage). 12,000 characters each as the checker reads it, 60,000 in all |
+| `judgementCalls` | up to 10 decisions that are yours; `askId` links one to an ask of the same thread |
+| `notDone` | up to 20 lines: what was left undone or not checked |
+
+Validation is strict, and an error names the field and what it must be.
+Evidence files are read and copied when the brief is submitted, so the
+checker reads what was submitted whatever happens to the files later.
+Submitting again stores a new version; earlier ones are kept.
+
+**The checker** is a separate agent in a thread of its own. Its whole input
+is one message: the brief and its evidence. It has no parent, so it shares no
+conversation with the thread that did the work and wakes nobody; it is hidden
+from the thread list, and its thread is stopped and archived when it
+answers. For each claim it states in one sentence what the evidence
+literally shows, then gives a verdict: `supported`, `not-supported`, or
+`cannot-tell` with the evidence that would settle it.
+
+- It is told to use no tool, and bb gives a plugin no way to start a thread
+  without tools. So cow reads the checker's own timeline afterwards, and an
+  answer from a checker that used any tool is thrown away.
+- Its answer must be one JSON object with a verdict for every claim. Anything
+  else (prose, a missing claim, a `cannot-tell` that does not say what would
+  settle it, an error, no answer in ten minutes) is a **failed check**, shown
+  as one. It is never a pass.
+- The thread a brief is from cannot order its own audit. The thread above it
+  can, and so can you.
+
+A claim is **disputed** when the checker's verdict is weaker than the agent's
+label warrants:
+
+| The agent says | Checker: not supported | Checker: cannot tell |
+| --- | --- | --- |
+| `checked` | contradicted | not established |
+| `inferred` | contradicted | agreement, no dispute |
+| `not-checked` | agreement, no dispute | agreement, no dispute |
+
+`bb cow brief show` prints the disputes first (the claim, what the agent
+says, what the evidence literally shows, the verdict), contradicted before
+not established; then the judgement calls; then the other claims; then what
+was left undone. The agent's label is always printed as "the agent says",
+never as verification. `bb cow status` adds to a thread's line what its
+latest brief came to, such as "brief disputed: 1 contradicted".
+
+Settings (Settings → Installed plugins → cow, or `bb plugin config cow`):
+
+| Setting | Default | Means |
+| --- | --- | --- |
+| `checkerModel`, `checkerProvider` | empty | the checker's model and provider; empty is bb's default for the project |
+| `checkerRuns` | 1 | independent checkers per brief, up to 5. The weakest verdict stands, and a claim the runs disagree on says so |
+| `checkOnSubmit` | on | check a brief as soon as it is submitted |
+
+A small model is cheaper, and its "not supported" is worth having, but its
+"supported" is weaker than a large model's; more than one run shows where it
+wavers. The checker catches what the evidence contradicts or fails to
+establish. It cannot catch what the agent left out of the evidence.
+
 ## The CLI, for agents
 
 Main is an agent, and it cleans up after the threads it started. `bb cow`
@@ -482,6 +617,8 @@ group what is under it by state.
 The CLI has no undo: `bb cow resume` reverses a park, and
 `bb thread unarchive` reverses an archive. Answering questions, granting
 permissions and dealing with refused ones stay with you, on the page.
+`bb cow ask`, `asks` and `brief` are described under "Asks" and "Briefs and
+the checker".
 
 The plugin ships a skill, `skills/cow/SKILL.md`, that tells agents about
 these commands.
@@ -489,9 +626,14 @@ these commands.
 ## Develop
 
 ```sh
-npm test            # unit tests: states, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints
+npm test            # unit tests: states, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker
 npm run typecheck
 ```
+
+`npm run e2e:asks` checks asks and briefs against a running bb, without
+a browser: two "cow test" fixtures and up to three hidden checker threads, on
+the cheapest model. It sets cow's checker model while it runs and puts it
+back. See the top of `scripts/e2e-asks.mjs`.
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
 seven cheap fixture threads titled "cow test", acts only on those (it answers,
@@ -506,11 +648,12 @@ bb plugin disable cow   # unload it; your choice of Main is kept
 bb plugin remove cow    # uninstall it and delete what it stored
 ```
 
-cow stores four things: which thread was last chosen as Main for each
+cow stores five things: which thread was last chosen as Main for each
 project; which reply of each thread you have seen; its notes on a thread
 (why it is parked, why it was archived, which refused permissions you
 dismissed, what the thread says is next and has not started), kept in that
-thread's plugin metadata; and, in each window's session storage, the Main
+thread's plugin metadata; asks and briefs, with the checker's verdicts, in
+the plugin's own storage; and, in each window's session storage, the Main
 that window shows and the groups folded in it.
 
 ## License
