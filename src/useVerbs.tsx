@@ -10,7 +10,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { AnswerCard, type AnswerState } from "./AnswerCard.tsx";
 import { AskCard, type AskState } from "./AskCard.tsx";
-import { backOut, confirmAsk, emptyAskDraft, markOption, nextAsk, writeAnswer, writeWord } from "./asks/card.ts";
+import { backOut, chatDigit, confirmAsk, emptyAskDraft, markChat, markOption, nextAsk, writeAnswer, writeWord } from "./asks/card.ts";
 import type { RaisedData } from "./raisedData.ts";
 import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
 import { BlockedCard, type BlockedState } from "./BlockedCard.tsx";
@@ -79,6 +79,8 @@ export interface Verbs {
   startUndo: () => void;
   /** Mark the line's reply as seen. Quietly when the person opened or answered it; `u` takes back only a marking they asked for. */
   markSeen: (line: Line, asked: boolean) => void;
+  /** Mark the line as a project, or take the mark off. `u` takes it back. */
+  toggleProject: (line: Line) => void;
   /** Ask, then take a not-started item off its list. */
   removeTodo: (row: TodoRow) => void;
   moveTodo: (row: TodoRow, by: 1 | -1) => void;
@@ -140,7 +142,10 @@ export function useVerbs(host: VerbHost): Verbs {
   // a high-risk answer to the field for its word.
   const openAsks = modal?.kind === "ask" ? (host.raised.asks.get(modal.threadId) ?? []) : [];
   const currentAsk = modal?.kind === "ask" ? (openAsks.find((ask) => ask.id === modal.askId) ?? null) : null;
-  const askFocus = modal?.kind !== "ask" || currentAsk === null ? null : modal.draft.stage === "word" ? "word" : modal.draft.stage === "choose" && currentAsk.options.length === 0 ? "text" : "none";
+  // The person has messaged the thread since it asked: the ask may be answered in chat already.
+  const askMessaged = modal?.kind === "ask" && currentAsk !== null && (lineOf(modal.threadId)?.derived.asksMessaged?.includes(currentAsk.id) ?? false);
+  // With that choice on the card, a digit has to reach it: the field waits for its own digit.
+  const askFocus = modal?.kind !== "ask" || currentAsk === null ? null : modal.draft.stage === "word" ? "word" : modal.draft.stage === "choose" && currentAsk.options.length === 0 && !askMessaged ? "text" : "none";
   const askKey = modal?.kind === "ask" ? modal.askId : null;
   useEffect(() => {
     if (askFocus === "word") askWordRef.current?.focus();
@@ -255,6 +260,7 @@ export function useVerbs(host: VerbHost): Verbs {
       else if (entry.kind === "resume") await parks.set(entry.threadId, entry.record);
       else if (entry.kind === "dismiss") await parks.setDismissal(entry.threadId, entry.before);
       else if (entry.kind === "seen") await parks.setSeen(entry.threadId, entry.before);
+      else if (entry.kind === "project") await parks.setProject(entry.threadId, entry.before);
       else {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
@@ -281,6 +287,27 @@ export function useVerbs(host: VerbHost): Verbs {
         say("marked as seen: u takes it back");
       },
       (cause: unknown) => say(`not marked as seen: ${errorText(cause)}`),
+    );
+  };
+
+  const toggleProject = (line: Line) => {
+    const id = line.thread.id;
+    if (id === main.thread.id) return say("Main is a project already, and always");
+    if (line.thread.archivedAt !== null) return say("it is archived: a project is marked while it is open");
+    const before = parks.projects.get(id) ?? null;
+    const project = before === null ? { at: clockNow(), by: null } : null;
+    parks.setProject(id, project).then(
+      () => {
+        remember({ kind: "project", threadId: id, title: line.thread.title, before });
+        say(
+          project
+            ? "marked as a project: it is never done, and idle when quiet · u takes it back"
+            : line.project === "head" || line.members > 0
+              ? "unmarked, but it has threads under it, so it is a project still · u takes it back"
+              : "no longer marked as a project · u takes it back",
+        );
+      },
+      (cause: unknown) => say(`not changed: ${errorText(cause)}`),
     );
   };
 
@@ -427,9 +454,11 @@ export function useVerbs(host: VerbHost): Verbs {
     const title = lineOf(modal.threadId)?.thread.title ?? "the thread";
     const left = openAsks.filter((ask) => ask.id !== currentAsk.id);
     setModal({ ...modal, sending: true, note: "" });
-    host.raised.answer(currentAsk.id, step.option, step.text).then(
+    // Closing as answered in chat records it and sends the thread nothing.
+    const sent = step.kind === "close" ? host.raised.close(currentAsk.id) : host.raised.answer(currentAsk.id, step.option, step.text);
+    sent.then(
       () => {
-        const line = `sent to “${title}”: ${step.said} · it cannot be undone`;
+        const line = step.kind === "close" ? `closed as answered in chat: nothing was sent to “${title}” · it cannot be undone` : `sent to “${title}”: ${step.said} · it cannot be undone`;
         const next = modal.single ? null : (left[0] ?? null);
         if (next === null) return close(line);
         setModal({ ...modal, askId: next.id, draft: emptyAskDraft, sending: false, note: "", sent: [...modal.sent, line] });
@@ -534,7 +563,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal or mark as seen can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen or project mark can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -549,7 +578,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -655,6 +684,7 @@ export function useVerbs(host: VerbHost): Verbs {
         }
         if (!/^[1-9]$/.test(key)) return;
         const number = Number(key);
+        if (askMessaged && number === chatDigit(currentAsk)) return setModal({ ...modal, draft: markChat(modal.draft), note: "" });
         if (!currentAsk.optionsOnly && number === currentAsk.options.length + 1) return answerRef.current?.focus();
         setModal({ ...modal, draft: markOption(modal.draft, currentAsk, number), note: "" });
       },
@@ -675,6 +705,7 @@ export function useVerbs(host: VerbHost): Verbs {
             asks={openAsks}
             title={title}
             now={host.now}
+            messaged={askMessaged}
             textRef={answerRef}
             wordRef={askWordRef}
             onText={(value) => setModal({ ...modal, draft: writeAnswer(modal.draft, value), note: "" })}

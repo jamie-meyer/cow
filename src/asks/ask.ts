@@ -22,6 +22,21 @@ const answerSchema = z.object({
 });
 export type Answer = z.infer<typeof answerSchema>;
 
+/**
+ * How an ask was closed without an answer given on the page: the person had
+ * answered it in an ordinary message to the thread.
+ */
+const closedSchema = z.object({
+  /** Who closed it: the asking side, with `bb cow ask close`, or the person, on the page. */
+  by: z.enum(["thread", "person"]),
+  /** The thread that ran the command; null for the person, and for a command run outside any thread. */
+  closedBy: z.string().nullable(),
+  /** The person's answer as the thread quotes it; null when the person closed it. */
+  answer: z.string().max(ASK_LIMITS.answer).nullable(),
+  at: z.number(),
+});
+export type Closed = z.infer<typeof closedSchema>;
+
 export const askSchema = z.object({
   id: z.string(),
   /** The thread the question is from, and where the answer goes. */
@@ -38,11 +53,14 @@ export const askSchema = z.object({
   proofs: z.array(z.string()).max(ASK_LIMITS.proofs),
   context: z.string().max(ASK_LIMITS.context).nullable(),
   createdAt: z.number(),
-  status: z.enum(["open", "answered", "withdrawn"]),
+  /** `closed`: answered in chat, not on the page. See `closed`. */
+  status: z.enum(["open", "answered", "withdrawn", "closed"]),
   answer: answerSchema.nullable(),
   /** When the answer reached the thread as a message; null while it has not. */
   deliveredAt: z.number().nullable(),
   withdrawnAt: z.number().nullable(),
+  /** Set when it was closed as answered in chat. Asks recorded before this existed have none. */
+  closed: closedSchema.nullable().default(null),
 });
 export type Ask = z.infer<typeof askSchema>;
 
@@ -139,6 +157,7 @@ export function draftAsk(draft: AskDraft, id: string, now: number, storageRoot: 
       answer: null,
       deliveredAt: null,
       withdrawnAt: null,
+      closed: null,
     },
   };
 }
@@ -155,6 +174,7 @@ export function mayAskFor(caller: string, target: string, ancestors: readonly st
 export function answered(ask: Ask, given: { option: number | null; text: string | null }, now: number): Result<Ask> {
   if (ask.status === "answered") return fail(`${ask.id} is already answered`);
   if (ask.status === "withdrawn") return fail(`${ask.id} was withdrawn by the thread that asked`);
+  if (ask.status === "closed") return fail(`${ask.id} was closed as answered in chat`);
   const text = given.text?.trim() ?? "";
   if (text.length > ASK_LIMITS.answer) return fail(`the answer is over ${ASK_LIMITS.answer} characters`);
   if (given.option !== null) {
@@ -175,7 +195,52 @@ export function answered(ask: Ask, given: { option: number | null; text: string 
 export function withdrawn(ask: Ask, now: number): Result<Ask> {
   if (ask.status === "answered") return fail(`${ask.id} is already answered`);
   if (ask.status === "withdrawn") return fail(`${ask.id} is already withdrawn`);
+  if (ask.status === "closed") return fail(`${ask.id} is already closed as answered in chat`);
   return { ok: true, value: { ...ask, status: "withdrawn", withdrawnAt: now } };
+}
+
+/**
+ * The ask, closed because the person answered it in an ordinary message to
+ * the thread instead of on the page. The asking side closes it with the
+ * answer as it understood it; the person closes it with nothing more to
+ * say. Nothing is sent to the thread either way. It is a record of its own:
+ * not an answer given on the page, and not a withdrawal.
+ */
+export function closedInChat(ask: Ask, given: { by: "thread" | "person"; closedBy: string | null; answer: string | null }, now: number): Result<Ask> {
+  if (ask.status === "answered") return fail(`${ask.id} is already answered`);
+  if (ask.status === "withdrawn") return fail(`${ask.id} was withdrawn`);
+  if (ask.status === "closed") return fail(`${ask.id} is already closed as answered in chat`);
+  const answer = given.answer?.trim() ?? "";
+  if (given.by === "thread" && answer === "") {
+    return fail("--answered is empty", "Quote, or closely paraphrase, what the user answered. To drop a question that no longer needs an answer, use `bb cow ask withdraw`.");
+  }
+  if (answer.length > ASK_LIMITS.answer) return fail(`the answer is over ${ASK_LIMITS.answer} characters`);
+  return { ok: true, value: { ...ask, status: "closed", closed: { by: given.by, closedBy: given.closedBy, answer: answer === "" ? null : answer, at: now } } };
+}
+
+/** How a closed ask was closed, in a line. */
+export function closedText(ask: Ask): string {
+  const closed = ask.closed;
+  if (!closed) return "";
+  if (closed.by === "person") return "closed by the user on cow's page: answered in chat";
+  const who = closed.closedBy === null ? "closed from a terminal" : closed.closedBy === ask.threadId ? "closed by the thread" : `closed by ${closed.closedBy}, a thread above it`;
+  return `${who}: answered in chat${closed.answer ? `: ${closed.answer}` : ""}`;
+}
+
+/** The person's messages to a thread that cow sent itself, as answers: within this long of one arriving. */
+const OWN_ANSWER_MS = 15_000;
+
+/**
+ * Whether the person has sent the asking thread a message of their own
+ * since it asked: the sign that the ask may have been answered in chat.
+ * `spokeAt` is when the person last sent the thread a message, from
+ * anywhere in bb; `delivered` are the times cow delivered answers to that
+ * thread's other asks, which are messages from the person too and are not
+ * counted.
+ */
+export function messagedSince(ask: Ask, spokeAt: number | null | undefined, delivered: readonly number[] = []): boolean {
+  if (ask.status !== "open" || spokeAt == null || spokeAt <= ask.createdAt) return false;
+  return !delivered.some((at) => Math.abs(at - spokeAt) <= OWN_ANSWER_MS);
 }
 
 /** The answer in a line: the chosen option, the person's words, or both. */
@@ -220,6 +285,7 @@ export function askText(ask: Ask, now: number, age: (ms: number) => string): str
   ask.options.forEach((option, index) => lines.push(`    ${index + 1}. ${option.label}${option.detail ? `: ${option.detail}` : ""}`));
   if (ask.options.length > 0) lines.push(ask.optionsOnly ? "    (one of the options)" : "    (or an answer in words)");
   if (ask.proofs.length > 0) lines.push(`  proof: ${ask.proofs.join(", ")}`);
-  if (ask.status === "answered") lines.push(`  answered: ${answerText(ask)}${ask.deliveredAt === null ? " (not delivered yet)" : ""}`);
+  if (ask.status === "answered") lines.push(`  answered on cow's page: ${answerText(ask)}${ask.deliveredAt === null ? " (not delivered yet)" : ""}`);
+  if (ask.status === "closed") lines.push(`  ${closedText(ask)}`);
   return lines.join("\n");
 }

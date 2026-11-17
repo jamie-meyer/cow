@@ -12,6 +12,7 @@ import {
   dismissalSchema,
   nextNoteSchema,
   parkRecordSchema,
+  projectMarkSchema,
   seenSchema,
   todoListSchema,
 } from "./src/shared.ts";
@@ -44,7 +45,13 @@ export const rpcContract = defineRpcContract({
       nexts: z.record(z.string(), nextNoteSchema),
       todos: z.record(z.string(), todoListSchema),
       seen: z.record(z.string(), seenSchema),
+      projects: z.record(z.string(), projectMarkSchema),
     }),
+  },
+  /** Mark a thread as a project, or with null, take the mark off. */
+  project_set: {
+    input: z.object({ threadId: id, project: projectMarkSchema.nullable() }),
+    output: z.null(),
   },
   /** Record the reply of a thread the person has seen, or with null, forget it. */
   seen_set: {
@@ -90,7 +97,17 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const attention = registerAttention(bb);
-  const actions = createActions(bb, readState, { openAsks: () => attention.asks.list(), marks: (ids) => attention.briefs.marks(ids) });
+  const actions = createActions(bb, readState, {
+    openAsks: () => attention.asks.list(),
+    marks: (ids) => attention.briefs.marks(ids),
+    delivered: async () => {
+      const found = new Map<string, number[]>();
+      for (const ask of await attention.asks.list({ all: true })) {
+        if (ask.deliveredAt !== null) found.set(ask.threadId, [...(found.get(ask.threadId) ?? []), ask.deliveredAt]);
+      }
+      return found;
+    },
+  });
 
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
@@ -121,6 +138,10 @@ export default async function plugin(bb: BbPluginApi) {
       await actions.setDismissal(threadId, dismissal);
       return null;
     },
+    project_set: async ({ threadId, project }) => {
+      await actions.setProject(threadId, project);
+      return null;
+    },
     seen_set: async ({ threadId, seen }) => {
       await actions.setSeen(threadId, seen);
       return null;
@@ -136,4 +157,14 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(cowCli(actions, attention));
+
+  // What cow keeps about a thread goes when bb deletes the thread; what was
+  // deleted while cow was not running is found when it loads.
+  bb.events.on("thread.deleted", ({ thread }) => {
+    void actions.forget(thread.id).catch((cause: unknown) => bb.log.warn(`could not forget the deleted thread ${thread.id}: ${String(cause)}`));
+  });
+  const sweep = setTimeout(() => {
+    void actions.sweep().catch((cause: unknown) => bb.log.warn(`could not clear records of deleted threads: ${String(cause)}`));
+  }, 5000);
+  bb.onDispose(() => clearTimeout(sweep));
 }

@@ -36,7 +36,16 @@ export const attentionRpcContract = defineRpcContract({
   /** Asks, oldest first: the open ones, or with `all`, every one. */
   asks_list: {
     input: z.object({ threadId: id.optional(), all: z.boolean().optional() }),
-    output: z.object({ asks: z.array(askSchema) }),
+    output: z.object({
+      asks: z.array(askSchema),
+      /** For each thread with an open ask: when cow delivered the person's answers to its other asks. */
+      delivered: z.record(z.string(), z.array(z.number())),
+    }),
+  },
+  /** Close an ask the user answered in chat. Nothing is sent to the thread. Only the page calls this. */
+  ask_close: {
+    input: z.object({ id }),
+    output: askSchema,
   },
   /** Record the user's answer to an ask and send it to the asking thread as the user. */
   ask_answer: {
@@ -70,6 +79,7 @@ const REFUSAL_CODES: Record<string, "conflict" | "invalid" | "not_found"> = {
   brief_not_found: "not_found",
   thread_not_found: "not_found",
   cannot_answer: "conflict",
+  cannot_close: "conflict",
   check_running: "conflict",
 };
 
@@ -218,7 +228,16 @@ export function registerAttention(bb: BbPluginApi): Attention {
   });
 
   bb.rpc.register(attentionRpcContract, {
-    asks_list: async (filter) => ({ asks: await asks.list({ ...(filter.threadId === undefined ? {} : { threadId: filter.threadId }), all: filter.all === true }) }),
+    asks_list: async (filter) => {
+      const every = await asks.list({ ...(filter.threadId === undefined ? {} : { threadId: filter.threadId }), all: true });
+      const open = new Set(every.filter((ask) => ask.status === "open").map((ask) => ask.threadId));
+      const delivered: Record<string, number[]> = {};
+      for (const ask of every) {
+        if (ask.deliveredAt !== null && open.has(ask.threadId)) (delivered[ask.threadId] ??= []).push(ask.deliveredAt);
+      }
+      return { asks: filter.all === true ? every : every.filter((ask) => ask.status === "open"), delivered };
+    },
+    ask_close: ({ id: askId }) => refusing(() => asks.close(askId, { person: true })),
     ask_answer: ({ id: askId, option, text }) => refusing(() => asks.answer(askId, { option, text })),
     brief_get: async ({ threadId, version }) => {
       const versions = await briefs.versions(threadId);

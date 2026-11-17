@@ -1,7 +1,7 @@
 // What state a thread is in, derived from what bb knows about it and from
 // cow's own note on it when the user has parked it.
 
-import type { Ask } from "./asks/ask.ts";
+import { type Ask, messagedSince } from "./asks/ask.ts";
 import { type Replies, unreadReply } from "./attention.ts";
 import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
@@ -17,6 +17,12 @@ const DAY = 24 * HOUR;
 export const LIMITS = {
   /** A running thread with no event for this long reads as stuck. */
   runningQuietMs: 2 * HOUR,
+  /**
+   * A thread bb says is at rest, whose newest turn event read so far is a
+   * start, is still settling: its end has not been read yet. After this long
+   * with no event it is taken to be at rest all the same.
+   */
+  settlingMs: MINUTE,
   /** A question or unread reply waiting on the user this long reads as stuck. */
   waitingOnUserMs: 7 * DAY,
   /** Done lines are listed for this long, then only counted. */
@@ -38,6 +44,8 @@ export type LineState =
   | "stuck"
   | "parked"
   | "failed"
+  /** A project with nothing to say: not running, nothing waiting, no reply unseen. */
+  | "idle"
   | "done";
 
 export const STATE_LABEL: Record<LineState, string> = {
@@ -48,6 +56,7 @@ export const STATE_LABEL: Record<LineState, string> = {
   stuck: "stuck",
   parked: "parked",
   failed: "failed",
+  idle: "idle",
   done: "done",
 };
 
@@ -86,8 +95,13 @@ export interface Activity {
 
 /** What decides whether a finished turn's reply is the person's to read. */
 export interface Attention {
-  /** The thread has threads under it: the person talks to it directly. */
+  /** The person talks to it directly, so every reply is theirs: it has threads under it, or is marked a project. */
   head: boolean;
+  /**
+   * It is a project: Main, a thread that has or has had threads under it, or
+   * one marked as a project. A project that is not archived is never done.
+   */
+  project?: boolean;
   /** cow's record of the turn the person last saw, as a place in the event log. */
   seenSeq: number | null;
 }
@@ -98,6 +112,8 @@ export interface Raised {
   asks: readonly Ask[];
   /** What its latest brief came to, or null when it has submitted none. */
   brief: BriefMark | null;
+  /** When cow delivered the person's answers to its other asks: messages of theirs that answer nothing else. */
+  delivered?: readonly number[];
 }
 
 export interface Derived {
@@ -129,6 +145,8 @@ export interface Derived {
   reply?: { seq: number };
   /** Set when it has open asks, whatever state the line shows: oldest first. */
   asks?: readonly Ask[];
+  /** The open asks the person has sent the thread a message since: perhaps answered in chat already. */
+  asksMessaged?: readonly string[];
   /** Set when it has submitted a brief, whatever state the line shows. */
   brief?: BriefMark;
   /** Set when the line waits on the person because of its brief: disputes or judgement calls not yet read. */
@@ -163,6 +181,22 @@ export function isBusy(thread: ThreadFacts): boolean {
 }
 
 /**
+ * Whether a thread that bb says is at rest has, as far as its events have
+ * been read, not ended its turn: the newest turn event known is a start. The
+ * end is on its way, so the line keeps reading as running until it is read,
+ * instead of reading done for a moment and then something else.
+ */
+export function isSettling(thread: ThreadFacts, activity: Activity | undefined, now: number): boolean {
+  if (isBusy(thread) || thread.status === "error" || activity?.turn?.phase !== "started") return false;
+  return now - Math.max(activity.lastEventAt ?? 0, activity.turn.at) <= LIMITS.settlingMs;
+}
+
+/** Whether a state is one of rest: nothing runs and nothing waits. */
+export function atRest(state: LineState): boolean {
+  return state === "done" || state === "idle";
+}
+
+/**
  * When the user's part began: for parked work that has come back, when it
  * came back; otherwise when the line entered its state.
  */
@@ -170,11 +204,14 @@ export function waitingSince(derived: Derived): number {
   return derived.park?.due?.at ?? derived.since;
 }
 
-/** One question in a line: the oldest ask, and how many more there are. */
-export function asksText(asks: readonly Ask[]): string {
+/** What a line says when the person has messaged the thread since it asked. */
+export const MESSAGED_SINCE = "you have messaged this thread since it asked";
+
+/** One question in a line: the oldest ask, and how many more there are. `messaged` when the person has written to the thread since it was asked. */
+export function asksText(asks: readonly Ask[], messaged = false): string {
   const first = asks[0];
   if (!first) return "";
-  return `asks you: ${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}`;
+  return `asks you: ${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}${messaged ? ` · ${MESSAGED_SINCE}` : ""}`;
 }
 
 /**
@@ -198,8 +235,15 @@ export function derive(
   raised?: Raised | null,
 ): Derived {
   const asks = thread.archivedAt === null ? (raised?.asks ?? []) : [];
-  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null);
-  return { ...derived, ...(asks.length > 0 ? { asks } : {}), ...(raised?.brief ? { brief: raised.brief } : {}) };
+  const spokeAt = activity?.replies?.personSpokeAt ?? null;
+  const messaged = asks.filter((ask) => messagedSince(ask, spokeAt, raised?.delivered)).map((ask) => ask.id);
+  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged);
+  return {
+    ...derived,
+    ...(asks.length > 0 ? { asks } : {}),
+    ...(messaged.length > 0 ? { asksMessaged: messaged } : {}),
+    ...(raised?.brief ? { brief: raised.brief } : {}),
+  };
 }
 
 function deriveLine(
@@ -212,7 +256,11 @@ function deriveLine(
   attention: Attention | null | undefined,
   asks: readonly Ask[],
   brief: BriefMark | null,
+  /** The ids of the asks the person has messaged the thread since. */
+  messaged: readonly string[],
 ): Derived {
+  // The line shows its oldest ask: whether that one may be answered already is what it says.
+  const firstMessaged = asks.length > 0 && messaged.includes(asks[0]!.id);
   const said = firstLine(activity?.output);
   const settled = settledAt(thread, activity);
 
@@ -236,7 +284,7 @@ function deriveLine(
     return {
       state: "parked",
       since: park.at,
-      doing: asking ? `${park.reason} · ${asksText(asks)}` : park.reason,
+      doing: asking ? `${park.reason} · ${asksText(asks, firstMessaged)}` : park.reason,
       next: due ? dueShort(due, now) : asking ? "answer it: press a" : pickUpText(park, now, LIMITS.parkCheckMs),
       waitingOnYou: due !== null || asking,
       park: { record: park, due },
@@ -254,11 +302,13 @@ function deriveLine(
   }
 
   const asked = thread.hasPendingInteraction;
+  // Between bb saying a turn is over and its end being read, the line stays as it was.
+  const busy = isBusy(thread) || isSettling(thread, activity, now);
   // A thread with a parent: a worker that finished a turn its parent started
   // reported to that parent and is done. One the person talks to replied to
   // them, and waits until they have seen it.
   const reply =
-    !asked && attention && thread.parentThreadId !== null && !isBusy(thread)
+    !asked && attention && thread.parentThreadId !== null && !busy
       ? unreadReply(activity?.replies, attention.head, attention.seenSeq)
       : null;
   // A refused permission outranks a reply that is waiting to be read: the
@@ -275,8 +325,8 @@ function deriveLine(
     return {
       state: stuck ? "stuck" : "wants",
       since,
-      doing: asksText(asks),
-      next: stuck ? `it has waited ${formatAge(now - since)} on you: press a` : "answer it: press a",
+      doing: asksText(asks, firstMessaged),
+      next: stuck ? `it has waited ${formatAge(now - since)} on you: press a` : firstMessaged ? "answer it, or say it was answered in chat: press a" : "answer it: press a",
       waitingOnYou: true,
       ...(blocked ? { blocked: { refusals } } : {}),
     };
@@ -284,7 +334,7 @@ function deriveLine(
 
   // A finished job whose brief the checker disputed, or that leaves the
   // person a decision, is theirs to read before its reply is.
-  if (!asked && !blocked && !isBusy(thread) && brief !== null && briefWaits(brief)) {
+  if (!asked && !blocked && !busy && brief !== null && briefWaits(brief)) {
     return {
       state: "wants",
       since: Math.max(settled, brief.at),
@@ -295,7 +345,7 @@ function deriveLine(
     };
   }
 
-  if (asked || hasUnreadReply(thread) || (reply && !blocked)) {
+  if (asked || (!busy && hasUnreadReply(thread)) || (reply && !blocked)) {
     const ask = asked ? (activity?.ask ?? null) : null;
     const since = ask?.at ?? reply?.at ?? settled;
     const doing = asked
@@ -343,7 +393,7 @@ function deriveLine(
     };
   }
 
-  if (isBusy(thread)) {
+  if (busy) {
     const startedAt =
       activity?.turn?.phase === "started" ? activity.turn.at : thread.latestAttentionAt;
     const lastEventAt = Math.max(activity?.lastEventAt ?? 0, startedAt);
@@ -366,6 +416,8 @@ function deriveLine(
     };
   }
 
+  // A project is never done: with nothing to say it is idle, in its place, for as long as it is quiet.
+  if (attention?.project) return { state: "idle", since: settled, doing: said || "quiet", next: "", waitingOnYou: false };
   return { state: "done", since: settled, doing: said || "finished", next: "", waitingOnYou: false };
 }
 

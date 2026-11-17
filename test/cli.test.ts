@@ -9,7 +9,7 @@ import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, NOW, activity, thread } from "./fixtures.ts";
 
 const EMPTY_REPORT: StatusReport = {
-  main: { id: "main", title: "Main", state: "done", label: "done", inStateMs: 0, inState: "1m", doing: "", next: "", note: null, todo: [], under: null, depth: 0, queue: null },
+  main: { id: "main", title: "Main", state: "done", label: "done", inStateMs: 0, inState: "1m", doing: "", next: "", note: null, todo: [], under: null, project: true, depth: 0, queue: null },
   queue: [],
   threads: [],
   parked: [],
@@ -33,6 +33,7 @@ function recorder(overrides: Partial<CliActions> = {}) {
       calls.push(["next", args]),
       { title: "T", note: args.text === null ? null : { text: args.text, at: NOW, by: args.callerId } }
     ),
+    projectChecked: async (args) => (calls.push(["project", args]), { title: "T", project: args.on ? { at: NOW, by: args.callerId } : null }),
     todoChecked: async (args) => (
       calls.push(["todo", args]),
       { title: "T", list: [{ id: "i1", title: "first", at: NOW }], item: args.op === null ? null : { id: "i1", title: "first", at: NOW } }
@@ -142,8 +143,8 @@ test("help lists every command; an unknown command or option fails", async () =>
   const { run, cli } = recorder();
   const help = await run("help");
   assert.equal(help.exitCode, 0);
-  for (const name of ["status", "archive", "park", "resume", "next", "todo add", "todo done", "todo rm", "todo list"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
-  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "next", "park", "resume", "status", "todo-add", "todo-done", "todo-list", "todo-rm"]);
+  for (const name of ["status", "archive", "park", "project", "resume", "next", "todo add", "todo done", "todo rm", "todo list"]) assert.match(help.stdout ?? "", new RegExp(`bb cow ${name}`));
+  assert.deepEqual(cli.commands?.map((command) => command.name).sort(), ["archive", "next", "park", "project", "resume", "status", "todo-add", "todo-done", "todo-list", "todo-rm"]);
   assert.equal((await run("park", "--help")).exitCode, 0);
   assert.equal((await run("moo")).exitCode, 1);
   assert.equal((await run("resume", "thr_a", "--nope")).exitCode, 1);
@@ -181,7 +182,7 @@ test("status gives one line per thread, the queue, and the shelf", () => {
   const text = statusText(report);
   assert.match(text, /^Main: main \(main\) · /);
   assert.match(text, /Waiting on the user \(1\)\n 1  a1 \(a1\)  Which colour\? · waiting 5m/);
-  assert.match(text, /running\s+1h  build the thing \(a\)  \$ npm test → finishes its turn/);
+  assert.match(text, /running\s+1h  build the thing \(a\) \[project\]  \$ npm test → finishes its turn/);
   assert.match(text, / 1  wants\s+5m    a1 \(a1\)  Which colour\?/);
   assert.match(text, /Parked \(1\)\n    parked\s+15d  c \(c\)  waiting on a review/);
   assert.match(text, /Done in the last 2 days \(1; 1 older, not listed\)/);
@@ -294,6 +295,6 @@ test("status shows a thread's own note, what it has not started, and what is und
   assert.deepEqual(proj.under, { wants: 1, running: 1 });
   assert.equal(report.threads[1]!.under, null);
   const text = statusText(report);
-  assert.match(text, /Project \(proj\)  .* → next, in its words: cut the release on Friday  \[under it: 1 wants, 1 running\]/);
+  assert.match(text, /Project \(proj\) \[project\]  .* → next, in its words: cut the release on Friday  \[under it: 1 wants, 1 running\]/);
   assert.match(text, /\n +not started 1: write the changelog\n/);
 });

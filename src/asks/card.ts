@@ -15,14 +15,31 @@ export interface AskDraft {
   /** `restate`: shown what will be sent, waiting for a second Enter. `word`: waiting for the word. */
   stage: "choose" | "restate" | "word";
   word: string;
+  /** "Already answered in chat" is marked: Enter closes the ask and sends nothing. */
+  chat: boolean;
 }
 
-export const emptyAskDraft: AskDraft = { option: null, text: "", stage: "choose", word: "" };
+export const emptyAskDraft: AskDraft = { option: null, text: "", stage: "choose", word: "", chat: false };
 
 /** Mark option `number`, or unmark it when it is marked already. Anything else is ignored. */
 export function markOption(draft: AskDraft, ask: Ask, number: number): AskDraft {
   if (draft.stage !== "choose" || number < 1 || number > ask.options.length) return draft;
-  return { ...draft, option: draft.option === number ? null : number };
+  return { ...draft, chat: false, option: draft.option === number ? null : number };
+}
+
+/**
+ * The digit that marks "already answered in chat": the one after the options
+ * and the field for words. While it is offered the field has a digit of its
+ * own even on an ask with no options, and does not take the caret by itself.
+ */
+export function chatDigit(ask: Ask): number {
+  return ask.options.length + (ask.optionsOnly ? 0 : 1) + 1;
+}
+
+/** Mark "already answered in chat", or unmark it when it is marked. It takes the place of any option. */
+export function markChat(draft: AskDraft): AskDraft {
+  if (draft.stage !== "choose") return draft;
+  return { ...draft, option: null, chat: !draft.chat };
 }
 
 export const writeAnswer = (draft: AskDraft, text: string): AskDraft => ({ ...draft, text });
@@ -45,10 +62,13 @@ export type AskStep =
   | { kind: "incomplete"; why: string }
   /** Show what will be sent and wait for the next Enter, or for the word. */
   | { kind: "stage"; draft: AskDraft }
-  | { kind: "send"; option: number | null; text: string | null; said: string };
+  | { kind: "send"; option: number | null; text: string | null; said: string }
+  /** Close the ask as answered in chat. Nothing is sent, whatever the risk: no answer goes anywhere. */
+  | { kind: "close" };
 
 /** What Enter does. */
 export function confirmAsk(draft: AskDraft, ask: Ask): AskStep {
+  if (draft.chat) return { kind: "close" };
   const answer = draftAnswer(draft, ask);
   if (!answer.ok) return { kind: "incomplete", why: answer.why };
   const send: AskStep = { kind: "send", option: answer.option, text: answer.words, said: answer.text };

@@ -17,7 +17,9 @@ import {
   NOTES_CHANGED,
   type NextNote,
   PARK_KEY,
+  PROJECT_KEY,
   type ParkRecord,
+  type ProjectMark,
   type Seen,
   TODO_KEY,
   type TodoItem,
@@ -25,12 +27,13 @@ import {
   dismissalSchema,
   nextNoteSchema,
   parkRecordSchema,
+  projectMarkSchema,
   seenSchema,
   todoListSchema,
 } from "./shared.ts";
 import { type Activity, LIMITS, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { type StatusReport, statusReport } from "./status.ts";
-import { type Line, buildOverview, descendantIds, headIds, lineOf } from "./tree.ts";
+import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
 import { verbBlocked } from "./verbs.ts";
 
 /** bb reads plugin metadata for at most this many threads per request. */
@@ -62,6 +65,8 @@ export interface Notes {
   todos: Record<string, TodoItem[]>;
   /** The reply of each thread the person has seen. */
   seen: Record<string, Seen>;
+  /** The threads marked as projects. */
+  projects: Record<string, ProjectMark>;
 }
 
 /** A change to a thread's list of work not started. */
@@ -84,6 +89,14 @@ export interface Actions {
   setDismissal(threadId: string, dismissal: Dismissal | null): Promise<void>;
   /** Record the reply the person has seen, or with null forget it. Kept in cow's own storage. */
   setSeen(threadId: string, seen: Seen | null): Promise<void>;
+  /** Mark a thread as a project, or with null take the mark off. */
+  setProject(threadId: string, project: ProjectMark | null): Promise<void>;
+  /** The mark as the CLI sets it: `callerId` may mark only itself and what is under it. */
+  projectChecked(args: { callerId: string | null; threadId: string; on: boolean }): Promise<{ title: string; project: ProjectMark | null }>;
+  /** Forget what cow keeps about a thread that bb has deleted. */
+  forget(threadId: string): Promise<void>;
+  /** Forget what cow keeps in its own storage about threads bb no longer has. Returns how many it forgot. */
+  sweep(): Promise<number>;
   /** Change a thread's list of work not started; the page's own changes come through here. */
   todo(threadId: string, op: TodoOp): Promise<{ list: TodoItem[]; item: TodoItem }>;
   /** The plans as the CLI writes them: `callerId` may plan only for itself and what is under it. */
@@ -101,6 +114,8 @@ export interface Actions {
 /** Where the actions read what threads have put in front of the user. */
 export interface RaisedSource {
   openAsks(): Promise<readonly Ask[]>;
+  /** Thread id to when cow delivered the person's answers to its asks. */
+  delivered?(): Promise<ReadonlyMap<string, readonly number[]>>;
   marks(threadIds: readonly string[]): Promise<ReadonlyMap<string, BriefMark>>;
 }
 
@@ -108,7 +123,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
-    const found: Notes = { parks: {}, archives: {}, dismissals: {}, nexts: {}, todos: {}, seen: {} };
+    const found: Notes = { parks: {}, archives: {}, dismissals: {}, nexts: {}, todos: {}, seen: {}, projects: {} };
     for (let offset = 0; offset < threadIds.length; offset += METADATA_PAGE) {
       const page = await bb.sdk.threads.experimental_listPluginMetadata({
         threadIds: threadIds.slice(offset, offset + METADATA_PAGE),
@@ -122,6 +137,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         if (dismissal.success) found.dismissals[threadId] = dismissal.data;
         const next = nextNoteSchema.safeParse(metadata[NEXT_KEY]);
         if (next.success) found.nexts[threadId] = next.data;
+        const project = projectMarkSchema.safeParse(metadata[PROJECT_KEY]);
+        if (project.success) found.projects[threadId] = project.data;
         const todo = todoListSchema.safeParse(metadata[TODO_KEY]);
         if (todo.success && todo.data.length > 0) found.todos[threadId] = todo.data;
       }
@@ -138,7 +155,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     return found;
   };
 
-  const setNote = async (threadId: string, key: string, value: ParkRecord | ArchiveNote | Dismissal | NextNote | TodoItem[] | null) => {
+  const setNote = async (threadId: string, key: string, value: ParkRecord | ArchiveNote | Dismissal | NextNote | ProjectMark | TodoItem[] | null) => {
     await bb.sdk.threads.updatePluginMetadata(
       value === null ? { threadId, remove: [key] } : { threadId, set: { [key]: value } },
     );
@@ -147,6 +164,35 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   const setPark = (threadId: string, park: ParkRecord | null) => setNote(threadId, PARK_KEY, park);
   const setArchiveNote = (threadId: string, note: ArchiveNote | null) => setNote(threadId, ARCHIVE_KEY, note);
   const setDismissal = (threadId: string, dismissal: Dismissal | null) => setNote(threadId, DISMISS_KEY, dismissal);
+  const setProject = (threadId: string, project: ProjectMark | null) => setNote(threadId, PROJECT_KEY, project);
+
+  // What cow keeps per thread: its notes and plans in the thread's own
+  // metadata, and the reply the person has seen in cow's storage.
+  const forget = async (threadId: string) => {
+    await bb.storage.kv.delete(SEEN_PREFIX + threadId);
+    // bb drops a deleted thread's metadata with it; where it has not, cow's keys are taken off.
+    await bb.sdk.threads
+      .updatePluginMetadata({ threadId, remove: [PARK_KEY, ARCHIVE_KEY, DISMISS_KEY, NEXT_KEY, TODO_KEY, PROJECT_KEY] })
+      .catch(() => undefined);
+    bb.realtime.publish(NOTES_CHANGED, {});
+  };
+  const sweep = async () => {
+    const ids = (await bb.storage.kv.list(SEEN_PREFIX)).map((key) => key.slice(SEEN_PREFIX.length));
+    let forgotten = 0;
+    for (let offset = 0; offset < ids.length; offset += METADATA_PAGE) {
+      const page = ids.slice(offset, offset + METADATA_PAGE);
+      const alive = new Set<string>();
+      for (const raw of await bb.sdk.threads.list({ threadIds: page, limit: METADATA_PAGE, includeHidden: true })) {
+        if (raw.deletedAt == null) alive.add(raw.id);
+      }
+      for (const id of page) {
+        if (alive.has(id)) continue;
+        await bb.storage.kv.delete(SEEN_PREFIX + id);
+        forgotten += 1;
+      }
+    }
+    return forgotten;
+  };
 
   const setSeen = async (threadId: string, seen: Seen | null) => {
     if (seen === null) await bb.storage.kv.delete(SEEN_PREFIX + threadId);
@@ -222,11 +268,13 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     if (!root) throw new CowError("thread_not_found", `there is no thread ${rootId}`, "Run `bb thread list` to see thread ids.");
     const under = descendantIds(threads, rootId, now - LIMITS.doneListedMs);
     const noted = await notes([rootId, ...under]);
-    const heads = headIds(threads);
+    // The root is Main when the overview is asked for; a thread named to a verb is read as it would be on a page.
+    const projects = projectIds(threads, Object.keys(noted.projects), null);
     const wanted = new Set([rootId, ...under]);
     const activity = await activities(threads.filter((thread) => wanted.has(thread.id) && thread.archivedAt === null));
     const asks = asksByThread(raised ? await raised.openAsks() : []);
     const briefs = raised ? await raised.marks([...wanted]) : new Map<string, BriefMark>();
+    const delivered = (await raised?.delivered?.()) ?? new Map<string, readonly number[]>();
     const deriveThread = (isRoot: (id: string) => boolean) => (thread: ThreadFacts) =>
       derive(
         thread,
@@ -236,12 +284,13 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         isRoot(thread.id) ? null : noted.parks[thread.id],
         noted.archives[thread.id]?.reason,
         noted.dismissals[thread.id]?.throughSeq,
-        { head: heads.has(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
-        { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null },
+        { head: projects.has(thread.id), project: projects.has(thread.id) || isRoot(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
+        { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null, delivered: delivered.get(thread.id) },
       );
     const plans = {
       note: (id: string) => noted.nexts[id]?.text ?? null,
       todos: (id: string) => noted.todos[id] ?? [],
+      marked: (id: string) => noted.projects[id] !== undefined,
     };
     return { threads, truncated, now, root, noted, deriveThread, plans };
   };
@@ -268,6 +317,17 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     setSeen,
     todo,
     archive,
+    setProject,
+    forget,
+    sweep,
+
+    async projectChecked({ callerId, threadId, on }) {
+      const target = await planTarget(callerId, threadId);
+      if (target.archivedAt !== null) throw new CowError("archived", `“${target.title}” (${threadId}) is archived`, "`bb thread unarchive` brings it back.");
+      const project = on ? { at: Date.now(), by: callerId } : null;
+      await setProject(threadId, project);
+      return { title: target.title, project };
+    },
 
     async nextChecked({ callerId, threadId, text }) {
       const target = await planTarget(callerId, threadId);

@@ -28,6 +28,8 @@ export interface StatusLine {
   todo: string[];
   /** For a thread with threads under it: how many are in each state. */
   under: Partial<Record<LineState, number>> | null;
+  /** It is a project: never done while it is not archived, and idle when it has nothing to say. */
+  project: boolean;
   /** 0 for a thread Main started; 1 for one that thread started. */
   depth: number;
   /** 1-based place in the queue, or null when it is not waiting on the user. */
@@ -68,6 +70,7 @@ function toStatusLine(line: Line, now: number, todo: readonly string[] = []): St
     note: line.note,
     todo: [...todo],
     under: under && under.length > 0 ? Object.fromEntries(under) : null,
+    project: line.project !== null,
     depth: line.depth,
     queue: line.queueNumber,
   };
@@ -85,7 +88,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
   const lines = (from: readonly Line[], limit: number) =>
     from.slice(0, limit).map((line) => toStatusLine(line, now, todos.get(line.thread.id)));
   return {
-    main: toStatusLine(main, now, todos.get(main.thread.id)),
+    main: { ...toStatusLine(main, now, todos.get(main.thread.id)), project: true },
     queue: overview.queue.slice(0, STATUS_LIMITS.queue).map((line) => {
       const park = line.derived.park;
       return {
@@ -118,7 +121,7 @@ function row(line: StatusLine, indent: boolean): string[] {
     ? `  [under it: ${Object.entries(line.under).map(([state, count]) => `${count} ${state}`).join(", ")}]`
     : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})  ${line.doing}${nextOf(line)}${under}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}  ${line.doing}${nextOf(line)}${under}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }

@@ -2,7 +2,7 @@
 // person, and delivered to the asking thread as a message from the user.
 
 import { type Kv, Refusal, serial } from "../kv.ts";
-import { type Ask, type Risk, answerMessage, answered, askSchema, draftAsk, mayAskFor, openAsks, withdrawn } from "./ask.ts";
+import { type Ask, type Risk, answerMessage, answered, askSchema, closedInChat, draftAsk, mayAskFor, openAsks, withdrawn } from "./ask.ts";
 
 const PREFIX = "ask:";
 /** Open asks one thread may have at once; more than this is a thread talking to itself. */
@@ -43,6 +43,12 @@ export interface Asks {
   list(filter?: { threadId?: string; all?: boolean }): Promise<Ask[]>;
   get(id: string): Promise<Ask>;
   withdraw(caller: string | null, id: string): Promise<Ask>;
+  /**
+   * Close an ask the person answered in chat. With `answer`, it is the asking
+   * side closing it (the thread, or one above it); without, the person, from
+   * the page. Nothing is sent to the thread.
+   */
+  close(id: string, given: { caller: string | null; answer: string } | { person: true }): Promise<Ask>;
   /** Record the person's answer and deliver it. Never call this for an agent. */
   answer(id: string, given: { option: number | null; text: string | null }): Promise<Ask>;
   /** Deliver answers that were recorded but did not reach their thread. Returns how many it sent. */
@@ -142,6 +148,17 @@ export function createAsks(deps: AskDeps): Asks {
         await allow(caller, ask.threadId, "withdraw an ask of");
         const next = withdrawn(ask, deps.now());
         if (!next.ok) throw new Refusal("cannot_withdraw", next.error);
+        await write(next.value);
+        return next.value;
+      }),
+
+    close: (id, given) =>
+      locked(id, async () => {
+        const ask = await get(id);
+        const person = "person" in given;
+        if (!person) await allow(given.caller, ask.threadId, "close an ask of");
+        const next = closedInChat(ask, person ? { by: "person", closedBy: null, answer: null } : { by: "thread", closedBy: given.caller, answer: given.answer }, deps.now());
+        if (!next.ok) throw new Refusal("cannot_close", next.error, next.hint);
         await write(next.value);
         return next.value;
       }),

@@ -7,7 +7,6 @@
 // claim it supported is said to be supported by that audit, no more.
 
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { experimental_FileLink as FileLink } from "@get-bb/plugin-sdk/app";
 import type { Ask } from "./asks/ask.ts";
 import type { Label } from "./briefs/brief.ts";
 import { type ReviewedClaim, type Verdict, review } from "./briefs/review.ts";
@@ -15,6 +14,7 @@ import type { BriefRecord } from "./briefs/service.ts";
 import { type SheetItem, checkLine, moveStop, sheetItems } from "./briefs/sheet.ts";
 import type { Command } from "./keys.ts";
 import type { RaisedData } from "./raisedData.ts";
+import { fileAttribute } from "./reader/trigger.ts";
 import { formatAge } from "./text.ts";
 
 const LABEL_TEXT: Record<Label, string> = { checked: "checked", inferred: "inferred", "not-checked": "not checked" };
@@ -132,9 +132,16 @@ function ClaimRow({ item, current, expanded, threadId, onSelect }: { item: Extra
                     "an excerpt chosen by the agent"
                   ) : (
                     <>
-                      <FileLink className="cow-filelink" target={{ kind: "thread-storage", threadId, path: piece.path }} data-cow-brief-file={piece.path}>
+                      <button
+                        type="button"
+                        className="cow-filelink"
+                        tabIndex={-1}
+                        data-cow-file={fileAttribute({ kind: "rooted", threadId, root: "storage", relPath: piece.path, lines: null })}
+                        data-cow-brief-file={piece.path}
+                        data-cow-hint=""
+                      >
                         {piece.path}
-                      </FileLink>
+                      </button>
                       , as it was when submitted{piece.truncated ? "; cut short, as the checker read it" : ""}
                     </>
                   )}

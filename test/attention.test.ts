@@ -102,6 +102,7 @@ test("junk among the events is ignored", () => {
     last: null,
     toPerson: null,
     personSpokeSeq: null,
+    personSpokeAt: null,
   });
 });
 

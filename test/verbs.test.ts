@@ -20,7 +20,7 @@ const line = (facts: ThreadFacts, park?: ParkRecord, openUnder = 0): Line => ({
   members: 0,
   rollup: null,
   olderUnder: 0,
-  note: null,
+  note: null, project: null,
 });
 const allowed = (target: Line | null, isMain = false) =>
   VERBS.filter((verb) => verbBlocked(verb, target, isMain) === null);

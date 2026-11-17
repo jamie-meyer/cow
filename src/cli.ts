@@ -11,7 +11,7 @@ import { LIMITS } from "./state.ts";
 import { statusText } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
-export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked">;
+export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked">;
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -106,6 +106,24 @@ function planCommands(actions: CliActions) {
         );
       },
     }),
+    project: cliCommand({
+      summary: "Mark a thread as a project: long-lived, and one the user talks to",
+      description:
+        "A project is never done on cow's page: when it has nothing to say it reads idle and keeps its place, and its replies are the " +
+        "user's to read. Mark a thread you start when the user will talk to it over days. A thread with threads under it, and Main, are " +
+        "projects already. A thread marks only itself and the threads under it. --clear takes the mark off.",
+      positionals: [thread],
+      options: { clear: { type: "boolean", description: "Take the mark off" }, json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const done = await acting(() => actions.projectChecked({ callerId: ctx.threadId ?? null, threadId: id, on: input.options.clear !== true }));
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, project: done.project !== null },
+          done.project ? `“${done.title}” (${id}) is marked as a project: it reads idle, never done, until it is archived` : `“${done.title}” (${id}) is no longer marked as a project`,
+        );
+      },
+    }),
     "todo add": cliCommand({
       summary: "List a piece of work a thread has not started yet",
       description:
@@ -170,9 +188,9 @@ export function cowCli(actions: CliActions, attention?: Attention) {
         },
       }),
       archive: cliCommand({
-        summary: "Archive a done or failed thread, recording why",
+        summary: "Archive a done, idle or failed thread, recording why",
         description:
-          "Archives the thread in bb, and the threads under it with it. Refused while it is not done or failed, " +
+          "Archives the thread in bb, and the threads under it with it. Refused while it is not done, idle or failed, " +
           "or while threads under it are still open. The reason shows on cow's page under Done.",
         positionals: [thread],
         options: {

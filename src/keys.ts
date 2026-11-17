@@ -29,6 +29,12 @@ export type Command =
   | { kind: "recheck" }
   /** Close what is open over the page. */
   | { kind: "close" }
+  /** Mark the line as a project, or take the mark off. */
+  | { kind: "project" }
+  /** Scroll the chat in the pane: a few lines, or half of what shows. */
+  | { kind: "chat-scroll"; by: 1 | -1; half: boolean }
+  /** Scroll the chat in the pane to its newest message. */
+  | { kind: "chat-end" }
   | { kind: "help" }
   | { kind: "choose-main" };
 
@@ -38,21 +44,24 @@ export const KEY_MAP: readonly { keys: string; does: string }[] = [
   { keys: "gg G", does: "the heading, the last line" },
   { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
   { keys: "h l", does: "fold, unfold a group; on a member, h goes to its group's head (left, right arrows too)" },
-  { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened" },
+  { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader" },
   { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat" },
   { keys: "Esc", does: "leave the chat, then close it; cancel a prompt" },
   { keys: "m", does: "open Main's chat the same way" },
+  { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
   { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
   { keys: "I", does: "say something to the selected thread" },
   { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed" },
   { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
+  { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
+  { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
   { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
   { keys: "r", does: "resume a parked line: back into the tree" },
   { keys: "Space", does: "mark a reply as seen: the line stops waiting on you" },
   { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
   { keys: "J K", does: "move a not-started item down, up its list" },
-  { keys: "e", does: "archive a done or failed line: a reason or nothing, then Enter" },
-  { keys: "u", does: "undo the last park, resume, archive, dismissal or mark as seen (y confirms)" },
+  { keys: "e", does: "archive a done, idle or failed line: a reason or nothing, then Enter" },
+  { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen or project mark (y confirms)" },
   { keys: "Tab", does: "next ask in the queue (Shift+Tab previous)" },
   { keys: "1 to 9", does: "jump to that ask" },
   { keys: "M", does: "choose a different Main" },
@@ -124,6 +133,18 @@ export class KeyReader {
         return { kind: "recheck" };
       case "q":
         return { kind: "close" };
+      case "P":
+        return { kind: "project" };
+      case ";":
+        return { kind: "chat-scroll", by: 1, half: false };
+      case "'":
+        return { kind: "chat-scroll", by: -1, half: false };
+      case ":":
+        return { kind: "chat-scroll", by: 1, half: true };
+      case '"':
+        return { kind: "chat-scroll", by: -1, half: true };
+      case "\\":
+        return { kind: "chat-end" };
       case "u":
         return { kind: "undo" };
       case "Tab":
@@ -185,13 +206,19 @@ export interface KeyOwner {
   onLeaveChat(): void;
   /** Hint mode is on: every key is a hint letter, wherever focus is. */
   capturing?(): boolean;
+  /**
+   * A key pressed with Ctrl alone, outside any field. True when the page
+   * took it; otherwise it is left to bb like every other modified key.
+   */
+  onCtrl?(key: string): boolean;
 }
 
 /**
  * Listen for keys in the capture phase on `window`, so the page hears them
  * before bb does wherever focus has drifted.
  *
- * - Modified keys are bb's.
+ * - Modified keys are bb's, except Ctrl with a letter while the reader is
+ *   open: its page and half-page keys.
  * - Typing in any field works normally.
  * - Inside the embedded chat every key is the chat's, except Escape, which
  *   returns to the overview, and `f` when focus is on something that is not
@@ -204,9 +231,17 @@ export interface KeyOwner {
  */
 export function attachKeys(owner: KeyOwner): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (MODIFIER_KEYS.has(event.key)) return;
     const target = event.target instanceof Element ? event.target : null;
+    if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
+      const typing = target !== null && isEditable(target);
+      if (!typing && !hostPopupOpen() && owner.onCtrl?.(event.key.toLowerCase())) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (!owner.capturing?.()) {
       const inPage = target?.closest("[data-cow-root]") != null;
       const typing = target !== null && isEditable(target);
@@ -316,7 +351,7 @@ function reachable(element: HTMLElement, rect: DOMRect): boolean {
  */
 export function collectHintTargets(page: HTMLElement): HintTarget[] {
   // A sheet open over the page covers it: only what is in the sheet can be used.
-  const root = page.querySelector<HTMLElement>("[data-cow-sheet]") ?? page;
+  const root = page.querySelector<HTMLElement>("[data-cow-reader]") ?? page.querySelector<HTMLElement>("[data-cow-sheet]") ?? page;
   const popups = hostPopups();
   const lines: HintTarget[] = [];
   const own: HintTarget[] = [];

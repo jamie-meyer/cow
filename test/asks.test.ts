@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Ask, answerMessage, answerText, answered, asksByThread, draftAsk, mayAskFor, openAsks, parseOption, storagePath, withdrawn } from "../src/asks/ask.ts";
+import { type Ask, answerMessage, answerText, answered, askSchema, askText, asksByThread, closedInChat, closedText, draftAsk, mayAskFor, messagedSince, openAsks, parseOption, storagePath, withdrawn } from "../src/asks/ask.ts";
 import { MAX_OPEN_PER_THREAD } from "../src/asks/service.ts";
 import { Refusal } from "../src/kv.ts";
 import { MINUTE, NOW } from "./fixtures.ts";
@@ -239,4 +239,112 @@ test("a stored ask that is not an ask is ignored, not trusted", async () => {
   const { asks } = world(kv);
   assert.deepEqual(await asks.list({ all: true }), []);
   await refused(asks.get("ask_bad"), "ask_not_found");
+});
+
+// ---- closing an ask the person answered in chat ----------------------------
+
+test("an ask answered in chat is closed by the asking side with the answer, or by the person with none", () => {
+  const byThread = closedInChat(made(), { by: "thread", closedBy: "child", answer: "  blue, like last time " }, NOW + 9);
+  assert.ok(byThread.ok);
+  assert.equal(byThread.value.status, "closed");
+  assert.deepEqual(byThread.value.closed, { by: "thread", closedBy: "child", answer: "blue, like last time", at: NOW + 9 });
+  // It is neither an answer given on the page nor a withdrawal.
+  assert.equal(byThread.value.answer, null);
+  assert.equal(byThread.value.withdrawnAt, null);
+  assert.equal(byThread.value.deliveredAt, null);
+  assert.equal(closedText(byThread.value), "closed by the thread: answered in chat: blue, like last time");
+
+  const byPerson = closedInChat(made(), { by: "person", closedBy: null, answer: null }, NOW);
+  assert.ok(byPerson.ok);
+  assert.equal(closedText(byPerson.value), "closed by the user on cow's page: answered in chat");
+  const above = closedInChat(made(), { by: "thread", closedBy: "main", answer: "red" }, NOW);
+  assert.ok(above.ok);
+  assert.equal(closedText(above.value), "closed by main, a thread above it: answered in chat: red");
+  const terminal = closedInChat(made(), { by: "thread", closedBy: null, answer: "red" }, NOW);
+  assert.ok(terminal.ok);
+  assert.equal(closedText(terminal.value), "closed from a terminal: answered in chat: red");
+
+  // The asking side has to say what the answer was.
+  const empty = closedInChat(made(), { by: "thread", closedBy: "child", answer: "   " }, NOW);
+  assert.equal(empty.ok, false);
+  assert.match(empty.ok ? "" : (empty.hint ?? ""), /withdraw/);
+  assert.equal(closedInChat(made(), { by: "thread", closedBy: "child", answer: "x".repeat(4001) }, NOW).ok, false);
+});
+
+test("an ask is closed once, and a closed ask takes no answer and no withdrawal", () => {
+  const closed = closedInChat(made(), { by: "person", closedBy: null, answer: null }, NOW);
+  assert.ok(closed.ok);
+  assert.equal(closedInChat(closed.value, { by: "person", closedBy: null, answer: null }, NOW).ok, false);
+  assert.equal(answered(closed.value, { option: 1, text: null }, NOW).ok, false);
+  assert.equal(withdrawn(closed.value, NOW).ok, false);
+  const done = answered(made(), { option: 1, text: null }, NOW);
+  assert.ok(done.ok);
+  assert.equal(closedInChat(done.value, { by: "person", closedBy: null, answer: null }, NOW).ok, false);
+  const gone = withdrawn(made(), NOW);
+  assert.ok(gone.ok);
+  assert.equal(closedInChat(gone.value, { by: "thread", closedBy: "child", answer: "red" }, NOW).ok, false);
+  // It is not open, so it is in no queue.
+  assert.deepEqual(openAsks([closed.value]), []);
+  assert.match(askText(closed.value, NOW, () => "1m"), /closed  1m\n[\s\S]*closed by the user on cow's page: answered in chat$/);
+});
+
+test("an ask recorded before closing existed still reads", () => {
+  const { closed: _closed, ...old } = made();
+  const read = askSchema.parse(old);
+  assert.equal(read.closed, null);
+  assert.equal(read.status, "open");
+});
+
+test("the person has messaged since: a message of theirs after the ask, that is not cow delivering an answer", () => {
+  const ask = made({}, "ask_1", NOW);
+  assert.equal(messagedSince(ask, null), false);
+  assert.equal(messagedSince(ask, undefined), false);
+  assert.equal(messagedSince(ask, NOW - MINUTE), false);
+  assert.equal(messagedSince(ask, NOW), false);
+  assert.equal(messagedSince(ask, NOW + MINUTE), true);
+  // cow's own delivery of an answer to another ask of the thread is a message from the person too.
+  assert.equal(messagedSince(ask, NOW + MINUTE, [NOW + MINUTE + 800]), false);
+  assert.equal(messagedSince(ask, NOW + 5 * MINUTE, [NOW + MINUTE]), true);
+  // Only an open ask has anything to say.
+  const gone = withdrawn(ask, NOW + 1);
+  assert.ok(gone.ok);
+  assert.equal(messagedSince(gone.value, NOW + MINUTE), false);
+});
+
+test("the asking thread, or one above it, closes its ask; nothing is sent and it leaves the open list", async () => {
+  const { asks, sent, clock } = world();
+  const first = await asks.ask(input());
+  const second = await asks.ask(input({ question: "And what size?" }));
+  await refused(asks.close(first.id, { caller: "other", answer: "red" }), "not_your_thread");
+  await refused(asks.close(first.id, { caller: "grandchild", answer: "red" }), "not_your_thread");
+  await refused(asks.close(first.id, { caller: "child", answer: "" }), "cannot_close");
+  clock.now += 5000;
+  const closed = await asks.close(first.id, { caller: "child", answer: "you said red, in chat" });
+  assert.equal(closed.status, "closed");
+  assert.deepEqual(closed.closed, { by: "thread", closedBy: "child", answer: "you said red, in chat", at: clock.now });
+  assert.deepEqual((await asks.list()).map((ask) => ask.id), [second.id]);
+  const above = await asks.close(second.id, { caller: "main", answer: "large" });
+  assert.equal(above.closed?.closedBy, "main");
+  assert.deepEqual(await asks.list(), []);
+  assert.deepEqual((await asks.list({ all: true })).map((ask) => ask.status), ["closed", "closed"]);
+  assert.deepEqual(sent, []);
+  await refused(asks.close(first.id, { caller: "child", answer: "again" }), "cannot_close");
+  await refused(asks.answer(first.id, { option: 1, text: null }), "cannot_answer");
+  await refused(asks.withdraw("child", first.id), "cannot_withdraw");
+  await refused(asks.close("ask_nope", { caller: "child", answer: "x" }), "ask_not_found");
+  // The same question can be asked afresh once the first is closed.
+  await asks.ask(input());
+});
+
+test("the person closes an ask from the page: recorded as theirs, nothing sent, and it survives a reload", async () => {
+  const kv = memoryKv();
+  const { asks, sent } = world(kv);
+  const ask = await asks.ask(input());
+  const closed = await asks.close(ask.id, { person: true });
+  assert.deepEqual([closed.status, closed.closed?.by, closed.closed?.closedBy, closed.closed?.answer], ["closed", "person", null, null]);
+  assert.deepEqual(sent, []);
+  const again = world(kv);
+  assert.deepEqual(await again.asks.list(), []);
+  assert.equal((await again.asks.get(ask.id)).closed?.by, "person");
+  assert.equal(await again.asks.redeliver(), 0);
 });

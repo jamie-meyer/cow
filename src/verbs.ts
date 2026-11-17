@@ -54,7 +54,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       // So is one that waits only for its brief to be read: archiving it is a way of dealing with it.
       if (derived.briefWaits) return null;
       if (derived.asks) return "it has an open ask: answer it, or have it withdrawn";
-      return derived.state === "done" || derived.state === "failed" ? null : "only done or failed lines can be archived";
+      // An idle project is at rest too: archiving it is the person saying it is finished.
+      return derived.state === "done" || derived.state === "idle" || derived.state === "failed" ? null : "only done, idle or failed lines can be archived";
   }
 }
 

@@ -22,6 +22,7 @@ const line = (id: string, overrides: Partial<StatusLine> = {}): StatusLine => ({
   next: "",
   note: null,
   todo: [],
+  project: false,
   under: null,
   depth: 0,
   queue: null,
@@ -53,6 +54,7 @@ const ask = (id: string, threadId: string, minutesAgo: number, overrides: Partia
   answer: null,
   deliveredAt: null,
   withdrawnAt: null,
+  closed: null,
   ...overrides,
 });
 
@@ -114,6 +116,9 @@ function cli(caller: string | null = "child") {
       throw new Error("unused");
     },
     resumeChecked: async () => ({ title: "T" }),
+    projectChecked: async () => {
+      throw new Error("unused");
+    },
     nextChecked: async () => {
       throw new Error("unused");
     },
@@ -196,6 +201,47 @@ test("asks lists open asks oldest first; --all includes the rest", async () => {
   assert.equal(notMine.exitCode, 1);
   const unknown = await run(["ask", "withdraw", "ask_nope"]);
   assert.match(unknown.stderr ?? "", /there is no ask ask_nope/);
+});
+
+test("ask close records the user's answer as given in chat; the asks list says who closed what", async () => {
+  const { run, asks, sent } = cli();
+  await run(["ask", "--question", "Which colour?", "--option", "red", "--option", "blue"]);
+  await run(["ask", "--question", "What size?"]);
+  await run(["ask", "--question", "Which font?"]);
+  const [colour, size, font] = await asks.list();
+  assert.ok(colour && size && font);
+
+  const closed = await run(["ask", "close", colour.id, "--answered", "blue, as you said in chat"]);
+  assert.equal(closed.exitCode, 0, closed.stderr);
+  assert.match(closed.stdout ?? "", new RegExp(`closed ${colour.id} as answered in chat: Which colour\\?\\n  the answer, as you gave it: blue, as you said in chat`));
+  // Nothing is sent to the thread, and it is out of the open list at once.
+  assert.deepEqual(sent, []);
+  assert.doesNotMatch((await run(["asks"])).stdout ?? "", /Which colour\?/);
+
+  // The answer is required; an unrelated thread cannot close it; it closes once.
+  assert.equal((await run(["ask", "close", size.id])).exitCode, 1);
+  const empty = await run(["ask", "close", size.id, "--answered", "  "]);
+  assert.equal(empty.exitCode, 1);
+  assert.match(empty.stderr ?? "", /--answered is empty/);
+  assert.equal((await run(["ask", "close", size.id, "--answered", "large"], "other")).exitCode, 1);
+  assert.equal((await run(["ask", "close", colour.id, "--answered", "again"])).exitCode, 1);
+  // A thread above closes it for the thread under it.
+  assert.equal((await run(["ask", "close", size.id, "--answered", "large"], "main")).exitCode, 0);
+
+  // The three ways an ask ends are told apart, each by who ended it.
+  await asks.answer(font.id, { option: null, text: "serif" });
+  await run(["ask", "--question", "Dropped?"]);
+  const dropped = (await asks.list())[0]!;
+  await run(["ask", "withdraw", dropped.id]);
+  const all = await run(["asks", "--all"]);
+  assert.match(all.stdout ?? "", /closed by the thread: answered in chat: blue, as you said in chat/);
+  assert.match(all.stdout ?? "", /closed by main, a thread above it: answered in chat: large/);
+  assert.match(all.stdout ?? "", /answered on cow's page: serif/);
+  const json = JSON.parse((await run(["asks", "--all", "--json"])).stdout ?? "");
+  assert.deepEqual(json.asks.map((entry: Ask) => entry.status), ["closed", "closed", "answered", "withdrawn"]);
+  assert.deepEqual(json.asks[0].closed, { by: "thread", closedBy: "child", answer: "blue, as you said in chat", at: json.asks[0].closed.at });
+  const help = await run(["--help"]);
+  assert.match(help.stdout ?? "", /bb cow ask close/);
 });
 
 test("there is no command that answers an ask", async () => {

@@ -4,9 +4,10 @@
 // needs a word typed, before it goes. Nothing is sent on one key.
 
 import { type RefObject } from "react";
-import { experimental_FileLink as FileLink } from "@get-bb/plugin-sdk/app";
 import type { Ask } from "./asks/ask.ts";
-import { type AskDraft, CONFIRM_WORD, draftAnswer } from "./asks/card.ts";
+import { type AskDraft, CONFIRM_WORD, chatDigit, draftAnswer } from "./asks/card.ts";
+import { MESSAGED_SINCE } from "./state.ts";
+import { fileAttribute } from "./reader/trigger.ts";
 import { formatAge } from "./text.ts";
 
 export interface AskState {
@@ -30,6 +31,7 @@ export function AskCard({
   asks,
   title,
   now,
+  messaged,
   textRef,
   wordRef,
   onText,
@@ -43,6 +45,8 @@ export function AskCard({
   /** The asking thread's title: where the answer goes. */
   title: string;
   now: number;
+  /** The person has sent the thread a message since it asked this: it may be answered in chat already. */
+  messaged: boolean;
   textRef: RefObject<HTMLInputElement | null>;
   wordRef: RefObject<HTMLInputElement | null>;
   onText: (value: string) => void;
@@ -77,7 +81,9 @@ export function AskCard({
   const others = asks.filter((entry) => entry !== ask);
   const answer = draftAnswer(draft, ask);
   const staged = draft.stage !== "choose";
-  const digits = ask.options.length + (ask.optionsOnly || ask.options.length === 0 ? 0 : 1);
+  // The field has a digit when there is anything else to choose.
+  const fieldDigit = !ask.optionsOnly && (ask.options.length > 0 || messaged);
+  const digits = ask.options.length + (fieldDigit ? 1 : 0) + (messaged ? 1 : 0);
   return (
     <div
       className={`cow-ans cow-ask${ask.risk ? ` cow-risk-${ask.risk}` : ""}`}
@@ -111,9 +117,16 @@ export function AskCard({
           <span>proof</span>
           <span className="cow-ask-proofs">
             {ask.proofs.map((path) => (
-              <FileLink key={path} className="cow-filelink" target={{ kind: "thread-storage", threadId: ask.threadId, path }} data-cow-ask-proof={path}>
+              <button
+                key={path}
+                type="button"
+                className="cow-filelink"
+                tabIndex={-1}
+                data-cow-file={fileAttribute({ kind: "rooted", threadId: ask.threadId, root: "storage", relPath: path, lines: null })}
+                data-cow-ask-proof={path}
+              >
                 {path}
-              </FileLink>
+              </button>
             ))}
           </span>
         </p>
@@ -138,7 +151,7 @@ export function AskCard({
       })}
       {ask.optionsOnly ? null : (
         <div className="cow-ans-o cow-ans-text">
-          {ask.options.length > 0 ? <kbd>{ask.options.length + 1}</kbd> : <span />}
+          {fieldDigit ? <kbd>{ask.options.length + 1}</kbd> : <span />}
           <span className="cow-ans-mark">✎</span>
           <input
             ref={textRef}
@@ -153,6 +166,22 @@ export function AskCard({
           />
         </div>
       )}
+      {messaged ? (
+        <>
+          <p className="cow-ans-why cow-ask-messaged" data-cow-ask-messaged="">
+            {MESSAGED_SINCE[0]!.toUpperCase()}
+            {MESSAGED_SINCE.slice(1)}. If that message answered it, close it here: nothing more is sent.
+          </p>
+          <div className={draft.chat ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-ask-chat="" data-cow-chosen={draft.chat || undefined}>
+            <kbd>{chatDigit(ask)}</kbd>
+            <span className="cow-ans-mark">{draft.chat ? "◉" : "○"}</span>
+            <span>
+              already answered in chat
+              <small> · closes the ask and sends the thread nothing</small>
+            </span>
+          </div>
+        </>
+      ) : null}
       {staged && answer.ok ? (
         <div className="cow-perm-confirm cow-ask-restate" data-cow-ask-restate="">
           <p>
@@ -213,7 +242,7 @@ export function AskCard({
                 choose ·{" "}
               </>
             ) : null}
-            <kbd>⏎</kbd> {ask.risk === "medium" || ask.risk === "high" ? "review the answer" : "send the answer"}
+            <kbd>⏎</kbd> {draft.chat ? "close it, sending nothing" : ask.risk === "medium" || ask.risk === "high" ? "review the answer" : "send the answer"}
             {others.length > 0 && !state.single ? (
               <>
                 {" "}

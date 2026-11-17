@@ -15,6 +15,7 @@ import {
 import {
   ThreadChat,
   useBbContext,
+  useBbNavigate,
   useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
@@ -66,14 +67,18 @@ import {
   cursorOrder,
   descendantIds,
   foldMove,
-  headIds,
   keepFolds,
   listed,
   nextMove,
+  projectIds,
   unfoldAround,
   visibleRows,
   waitingInside,
 } from "./tree.ts";
+import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
+import { useReader } from "./reader/Reader.tsx";
+import type { FileRef } from "./reader/link.ts";
+import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
 import { VERB_KEYS, type Verb as VerbName, verbBlocked, verbLabel } from "./verbs.ts";
@@ -117,6 +122,7 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
   failed: (
     <path d="M2.4 2.4l7.2 7.2M9.6 2.4 2.4 9.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
   ),
+  idle: <circle cx="6" cy="6" r="3.7" fill="none" stroke="currentColor" strokeWidth="1.5" />,
   done: (
     <path
       d="M1.8 6.5 4.7 9.4 10.2 2.8"
@@ -164,9 +170,14 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
     long: "Its last turn ended in an error. Open it to retry, or archive it with e. Listed in the queue.",
   },
   {
+    state: "idle",
+    short: "a project, quiet for now",
+    long: "A project with nothing to say: not running, nothing waiting on you, no reply unseen. A project is Main, a thread with threads under it, or one marked with P or bb cow project. It is never done: it keeps its place, shows how long it has been quiet and what it says is next, and leaves only when you archive it with e.",
+  },
+  {
     state: "done",
     short: "ended in the last 2 days",
-    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. A finished member stays in its group, dimmed. Older ones are counted, not listed.",
+    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. A finished member stays in its group, dimmed. Older ones are counted, not listed. A project is never done unless you archive it.",
   },
 ];
 
@@ -192,7 +203,7 @@ function Pips({ count }: { count: number }) {
 /** Time in state: heavier the longer it has been, one square per full week. */
 function Age({ derived, now }: { derived: Derived; now: number }) {
   const ms = Math.max(0, now - derived.since);
-  const calm = derived.state === "done";
+  const calm = derived.state === "done" || derived.state === "idle";
   const weight = calm || ms < HOUR ? 0 : ms < DAY ? 1 : ms < WEEK ? 2 : 3;
   return (
     <span className={`cow-ag cow-a${weight} cow-s-${derived.state}`} title="time in this state">
@@ -337,6 +348,7 @@ function LineRow({
   if (open) classes.push("cow-open");
   if (context) classes.push("cow-context");
   if (fold !== null) classes.push("cow-grouphead");
+  if (line.project && thread.archivedAt === null) classes.push("cow-project");
   if (!flat && (fold !== null || line.depth > 0)) classes.push("cow-ingroup");
   if (!flat && line.depth === 0) classes.push("cow-top");
   const nextNode = next.own ? (
@@ -354,6 +366,7 @@ function LineRow({
       data-cow-depth={flat ? undefined : line.depth}
       data-cow-fold={fold ?? undefined}
       data-cow-reply={derived.reply ? "" : undefined}
+      data-cow-project={thread.archivedAt === null ? (line.project ?? undefined) : undefined}
       data-cow-asks={derived.asks?.length}
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
@@ -373,7 +386,16 @@ function LineRow({
         {flat ? null : <Rails depth={line.depth} />}
         {fold === null ? (
           // Where a head has its fold mark, so every title at one level starts at the same place.
-          <i className="cow-fold" aria-hidden="true" />
+          // A project with nothing under it has its own small mark there.
+          line.project && thread.archivedAt === null ? (
+            <i className="cow-fold cow-projectmark" title="a project: never done, idle when quiet · P unmarks it">
+              <svg viewBox="0 0 10 10" aria-hidden="true">
+                <rect x="2.2" y="2.2" width="5.6" height="5.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            </i>
+          ) : (
+            <i className="cow-fold" aria-hidden="true" />
+          )
         ) : (
           <i
             className="cow-fold cow-foldable"
@@ -561,6 +583,19 @@ function Help({ onClose }: { onClose: () => void }) {
             <span>
               <b>a group.</b> A thread with threads under it, drawn with them along one rule. Its line counts
               what is under it, by state. <kbd>h</kbd> folds it, <kbd>l</kbd> unfolds it.
+            </span>
+          </div>
+          <div className="cow-row">
+            <span>
+              <i className="cow-fold cow-projectmark">
+                <svg viewBox="0 0 10 10" aria-hidden="true">
+                  <rect x="2.2" y="2.2" width="5.6" height="5.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                </svg>
+              </i>
+            </span>
+            <span>
+              <b>a project.</b> A thread you talk to over days, marked with <kbd>P</kbd> or bb cow project. A group's head is
+              one without the mark. It is never done: quiet, it reads idle.
             </span>
           </div>
           <div className="cow-row">
@@ -772,11 +807,13 @@ function usePageKeys(
   /** Called with a hint's target just before and just after it is used. */
   beforeActivate?: (element: HTMLElement) => void,
   afterActivate?: (element: HTMLElement) => void,
+  /** A key pressed with Ctrl alone; true when something on the page took it. */
+  onCtrl?: (key: string) => boolean,
 ) {
   const [hint, setHint] = useState<HintState | null>(null);
   const reader = useRef(new KeyReader());
-  const live = useRef({ onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate });
-  live.current = { onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate };
+  const live = useRef({ onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate, onCtrl });
+  live.current = { onCommand, onLeaveChat, blocked, hint, beforeActivate, afterActivate, onCtrl };
 
   const startHints = useCallback(() => {
     const root = rootRef.current;
@@ -792,6 +829,7 @@ function usePageKeys(
       attachKeys({
         onLeaveChat: () => live.current.onLeaveChat(),
         capturing: () => live.current.hint !== null,
+        onCtrl: (key) => live.current.hint === null && (live.current.onCtrl?.(key) ?? false),
         onKey(key, shift) {
           const { hint: active, blocked: isBlocked } = live.current;
           if (!active && isBlocked?.(key)) return;
@@ -1203,6 +1241,80 @@ function OverviewScreen({
   });
   sheetRef.current = sheet;
 
+  // The reader: a file over the page. It opens from a click or a hint on
+  // anything on the page that names a file, and from a file tab bb opens here.
+  const navigate = useBbNavigate();
+  const hintsRef = useRef<() => void>(() => undefined);
+  const paneRef = useRef(pane);
+  paneRef.current = pane;
+  const panelFiles = usePanelFiles((file) => {
+    const threadId = file.source?.threadId ?? paneRef.current;
+    if (file.source?.kind === "host" || file.path.startsWith("/")) reader.open({ kind: "path", threadId, path: file.path, lines: null });
+    else reader.open({ kind: "rooted", threadId, environmentId: file.source?.environmentId ?? null, root: file.source?.kind === "storage" ? "storage" : "workspace", relPath: file.path, lines: null });
+  });
+  const reader = useReader({
+    sdk,
+    titleOf: (id) => titles.get(id) ?? "a thread that is not on this page",
+    startHints: () => hintsRef.current(),
+    onClose: focusOverview,
+    openInPanel: (file: FileRef, line) => {
+      const target =
+        file.root === "workspace" && file.environmentId
+          ? ({ kind: "workspace", environmentId: file.environmentId, path: file.relPath } as const)
+          : file.root === "storage" && file.threadId
+            ? ({ kind: "thread-storage", threadId: file.threadId, path: file.relPath } as const)
+            : file.hostId
+              ? ({ kind: "host", hostId: file.hostId, path: file.absPath } as const)
+              : null;
+      if (target === null) return false;
+      panelFiles.allowNext();
+      return navigate.experimental_openFilePreview({ target, location: line === null ? null : { kind: "line", line, column: null } });
+    },
+  });
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
+  // A click on a link leaves focus on the link, which may be in the chat; the reader's keys are the page's.
+  useEffect(() => {
+    if (reader.depth > 0) focusOverview();
+  }, [reader.depth, focusOverview]);
+  useEffect(
+    () =>
+      attachFileClicks({
+        root: () => rootRef.current,
+        paneThread: () => paneRef.current,
+        open: (target) => readerRef.current.open(target),
+        openLink: (href) => readerRef.current.openLink(href),
+      }),
+    [],
+  );
+
+  // The chat in the pane is scrolled from here, without taking the keyboard.
+  const glide = useRef(new Glide());
+  useEffect(() => () => glide.current.stop(), []);
+  // A mouse or trackpad is helped off bb's pin to the newest message while text arrives.
+  useEffect(() => attachWheelEscape(() => rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]") ?? null), []);
+  // Scrolled away from the newest message, the pane says when more has arrived below.
+  const [below, setBelow] = useState(false);
+  useEffect(() => {
+    setBelow(false);
+    if (pane === null) return;
+    /** The chat's height when the person left its end; null while they are at it. */
+    let left: number | null = null;
+    const timer = setInterval(() => {
+      const chat = rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]");
+      const scroller = chat ? chatScroller(chat) : null;
+      if (!scroller || atEnd(scroller)) left = null;
+      else left ??= scroller.scrollHeight;
+      setBelow(scroller !== null && outputBelow(left, scroller.scrollHeight));
+    }, 400);
+    return () => clearInterval(timer);
+  }, [pane]);
+  const scrollChat = (delta: (viewHeight: number) => number | "end") => {
+    const chat = rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]");
+    const scroller = chat ? chatScroller(chat) : null;
+    if (scroller) glide.current.push(scroller, delta(scroller.clientHeight));
+  };
+
   // A reply showing in the pane has been seen. Each is marked once, so that
   // undoing a mark made with Space is not undone again by the open pane.
   const paneLine = pane === null ? null : ([main, ...listed(overview)].find((line) => line.thread.id === pane) ?? null);
@@ -1233,6 +1345,14 @@ function OverviewScreen({
       case "recheck":
         return setMessage("c runs a brief's check again from inside the brief: b opens one");
       case "close":
+        // A file bb is showing beside the page, after o in the reader: q puts it away.
+        panelFiles.closeShown();
+        return;
+      case "chat-scroll":
+        if (pane !== null) scrollChat((height) => command.by * (command.half ? Math.max(CHAT_STEP_PX, Math.round(height / 2)) : CHAT_STEP_PX));
+        return;
+      case "chat-end":
+        if (pane !== null) scrollChat(() => "end");
         return;
       case "open":
         // What is not started has no chat of its own; its thread's is the nearest thing.
@@ -1240,6 +1360,7 @@ function OverviewScreen({
       case "main-chat":
         return openChat(main.thread.id);
       case "back":
+        if (panelFiles.closeShown()) return;
         if (pane !== null) closePane();
         else setMessage("");
         return;
@@ -1269,6 +1390,9 @@ function OverviewScreen({
           return setMessage("Main's reply is read by opening its chat: press m");
         }
         return selectedLine ? verbs.markSeen(selectedLine, true) : undefined;
+      case "project":
+        if (selectedTodo) return setMessage("that is work not started, not a thread");
+        return selectedLine ? verbs.toggleProject(selectedLine) : undefined;
       case "reorder":
         if (!selectedTodo) return setMessage("J and K move a not-started item; select one first");
         return verbs.moveTodo(selectedTodo, command.by);
@@ -1293,7 +1417,13 @@ function OverviewScreen({
     rootRef,
     run,
     focusOverview,
-    help
+    reader.onKey
+      ? (key) => {
+          // A file is open over the page: every key is the reader's.
+          reader.onKey?.(key, false);
+          return true;
+        }
+      : help
       ? (key) => {
           if (key === "Escape" || key === "?" || key === "q") setHelp(false);
           return true;
@@ -1338,7 +1468,13 @@ function OverviewScreen({
       setTimeout(back, 60);
       setTimeout(back, 250);
     },
+    (key) => {
+      if (!reader.onKey) return false;
+      reader.onKey(key, true);
+      return true;
+    },
   );
+  hintsRef.current = startHints;
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -1405,7 +1541,9 @@ function OverviewScreen({
       data-cow-mode={
         hint
           ? "hint"
-          : sayTo !== null
+          : reader.mode !== null
+            ? reader.mode
+            : sayTo !== null
             ? "say"
             : help
               ? "help"
@@ -1572,8 +1710,13 @@ function OverviewScreen({
                   {pane === main.thread.id ? "Main · " : ""}
                   {paneTitle}
                 </b>
+                {below ? (
+                  <button type="button" className="cow-vb cow-below" data-cow-chat-below="" data-cow-hint="" tabIndex={-1} title="more has arrived since you scrolled up" onClick={() => scrollChat(() => "end")}>
+                    new output below · <kbd>\</kbd>
+                  </button>
+                ) : null}
                 <span>
-                  <kbd>i</kbd> type here · <kbd>Esc</kbd> back
+                  <kbd>;</kbd> <kbd>'</kbd> scroll · <kbd>i</kbd> type here · <kbd>Esc</kbd> back
                 </span>
                 <button type="button" className="cow-vb" data-cow-hint="" tabIndex={-1} onClick={closePane}>
                   close
@@ -1703,6 +1846,7 @@ function OverviewScreen({
         </footer>
       </div>
       {sheet.node}
+      {reader.node}
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
     </div>
@@ -1750,7 +1894,7 @@ export function CowPage() {
   const notes = parks.notes;
   const raised = useRaised(underMain);
 
-  const heads = useMemo(() => headIds(snapshot.threads), [snapshot.threads]);
+  const projects = useMemo(() => projectIds(snapshot.threads, parks.projects.keys(), mainId), [snapshot.threads, parks.projects, mainId]);
   const overview = useMemo(
     () =>
       mainId === null || notes === null
@@ -1767,16 +1911,17 @@ export function CowPage() {
                 thread.id === mainId ? null : notes.get(thread.id),
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
-                { head: heads.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
-                { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null },
+                { head: projects.has(thread.id), project: projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
+                { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id) },
               ),
             now,
             {
               note: (id) => parks.nexts.get(id)?.text ?? null,
               todos: (id) => parks.todos.get(id) ?? [],
+              marked: (id) => parks.projects.has(id),
             },
           ),
-    [snapshot, mainId, heads, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, raised.asks, raised.briefs, raised.delivered, now],
   );
 
   useEffect(() => {

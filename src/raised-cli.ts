@@ -146,12 +146,26 @@ export function attentionCommands(attention: Attention) {
         return print(input.options.json, { ask }, `withdrew ${ask.id}: ${ask.question}`);
       },
     }),
+    "ask close": cliCommand({
+      summary: "Close a question the user answered in an ordinary message instead of on cow's page",
+      description:
+        "Records the ask as closed by you, answered in chat, with the user's answer as you quote it. It leaves the user's " +
+        "queue at once and nothing is sent to your thread. After the user messages you, check `bb cow asks --thread <you>` and " +
+        "close what the message answered. Withdraw is for a question that no longer needs an answer.",
+      positionals: [{ name: "id", description: "The ask's id, such as ask_1a2b3c4d", required: true }],
+      options: { answered: { type: "string", required: true, aliases: ["answer"], description: "The user's answer, quoted or closely paraphrased, up to 4000 characters" }, json },
+      async run(input, ctx) {
+        const ask = await acting(() => asks.close(input.positionals.id.trim(), { caller: ctx.threadId ?? null, answer: input.options.answered }));
+        return print(input.options.json, { ask }, `closed ${ask.id} as answered in chat: ${ask.question}
+  the answer, as you gave it: ${ask.closed?.answer ?? ""}`);
+      },
+    }),
     asks: cliCommand({
       summary: "Open questions for the user, oldest first",
-      description: `Lists at most ${MAX_LISTED}; the rest are counted. Only the user answers an ask, on cow's page.`,
+      description: `Lists at most ${MAX_LISTED}; the rest are counted. Only the user answers an ask, on cow's page. With --all, each closed one says who closed it and how.`,
       options: {
         thread: { type: "string", description: "Only this thread's asks" },
-        all: { type: "boolean", description: "Include answered and withdrawn asks" },
+        all: { type: "boolean", description: "Include answered and withdrawn asks, and those closed as answered in chat" },
         json,
       },
       async run(input) {

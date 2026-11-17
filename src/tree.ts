@@ -12,9 +12,13 @@
 //   listed under Done with its reason.
 // A line with a note of what is next, or with work listed as not started,
 // is not finished, whatever its last turn says.
+//
+// A project (Main, a thread that has or has had threads under it, or one
+// marked as a project) is never finished while it is not archived: with
+// nothing to say it is idle, and keeps its place.
 
 import type { TodoItem } from "./shared.ts";
-import { type Derived, LIMITS, type LineState, type ThreadFacts, waitingSince } from "./state.ts";
+import { type Derived, LIMITS, type LineState, type ThreadFacts, atRest, waitingSince } from "./state.ts";
 
 export type Rollup = Record<LineState, number>;
 
@@ -39,6 +43,8 @@ export interface Line {
   olderUnder: number;
   /** The thread's own words on what happens next, if it left any. */
   note: string | null;
+  /** It is a project: "marked" by the person or an agent, or a "head" with threads under it. Null for any other line. */
+  project: "marked" | "head" | null;
 }
 
 /** Work a thread has listed as not started yet: a row in its group. */
@@ -60,6 +66,8 @@ export type Row = { kind: "line"; id: string; depth: number; line: Line } | Todo
 export interface Plans {
   note(threadId: string): string | null;
   todos(threadId: string): readonly TodoItem[];
+  /** Whether the thread is marked as a project. */
+  marked?(threadId: string): boolean;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -87,11 +95,11 @@ export interface Overview {
 }
 
 function emptyCounts(): Record<LineState, number> {
-  return { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 0, done: 0 };
+  return { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 0, idle: 0, done: 0 };
 }
 
 /** The states a rollup shows, in the order it shows them. */
-export const ROLLUP_ORDER: readonly LineState[] = ["wants", "blocked", "stuck", "failed", "running", "waiting", "parked", "done"];
+export const ROLLUP_ORDER: readonly LineState[] = ["wants", "blocked", "stuck", "failed", "running", "waiting", "parked", "idle", "done"];
 
 function childrenOf(threads: readonly ThreadFacts[]): Map<string, ThreadFacts[]> {
   const children = new Map<string, ThreadFacts[]>();
@@ -115,6 +123,18 @@ export function headIds(threads: readonly ThreadFacts[]): Set<string> {
   const heads = new Set<string>();
   for (const thread of threads) if (thread.parentThreadId !== null) heads.add(thread.parentThreadId);
   return heads;
+}
+
+/**
+ * The projects among `threads`: Main, every thread that has or has had
+ * threads under it, and every thread marked as one. A project's replies are
+ * the person's to read, and it is never done while it is not archived.
+ */
+export function projectIds(threads: readonly ThreadFacts[], marked: Iterable<string>, mainId: string | null): Set<string> {
+  const ids = headIds(threads);
+  for (const id of marked) ids.add(id);
+  if (mainId !== null) ids.add(mainId);
+  return ids;
 }
 
 /**
@@ -198,6 +218,7 @@ export function buildOverview(
     rollup: node.under > 0 && node.derived.state !== "parked" ? node.rollup : null,
     olderUnder: 0,
     note: node.thread.archivedAt === null ? plans.note(node.thread.id) : null,
+    project: plans.marked?.(node.thread.id) ? "marked" : node.kids.length > 0 ? "head" : null,
   });
   const recent = (node: Node): boolean => now - node.latest <= LIMITS.doneListedMs;
   const noteUnarchived = (node: Node) => {
@@ -260,7 +281,7 @@ export function buildOverview(
     for (const kid of node.kids) place(kid, depth + 1, line);
     if (thread.archivedAt === null) todoRows(thread.id, depth + 1);
     line.members = overview.rows.length - at - 1;
-    line.openUnder = overview.lines.slice(linesAt).filter((other) => other.derived.state !== "done").length;
+    line.openUnder = overview.lines.slice(linesAt).filter((other) => !atRest(other.derived.state)).length;
   };
 
   const main = read(mainThread);
@@ -313,7 +334,7 @@ export function lineOf(
   if (!under.main) return null;
   return {
     ...under.main,
-    openUnder: under.lines.filter((line) => line.derived.state !== "done").length,
+    openUnder: under.lines.filter((line) => !atRest(line.derived.state)).length,
     under: under.main.derived.state === "parked" ? under.unarchived.length : 0,
   };
 }

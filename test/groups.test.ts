@@ -66,8 +66,8 @@ test("a thread with threads under it heads a group, and groups nest", () => {
 
 test("a head's rollup counts everything under it by state, at every depth", () => {
   const overview = build(three());
-  assert.deepEqual(line(overview, "proj").rollup, { wants: 1, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 0, failed: 1, done: 1 });
-  assert.deepEqual(line(overview, "w2").rollup, { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 1, done: 0 });
+  assert.deepEqual(line(overview, "proj").rollup, { wants: 1, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 0, failed: 1, idle: 0, done: 1 });
+  assert.deepEqual(line(overview, "w2").rollup, { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 1, idle: 0, done: 0 });
   assert.equal(line(overview, "w1").rollup, null);
   assert.equal(overview.main?.rollup, null);
 });
@@ -218,7 +218,7 @@ test("parking a head takes its members to the shelf and counts them; parking a m
   assert.deepEqual(rowIds(member), ["proj", "w1", "w3", "solo"]);
   assert.deepEqual(member.parked.map((l) => [l.thread.id, l.under]), [["w2", 1]]);
   // The head counts the parked member once, and nothing under it.
-  assert.deepEqual(line(member, "proj").rollup, { wants: 0, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 1, failed: 0, done: 1 });
+  assert.deepEqual(line(member, "proj").rollup, { wants: 0, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 1, failed: 0, idle: 0, done: 1 });
 });
 
 test("when a row leaves, the cursor skips what leaves with it and what is folded away", () => {

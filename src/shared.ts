@@ -45,6 +45,18 @@ export const dismissalSchema = z.object({
 });
 export type Dismissal = z.infer<typeof dismissalSchema>;
 
+/**
+ * cow's note that a thread is a project: long-lived, and one the person
+ * talks to. A project is never done: when it has nothing to say it is idle.
+ */
+export const PROJECT_KEY = "project";
+export const projectMarkSchema = z.object({
+  /** When it was marked, and by which thread when the CLI knew. */
+  at: z.number(),
+  by: z.string().nullable(),
+});
+export type ProjectMark = z.infer<typeof projectMarkSchema>;
+
 /** A thread's own words on what happens next for it. */
 export const NEXT_KEY = "next";
 export const MAX_NEXT = 160;

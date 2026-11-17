@@ -15,6 +15,10 @@ export interface RaisedData {
   asks: ReadonlyMap<string, readonly Ask[]>;
   /** Thread id to what its latest brief came to. */
   briefs: ReadonlyMap<string, BriefMark>;
+  /** Thread id to when cow delivered the person's answers to its other asks. */
+  delivered: ReadonlyMap<string, readonly number[]>;
+  /** Close an ask the person answered in chat. Nothing is sent to the thread. */
+  close: (askId: string) => Promise<Ask>;
   /** Counts up whenever an ask or a brief changes anywhere: a reason to read a brief again. */
   changes: number;
   /** Record the person's answer and send it to the asking thread. */
@@ -29,12 +33,14 @@ export interface RaisedData {
 
 const NO_ASKS: ReadonlyMap<string, readonly Ask[]> = new Map();
 const NO_BRIEFS: ReadonlyMap<string, BriefMark> = new Map();
+const NO_DELIVERED: ReadonlyMap<string, readonly number[]> = new Map();
 
 /** Load the asks and briefs of `threadIds`, and again whenever that list or any of them changes. */
 export function useRaised(threadIds: readonly string[] | null): RaisedData {
   const rpc = useRpc<typeof attentionRpcContract>();
   const [asks, setAsks] = useState(NO_ASKS);
   const [briefs, setBriefs] = useState(NO_BRIEFS);
+  const [delivered, setDelivered] = useState(NO_DELIVERED);
   const [changes, setChanges] = useState(0);
   const ids = useRef(threadIds);
   ids.current = threadIds;
@@ -49,6 +55,7 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
       ([asked, marked]) => {
         if (seq !== request.current) return;
         setAsks(asksByThread(asked.asks));
+        setDelivered(new Map(Object.entries(asked.delivered)));
         setBriefs(new Map(Object.entries(marked.marks)));
       },
       () => undefined,
@@ -62,24 +69,34 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
     reload();
   });
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    /** Gone from the page at once; the reload confirms it. */
+    const gone = (done: Ask) => {
+      setAsks((current) => {
+        const next = new Map(current);
+        const left = (next.get(done.threadId) ?? []).filter((ask) => ask.id !== done.id);
+        if (left.length > 0) next.set(done.threadId, left);
+        else next.delete(done.threadId);
+        return next;
+      });
+      reload();
+      return done;
+    };
+    return {
       asks,
       briefs,
+      delivered,
       changes,
       answer: async (askId, option, text) => {
         const answered = await rpc.call("ask_answer", { id: askId, option, text });
-        // Gone from the page at once; the reload confirms it.
-        setAsks((current) => {
-          const next = new Map(current);
-          const left = (next.get(answered.threadId) ?? []).filter((ask) => ask.id !== askId);
-          if (left.length > 0) next.set(answered.threadId, left);
-          else next.delete(answered.threadId);
-          return next;
-        });
-        reload();
-        return answered;
+        // The message that carried it is the person's, and answers nothing else.
+        if (answered.deliveredAt !== null) {
+          const at = answered.deliveredAt;
+          setDelivered((current) => new Map(current).set(answered.threadId, [...(current.get(answered.threadId) ?? []), at]));
+        }
+        return gone(answered);
       },
+      close: async (askId) => gone(await rpc.call("ask_close", { id: askId })),
       brief: async (threadId) => (await rpc.call("brief_get", { threadId })).record,
       markRead: async (threadId, version) => {
         await rpc.call("brief_read", { threadId, version });
@@ -89,7 +106,6 @@ export function useRaised(threadIds: readonly string[] | null): RaisedData {
         await rpc.call("brief_check", { threadId });
         reload();
       },
-    }),
-    [asks, briefs, changes, rpc, reload],
-  );
+    };
+  }, [asks, briefs, delivered, changes, rpc, reload]);
 }

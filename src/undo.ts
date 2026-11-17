@@ -1,8 +1,9 @@
-// What the page can take back: the last park, resume, archive or dismissal.
+// What the page can take back: the last park, resume, archive, dismissal,
+// mark as seen, or marking as a project.
 // Stopping a turn, answering a question and sending a message reach the
 // agent, so they are never recorded.
 
-import type { Dismissal, ParkRecord, Seen } from "./shared.ts";
+import type { Dismissal, ParkRecord, ProjectMark, Seen } from "./shared.ts";
 
 export type UndoEntry =
   /** Parked, or kept parked with a new pick-up; `before` is the note it replaced. */
@@ -12,6 +13,8 @@ export type UndoEntry =
   | { kind: "dismiss"; threadId: string; title: string; before: Dismissal | null }
   /** Marked its reply as seen; `before` is what was recorded as seen until then. */
   | { kind: "seen"; threadId: string; title: string; before: Seen | null }
+  /** Marked as a project, or unmarked; `before` is the mark it had until then. */
+  | { kind: "project"; threadId: string; title: string; before: ProjectMark | null }
   /**
    * Archived; `dropped` when it was parked work, stopped and archived
    * together. bb archives a thread's descendants with it but brings back
@@ -44,6 +47,8 @@ export function undoText(entry: UndoEntry): string {
       return `undo resuming ${name}: it goes back on the shelf`;
     case "seen":
       return `undo marking ${name} as seen: its reply waits on you again`;
+    case "project":
+      return entry.before === null ? `undo marking ${name} as a project` : `undo unmarking ${name}: it is a project again`;
     case "dismiss":
       return `undo dismissing what bb refused ${name}: it reads as blocked again`;
     case "archive": {
@@ -61,5 +66,6 @@ export function undoShort(entry: UndoEntry): string {
   if (entry.kind === "resume") return "undo resume";
   if (entry.kind === "dismiss") return "undo dismiss";
   if (entry.kind === "seen") return "undo seen";
+  if (entry.kind === "project") return entry.before === null ? "undo project" : "undo unmark";
   return entry.dropped ? "undo drop" : "undo archive";
 }

@@ -26,9 +26,11 @@ export interface Replies {
   toPerson: TurnEnd | null;
   /** Where in the log the person last sent the thread a message. */
   personSpokeSeq: number | null;
+  /** When that message was sent. */
+  personSpokeAt?: number | null;
 }
 
-export const NO_REPLIES: Replies = { last: null, toPerson: null, personSpokeSeq: null };
+export const NO_REPLIES: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
 
 /** Who sent a prompt. */
 export type Starter = "person" | "spawn" | "agent" | "system";
@@ -59,7 +61,7 @@ export function findReplies(events: readonly unknown[]): Replies {
   }
   log.sort((a, b) => a.seq - b.seq);
 
-  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null };
+  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
   /** Who sent the prompt that the next turn starts from; null when it is not among the events. */
   let waiting: Starter | null = null;
   /** Whether the turn in progress is the person's. */
@@ -67,7 +69,10 @@ export function findReplies(events: readonly unknown[]): Replies {
   for (const event of log) {
     if (event.type === "client/turn/requested") {
       const starter = starterOf(event.data);
-      if (starter === "person") found.personSpokeSeq = event.seq;
+      if (starter === "person") {
+        found.personSpokeSeq = event.seq;
+        found.personSpokeAt = event.at;
+      }
       const steers = record(event.data.target)?.kind === "steer";
       if (steers) {
         // Said into a turn that is running: its reply answers the person too.

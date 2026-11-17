@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Ask } from "../src/asks/ask.ts";
-import { CONFIRM_WORD, backOut, confirmAsk, draftAnswer, emptyAskDraft, markOption, nextAsk, writeAnswer, writeWord } from "../src/asks/card.ts";
+import { CONFIRM_WORD, backOut, chatDigit, confirmAsk, draftAnswer, emptyAskDraft, markChat, markOption, nextAsk, writeAnswer, writeWord } from "../src/asks/card.ts";
 import type { Brief } from "../src/briefs/brief.ts";
 import { type Check, review } from "../src/briefs/review.ts";
 import { checkLine, moveStop, sheetItems } from "../src/briefs/sheet.ts";
@@ -26,6 +26,7 @@ const ask = (overrides: Partial<Ask> = {}): Ask => ({
   answer: null,
   deliveredAt: null,
   withdrawnAt: null,
+  closed: null,
   ...overrides,
 });
 
@@ -156,4 +157,24 @@ test("the heading says what kind of check it was, and never calls a failed one a
   assert.equal(checkLine(review(BRIEF, null)).tone, "none");
   assert.equal(checkLine(review(BRIEF, check({ status: "running", threadId: "c", startedAt: NOW, finishedAt: null }))).tone, "running");
   assert.match(checkLine(review(BRIEF, { ...check(run(["supported", "supported", "supported", "supported"])), model: null })).text, /bb's default model/);
+});
+
+test("already answered in chat is a choice of its own: a digit marks it, and Enter closes without sending", () => {
+  const a = ask();
+  // It takes the digit after the options and the field for words.
+  assert.equal(chatDigit(a), a.options.length + 2);
+  assert.equal(chatDigit(ask({ optionsOnly: true })), a.options.length + 1);
+  assert.equal(chatDigit(ask({ options: [] })), 2);
+  const marked = markChat(markOption(emptyAskDraft, a, 1));
+  assert.deepEqual([marked.chat, marked.option], [true, null]);
+  assert.deepEqual(confirmAsk(marked, a), { kind: "close" });
+  // Whatever the risk: nothing is sent, so there is nothing to restate.
+  assert.deepEqual(confirmAsk(marked, ask({ risk: "high" })), { kind: "close" });
+  // Marking an option instead takes the mark off, and the same digit again unmarks it.
+  assert.equal(markOption(marked, a, 2).chat, false);
+  assert.equal(markChat(marked).chat, false);
+  assert.equal(confirmAsk(markChat(marked), a).kind, "incomplete");
+  // Not while an answer is being confirmed.
+  const staged = { ...markOption(emptyAskDraft, a, 1), stage: "restate" as const };
+  assert.equal(markChat(staged), staged);
 });

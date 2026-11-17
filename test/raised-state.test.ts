@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Ask } from "../src/asks/ask.ts";
 import { type BriefMark, briefWaitText, briefWaits } from "../src/briefs/review.ts";
-import { LIMITS, type Raised, asksText, derive } from "../src/state.ts";
+import { MESSAGED_SINCE, LIMITS, type Raised, asksText, derive } from "../src/state.ts";
 import { buildOverview } from "../src/tree.ts";
 import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
@@ -23,6 +23,7 @@ const ask = (id: string, minutesAgo: number, overrides: Partial<Ask> = {}): Ask 
   answer: null,
   deliveredAt: null,
   withdrawnAt: null,
+  closed: null,
   ...overrides,
 });
 const mark = (overrides: Partial<BriefMark> = {}): BriefMark => ({ version: 1, state: "checked", contradicted: 0, notEstablished: 0, judgementCalls: 0, at: NOW - HOUR, read: false, ...overrides });
@@ -189,4 +190,26 @@ test("a answers an ask wherever its thread is; b needs a brief; an open ask hold
   // A line that waits only for its brief to be read can be archived; that deals with it.
   assert.equal(verbBlocked("archive", lineWith(raised([], mark({ contradicted: 1 }))), false), null);
   assert.equal(verbBlocked("archive", lineWith(raised([], mark())), false), null);
+});
+
+test("a line says when you have messaged the thread since it asked, and what to do about it", () => {
+  const spoke = (at: number) => activity({ replies: { last: null, toPerson: null, personSpokeSeq: 7, personSpokeAt: at } });
+  const before = of(child(), raised([ask("a", 30)]), spoke(NOW - HOUR));
+  assert.equal(before.doing, "asks you: Question a?");
+  assert.equal(before.asksMessaged, undefined);
+  const since = of(child(), raised([ask("a", 30), ask("b", 5)]), spoke(NOW - 10 * MINUTE));
+  assert.equal(since.doing, `asks you: Question a? (and 1 more) · ${MESSAGED_SINCE}`);
+  assert.equal(since.next, "answer it, or say it was answered in chat: press a");
+  // Only the ask that was open when the message was sent is marked.
+  assert.deepEqual(since.asksMessaged, ["a"]);
+  assert.equal(since.state, "wants");
+  assert.equal(since.waitingOnYou, true);
+  // The message was cow delivering the answer to another of its asks: that answered nothing else.
+  const own = derive(child(), spoke(NOW - 10 * MINUTE), NOW, null, null, null, null, { asks: [ask("a", 30)], brief: null, delivered: [NOW - 10 * MINUTE + 900] });
+  assert.equal(own.doing, "asks you: Question a?");
+  assert.equal(own.asksMessaged, undefined);
+  // A parked thread's ask says so too; nothing is ever closed by this.
+  const parked = of(child(), raised([ask("a", 30)]), spoke(NOW - MINUTE), { at: NOW - DAY, reason: "later", pickUp: { kind: "none" }, checkedAt: NOW - DAY });
+  assert.equal(parked.doing, `later · asks you: Question a? · ${MESSAGED_SINCE}`);
+  assert.equal(parked.asks?.length, 1);
 });
