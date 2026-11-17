@@ -1704,3 +1704,6 @@
 .cow-capsheet .cow-capsteps {
   margin: 8px 0;
 }
+.cow-q-notice p {
+  -webkit-line-clamp: 3;
+}

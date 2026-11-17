@@ -12,6 +12,7 @@
 
 import { z } from "zod";
 import { OUTSIDE_WHERE } from "../state.ts";
+import { VIA_TEXT, type Via } from "./cap.ts";
 
 const what = z.string().max(2000);
 
@@ -111,7 +112,7 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
   const on = (threadId: string) => `“${titleOf(threadId)}”`;
   switch (event.kind) {
     case "created":
-      return `${event.summary} · made ${event.via}${event.sourceThreadId ? `, on ${on(event.sourceThreadId)}` : ""}`;
+      return `${event.summary} · made ${VIA_TEXT[event.via as Via] ?? event.via}${event.sourceThreadId ? `, on ${on(event.sourceThreadId)}` : ""}`;
     case "deleted":
       return `capability deleted: ${event.name}`;
     case "restored":

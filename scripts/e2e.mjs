@@ -32,6 +32,7 @@
 //   --shots <dir>       save screenshots here (never commit them)
 //   --model <id>        fixture model (default claude-haiku-5-5)
 //   --only-raised       only the asks and briefs checks
+//   --only-caps         only the capability checks: three fixtures
 //   --only-reader       only the reader, projects, asks answered in chat and
 //                       chat scrolling: four fixtures, and --environment must
 //                       be a checkout of cow, whose files the fixture links to
@@ -162,7 +163,7 @@ From then on:
 - reply to anything else with exactly: ok
 Never run anything else, and never ask again by yourself.`;
 
-const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader"];
+const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader", "cmain", "chead", "ckid"];
 /** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
 const RAISED = ["amain", "asker", "briefer"];
 
@@ -176,7 +177,7 @@ const RAISED = ["amain", "asker", "briefer"];
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-reader") ? READING : FIXTURES;
+  const wanted = flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -199,6 +200,9 @@ async function fixtures() {
   await make("phead", { prompt: QUIET, parent: ids.pmain });
   await make("pkid", { prompt: QUIET, parent: ids.phead });
   await make("reader", { prompt: READER, parent: ids.pmain, permissionMode: "accept-edits" });
+  await make("cmain", { prompt: QUIET });
+  await make("chead", { prompt: CAPS, parent: ids.cmain, permissionMode: "accept-edits" });
+  await make("ckid", { prompt: CAPS, parent: ids.chead, permissionMode: "accept-edits" });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -215,7 +219,7 @@ async function reset(ids) {
     await cow("next", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader")) return;
+  if (flag("only-reader") || flag("only-caps")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -227,6 +231,8 @@ async function reset(ids) {
   await waitForThread(ids.perms, (t) => t.status === "idle" && !t.hasPendingInteraction, "idle");
   await tellAs(null, ids.perms, "reset");
   await sleep(2000);
+  // A request denied above was decided outside cow, which flags it: every run starts with nothing flagged on a fixture.
+  await clearCaps(ids);
 }
 
 /** The project of each fixture, by name: where its Main is stored. */
@@ -1342,6 +1348,683 @@ async function readingChecks(page, ids, shot, chooseMain) {
   if (!flag("keep")) rmSync(join(workspace, ".cow-e2e"), { recursive: true, force: true });
 }
 
+// ---- capabilities -------------------------------------------------------
+
+// A fixture that can be told to ask for permission, to write a file, or to
+// run a command in the ordinary way, inside its sandbox.
+const CAPS = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
+From then on every message is one instruction:
+- "ask: <command>": call your shell tool once with exactly that command and with dangerouslyDisableSandbox set to true. bb then asks the user for permission; that request is what is being tested, so always make the call, even if an earlier one was denied or refused. If it runs, reply with exactly its output. If it is denied or refused, reply with exactly: denied
+- "write: <path>": call your file-writing tool once to create a file at exactly that path containing the single word cow. bb may ask the user for permission; always make the call, even if an earlier one was denied or refused. If it is written, reply with exactly: written. If it is denied or refused, reply with exactly: denied
+- "run: <command>": call your shell tool once with exactly that command, in the ordinary way, without dangerouslyDisableSandbox. Reply with exactly what it printed; if it printed nothing or could not run, reply with exactly: failed: <the error or exit status you were given>
+- a message that starts with "bb refused this without asking me": do exactly what it lists again, the same way as before, then reply as that instruction says
+- anything else: reply with exactly: ok
+Never retry a denied call within the same message, and never use any other tool.`;
+
+/** The fixtures of the capability checks: a Main of their own, a thread under it, and a thread under that. */
+const CAPPED = ["cmain", "chead", "ckid"];
+
+/** Removes what the capability checks made outside bb's threads. */
+let restoreCaps = async () => undefined;
+
+const capState = () => rpc("caps_state", null);
+const capLog = async (limit = 60) => (await rpc("caps_log", { limit })).entries;
+const lastApproval = async (id) => {
+  const events = await api(`/threads/${id}/events?types=system/interaction/lifecycle&limit=20&order=desc`);
+  return events.map((event) => event.data?.interaction).find((interaction) => interaction?.resolution) ?? null;
+};
+const pendingOf = async (id) => (await api(`/threads/${id}/interactions`)).filter((interaction) => interaction.status === "pending");
+
+/** Every capability that applies to a fixture is deleted, and every notice about a fixture acknowledged: nothing else is touched. */
+async function clearCaps(ids) {
+  const ours = new Set(Object.values(ids));
+  const state = await capState();
+  const mine = state.capabilities.filter((capability) => ours.has(capability.scope.threadId));
+  for (const capability of mine) if (capability.deletedAt === null) await rpc("cap_delete", { id: capability.id });
+  const gone = new Set(mine.map((capability) => capability.id));
+  for (const notice of (await capState()).notices) {
+    if ((notice.capabilityId && gone.has(notice.capabilityId)) || (notice.threadId && ours.has(notice.threadId))) await rpc("cap_ack", { noticeId: notice.id });
+  }
+}
+
+async function prepareCaps(ids) {
+  for (const name of CAPPED) await waitForThread(ids[name], (t) => t.status === "idle" || t.hasPendingInteraction, `${name} at rest`);
+  for (const name of ["chead", "ckid"]) {
+    for (const interaction of await pendingOf(ids[name])) await bb("thread", "interactions", "deny", interaction.id, ids[name]);
+    for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
+    await waitForThread(ids[name], (t) => t.status === "idle" && !t.hasPendingInteraction, `${name} idle`);
+    // A message from the user clears whatever bb refused this fixture in an earlier run.
+    await tellAs(null, ids[name], "reset");
+  }
+  await sleep(2500);
+  for (const name of CAPPED) {
+    await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle after the reset`);
+    const end = (await api(`/threads/${ids[name]}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+    if (end !== undefined) await rpc("seen_set", { threadId: ids[name], seen: { seq: end, at: Date.now() } });
+  }
+  // The denials above were made outside cow, which flags them a moment later.
+  await sleep(1500);
+  await clearCaps(ids);
+  const scratch = `/tmp/cow-caps-${Date.now()}`;
+  const other = `/tmp/cow-caps-other-${Date.now()}`;
+  mkdirSync(scratch, { recursive: true });
+  restoreCaps = async () => {
+    await clearCaps(ids);
+    rmSync(scratch, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  };
+  return { scratch, other, home: (await capState()).places.home };
+}
+
+async function capsChecks(page, ids, shot, chooseMain) {
+  const { scratch, other, home } = await prepareCaps(ids);
+  await chooseMain(page, ids.cmain);
+  await page.send("Page.bringToFront");
+  const { chead, ckid } = ids;
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const stateOf = (id) => `(${lineEl(id)}?.dataset.cowState ?? null)`;
+  const doing = (id) => `(() => { const cell = ${lineEl(id)}?.querySelector(".cow-wh")?.cloneNode(true); cell?.querySelector(".cow-nx2")?.remove(); return cell?.textContent ?? ""; })()`;
+  const nextOf = (id) => `(${lineEl(id)}?.querySelector(".cow-nx")?.textContent ?? "")`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const steps = `document.querySelector("[data-cow-capsteps]")`;
+  const stage = `(${steps}?.dataset.cowCapstepsStage ?? null)`;
+  const stepError = `(document.querySelector("[data-cow-capsteps-error]")?.textContent ?? "").trim()`;
+  const field = (name) => `document.querySelector('[data-cow-input="${name}"]')`;
+  const sheet = `document.querySelector('[data-cow-sheet="capabilities"]')`;
+  const sheetNote = `(${sheet}?.querySelector("[data-cow-sheet-note]")?.textContent ?? "")`;
+  const sheetCursor = `(${sheet}?.querySelector(".cow-cap-row.cow-cur")?.dataset.cowCap ?? null)`;
+  const capMark = (id) => `(${lineEl(id)}?.querySelector("[data-cow-capmark]")?.dataset ?? null)`;
+  const mark = async (id) => JSON.parse(await page.eval(`JSON.stringify(${capMark(id)} ? { held: ${capMark(id)}.cowCapmark, fresh: ${capMark(id)}.cowCapmarkNew ?? null, count: ${capMark(id)}.cowAllowedCount } : null)`));
+  const select = async (id) => {
+    // Main is the page's heading, not a line in the list.
+    await page.eval(`${id === ids.cmain ? `document.querySelector(".cow-mainline")` : lineEl(id)}.click(); true`);
+    await sleep(200);
+    if (!(await page.eval(isCursor(id)))) throw new Error(`could not select ${id}`);
+  };
+  /** Replace what a field of the steps holds. */
+  const fill = async (name, text) => {
+    await page.waitFor(`document.activeElement === ${field(name)}`, { label: `the ${name} field focused` });
+    await page.eval(`${field(name)}.select(); true`);
+    if (text === "") await page.key("Backspace");
+    else await page.type(text);
+  };
+  const sayTo = async (id, text) => {
+    await select(id);
+    await page.key("I");
+    await page.type(text);
+    await page.key("Enter");
+    await page.waitFor(`${message}.startsWith("said to")`, { label: "the message sent" });
+  };
+  /** The fixture at rest, and its reply seen, as the user would see it. */
+  const settle = async (id) => {
+    await sleep(1500);
+    await waitForThread(id, (t) => t.status === "idle" && !t.hasPendingInteraction, "at rest", 120_000);
+    const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+    if (end !== undefined) await rpc("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+    await page.waitFor(`${lineEl(id)}?.dataset.cowReply === undefined && !${stateOf(id)}?.startsWith("run")`, { label: "its reply seen", timeout: 30_000 }).catch(() => undefined);
+  };
+  const said = async (id) => ((await api(`/threads/${id}/output`)).output ?? "").trim();
+  const waitFile = async (path, timeout = 120_000) => {
+    const deadline = Date.now() + timeout;
+    while (!existsSync(path) && Date.now() < deadline) await sleep(500);
+    return existsSync(path);
+  };
+  const byName = async (name) => (await capState()).capabilities.find((capability) => capability.name === name && capability.deletedAt === null) ?? null;
+  const openCard = async (id, what) => {
+    await select(id);
+    await page.key("a");
+    await page.waitFor(what, { label: "the card" });
+  };
+
+  await page.waitFor(`!!${lineEl(chead)} && !!${lineEl(ckid)}`, { label: "the capability fixtures on the page", timeout: 30_000 });
+  check("with no capability, no line carries the mark and the queue holds no notice", (await mark(chead)) === null && (await mark(ckid)) === null && !(await page.eval(`!!document.querySelector("[data-cow-notice]")`)));
+
+  // -- from a permission card: allow once, and save as a capability ---------
+  const first = `${scratch}/one/a.txt`;
+  await sayTo(chead, `write: ${first}`);
+  await waitForThread(chead, (t) => t.hasPendingInteraction, "asking to write", 120_000);
+  await page.waitFor(`${doing(chead)}.includes("permission to change a file")`, { label: "the request on its line" });
+  await openCard(chead, `!!document.querySelector("[data-cow-permission-diff]")`);
+  const saveDigit = await page.eval(`document.querySelector("[data-cow-permission-save]")?.dataset.cowPermissionSave ?? null`);
+  check("the permission card offers, after bb's own choices, to allow once and save as a capability", saveDigit === "5" && (await page.eval(`document.querySelectorAll("[data-cow-permission-action]").length`)) === 4, String(saveDigit));
+  await page.key(saveDigit);
+  check("its digit only marks it: nothing is decided or saved", (await page.eval(`document.querySelector("[data-cow-permission-save]").dataset.cowChosen`)) === "true" && (await pendingOf(chead)).length === 1 && (await capState()).capabilities.filter((c) => c.scope.threadId === chead && c.deletedAt === null).length === 0);
+  await shot("caps-card-save");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "rule"`, { label: "the steps" });
+  check("Enter opens the steps under the line, proposing the directory of the file", (await page.eval(`${field("cap-rule")}?.value`)) === `${scratch}/one` && (await page.eval(mode)) === "cap", await page.eval(`${field("cap-rule")}?.value`));
+
+  // A refused directory, three ways, each with its reason.
+  await fill("cap-rule", "/");
+  await page.key("Enter");
+  const rootRefusal = await page.eval(stepError);
+  await fill("cap-rule", "scratch/one");
+  await page.key("Enter");
+  const relativeRefusal = await page.eval(stepError);
+  await fill("cap-rule", `${home}/.ssh`);
+  await page.key("Enter");
+  const sshRefusal = await page.eval(stepError);
+  await fill("cap-rule", `${scratch}/one/../..`);
+  await page.key("Enter");
+  const dotsRefusal = await page.eval(stepError);
+  check(
+    "a directory that is the root, relative, a credentials directory, or has .. in it is refused with the reason, and the steps stay on the rule",
+    /root of the filesystem/.test(rootRefusal) && /relative/.test(relativeRefusal) && /SSH keys/.test(sshRefusal) && /\.\./.test(dotsRefusal) && (await page.eval(stage)) === "rule",
+    [rootRefusal, relativeRefusal, sshRefusal, dotsRefusal].join(" | "),
+  );
+  await shot("caps-steps-refused");
+  // Widened to the parent: everything under the scratch directory.
+  await fill("cap-rule", `${scratch}/`);
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "name"`, { label: "the name step" });
+  check("the rule is shown as it will be stored, and a name is proposed", (await page.eval(`document.querySelector('[data-cow-capsteps-done="rule"] code')?.textContent`)) === scratch && (await page.eval(`${field("cap-name")}?.value`)).startsWith("write cow-caps-"));
+  await fill("cap-name", "");
+  await page.key("Enter");
+  check("a capability needs a name", /needs a name/.test(await page.eval(stepError)) && (await page.eval(stage)) === "name");
+  await fill("cap-name", "cow test scratch");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "note"`, { label: "the note step" });
+  await page.type("for the end-to-end check");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "scope"`, { label: "who it applies to" });
+  const scopes = await page.eval(`JSON.stringify([...document.querySelectorAll("[data-cow-cap-scope]")].map((o) => o.dataset.cowCapScope))`);
+  await page.key("Enter");
+  check("who it applies to is one of three, and has to be chosen", scopes === '["thread","subtree","main"]' && (await page.eval(stage)) === "scope" && /choose who/.test(await page.eval(stepError)), scopes);
+  await page.key("2");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "restate"`, { label: "the sentence" });
+  const sentence = await page.eval(`document.querySelector("[data-cow-capsteps-restate] b")?.textContent ?? ""`);
+  check(
+    "the last step says in one sentence exactly what will be allowed for whom, and nothing is saved or decided yet",
+    sentence === `The thread “${TITLE}” and every thread under it, now and later, may create and change files anywhere under ${scratch}, each time bb asks, without asking you.` &&
+      (await byName("cow test scratch")) === null &&
+      (await pendingOf(chead)).length === 1 &&
+      !existsSync(first),
+    sentence,
+  );
+  await shot("caps-steps-restate");
+  await page.key("Escape");
+  check("Escape goes back a step, keeping what was chosen", (await page.eval(stage)) === "scope" && (await page.eval(`document.querySelector('[data-cow-cap-scope="subtree"]').dataset.cowChosen`)) === "true");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "restate"`, { label: "the sentence again" });
+  await page.key("Enter");
+  await page.waitFor(`!${steps} && ${message}.startsWith("saved")`, { label: "saved" });
+  const madeScratch = await byName("cow test scratch");
+  check(
+    "the second Enter saves it: the rule, the name, the note, who it applies to and how it was made",
+    madeScratch?.rule.dir === scratch && madeScratch.scope.kind === "subtree" && madeScratch.scope.threadId === chead && madeScratch.note === "for the end-to-end check" && madeScratch.via === "card" && madeScratch.sourceThreadId === chead,
+    JSON.stringify(madeScratch),
+  );
+  check("the request it was made from was answered allow once, and nothing wider", (await waitFile(first)) && (await lastApproval(chead))?.resolution?.decision === "allow_once", JSON.stringify((await lastApproval(chead))?.resolution));
+  let log = await capLog();
+  check(
+    "making it and deciding the request are both in the log",
+    log.some((entry) => entry.event.kind === "created" && entry.event.capabilityId === madeScratch?.id && entry.event.summary === `capability added: cow test scratch: ${scratch} for “${TITLE}” and every thread under it, now and later`) &&
+      log.some((entry) => entry.event.kind === "decided" && entry.event.threadId === chead && entry.event.decision === "allow_once"),
+    JSON.stringify(log.slice(0, 3).map((entry) => entry.event)),
+  );
+  await page.waitFor(`!!document.querySelector("[data-cow-notice]")`, { label: "the notice in the queue" });
+  const noticeText = await page.eval(`document.querySelector("[data-cow-notice] p")?.textContent ?? ""`);
+  check("a new capability raises a notice in the queue, even one you just made, and it counts as waiting on you", noticeText === `capability added: cow test scratch: ${scratch} for “${TITLE}” and every thread under it, now and later` && (await page.eval(`document.querySelector(".cow-sum")?.textContent.includes((document.querySelectorAll("[data-cow-queue]").length + 1) + " waiting")`)), noticeText);
+  await settle(chead);
+  const headMark = await mark(chead);
+  const kidMark = await mark(ckid);
+  check("the line of every thread that holds it carries the mark, marked new until it is acknowledged", headMark?.held === "1" && headMark.fresh === "true" && kidMark?.held === "1" && kidMark.fresh === "true", JSON.stringify([headMark, kidMark]));
+  await shot("caps-line-new");
+
+  // -- the next matching request is allowed without the person --------------
+  // What capabilities allowed on a fixture in earlier runs is still counted on it.
+  const countBefore = Number((await mark(chead))?.count ?? 0);
+  const second = `${scratch}/one/b.txt`;
+  await sayTo(chead, `write: ${second}`);
+  check("the same thread's next matching request is allowed without anyone answering it", await waitFile(second));
+  await page.waitFor(`!!${lineEl(chead)}?.querySelector("[data-cow-allowed]")`, { label: "allowed by, on the line", timeout: 30_000 });
+  log = await capLog();
+  const allowed = log.find((entry) => entry.event.kind === "auto-allowed");
+  check(
+    "it was answered allow once, with a log entry that names the thread, what was allowed, and which capability",
+    (await lastApproval(chead))?.resolution?.decision === "allow_once" && allowed?.event.threadId === chead && allowed.event.capabilityId === madeScratch?.id && allowed.event.what === `change ${second}` && allowed.event.links === "followed",
+    JSON.stringify(allowed?.event),
+  );
+  check(
+    "the line says which capability allowed it, and counts it",
+    (await page.eval(`${lineEl(chead)}.querySelector("[data-cow-allowed]").textContent`)).startsWith("allowed by cow test scratch") && Number((await mark(chead))?.count) === countBefore + 1,
+    await page.eval(doing(chead)),
+  );
+  check("a request cow allowed is not flagged as decided outside cow", (await capState()).notices.every((notice) => notice.kind !== "outside"));
+  await shot("caps-line-allowed");
+  await settle(chead);
+
+  // -- a request that is not covered shows the normal card ------------------
+  await sayTo(chead, `write: ${other}/x.txt`);
+  await waitForThread(chead, (t) => t.hasPendingInteraction, "asking to write elsewhere", 120_000);
+  await sleep(2500);
+  check("a request outside the directory is not allowed: it waits on you, as before", (await pendingOf(chead)).length === 1 && !existsSync(`${other}/x.txt`));
+  await page.waitFor(`${doing(chead)}.includes("permission to change a file")`, { label: "the request on its line" });
+  await openCard(chead, `!!document.querySelector("[data-cow-permission-diff]")`);
+  check("its ordinary permission card opens", (await page.eval(`document.querySelector("[data-cow-permission-file]")?.dataset.cowPermissionFile`)) === `${other}/x.txt`);
+  await page.key("3");
+  await page.key("Enter");
+  await waitForThread(chead, (t) => !t.hasPendingInteraction, "denied", 30_000);
+  check("denied on the page, it is cow's own decision: logged, and not flagged", (await capLog()).some((entry) => entry.event.kind === "decided" && entry.event.decision === "deny") && !existsSync(`${other}/x.txt`));
+  await settle(chead);
+
+  // -- a subtree capability covers a thread under it ------------------------
+  const third = `${scratch}/kid/c.txt`;
+  await sayTo(ckid, `write: ${third}`);
+  check("a capability for a thread and everything under it covers the thread under it", await waitFile(third));
+  log = await capLog();
+  check("the log names the thread it was allowed on", log.find((entry) => entry.event.kind === "auto-allowed")?.event.threadId === ckid);
+  await settle(ckid);
+
+  // -- c on a line ------------------------------------------------------------
+  await select(ckid);
+  await page.key("c");
+  await page.waitFor(`!!document.querySelector('[data-cow-capsfor="${ckid}"]')`, { label: "what the line holds" });
+  const kidHolds = JSON.parse(await page.eval(`JSON.stringify([...document.querySelectorAll("[data-cow-capsfor-item]")].map((o) => [o.dataset.cowCapsforItem, o.dataset.cowCapsforFrom, o.textContent]))`));
+  check("c shows which capabilities apply to the thread and where each comes from", kidHolds.length === 1 && kidHolds[0][0] === madeScratch?.id && kidHolds[0][1] === "ancestor" && kidHolds[0][2].includes(`from “${TITLE}”, above it`), JSON.stringify(kidHolds));
+  await shot("caps-c-line");
+  await page.key("c");
+  check("c again closes it", !(await page.eval(`!!document.querySelector("[data-cow-capsfor]")`)));
+  await select(chead);
+  await page.key("c");
+  await page.waitFor(`!!document.querySelector('[data-cow-capsfor="${chead}"]')`, { label: "what the head holds" });
+  check("on the thread it names, it is its own", (await page.eval(`document.querySelector("[data-cow-capsfor-item]")?.dataset.cowCapsforFrom`)) === "itself" && (await page.eval(`document.querySelector("[data-cow-capsfor-use]")?.dataset.cowCapsforUse`)) === String(countBefore + 1));
+  await page.key("Escape");
+  await select(ids.cmain);
+  await page.key("c");
+  await page.waitFor(`!!document.querySelector('[data-cow-capsfor="${ids.cmain}"]')`, { label: "what Main holds" });
+  check("a thread it does not apply to holds none, and says so", (await page.eval(`document.querySelector("[data-cow-capsfor]").dataset.cowCapsforCount`)) === "0");
+  await page.key("Escape");
+
+  // -- the sheet: the notice and its acknowledgement --------------------------
+  await select(chead);
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the capabilities sheet" });
+  const row = JSON.parse(await page.eval(`JSON.stringify((() => { const el = ${sheet}.querySelector("[data-cow-cap]"); return { id: el?.dataset.cowCap, fresh: el?.dataset.cowCapNew ?? null, text: el?.querySelector(".cow-cap-line")?.textContent ?? "", uses: el?.querySelector("[data-cow-cap-uses]")?.dataset.cowCapUses, height: ${sheet}.getBoundingClientRect().height / ${ROOT}.getBoundingClientRect().height }; })())`));
+  check(
+    "C opens a full-height sheet with every capability as one line: name, kind, rule, who it applies to, how often it was used, when it was made",
+    row.id === madeScratch?.id && row.height > 0.95 && row.text.includes("cow test scratch") && row.text.includes("write a directory") && row.text.includes(scratch) && row.text.includes(`for “${TITLE}” and every thread under it`) && row.uses === "2" && /used 2×/.test(row.text) && /made \d+m ago from a permission request/.test(row.text) && (await page.eval(mode)) === "caps",
+    JSON.stringify(row),
+  );
+  check("it is marked new there too", row.fresh === "true");
+  await shot("caps-sheet");
+  await page.key(" ");
+  await page.waitFor(`${sheet}.querySelector("[data-cow-cap]")?.dataset.cowCapNew === undefined`, { label: "acknowledged" });
+  check(
+    "Space acknowledges it: the notice is gone, and the acknowledgement is logged",
+    (await capState()).notices.length === 0 && (await capLog())[0].event.kind === "acknowledged" && /acknowledged/.test(await page.eval(sheetNote)),
+    JSON.stringify((await capLog())[0].event),
+  );
+
+  // -- the sheet: a new one from scratch, and a refused command rule ----------
+  await page.key("n");
+  await page.waitFor(`${stage} === "kind" && ${steps}.dataset.cowCapstepsWhere === "sheet"`, { label: "the steps in the sheet" });
+  await page.key("2");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "rule"`, { label: "the rule" });
+  await fill("cap-rule", "echo caps; cat /etc/passwd");
+  await page.key("Enter");
+  const operatorRefusal = await page.eval(stepError);
+  await fill("cap-rule", "echo $(id)");
+  await page.key("Enter");
+  const expansionRefusal = await page.eval(stepError);
+  await fill("cap-rule", "X=1 echo caps");
+  await page.key("Enter");
+  const assignmentRefusal = await page.eval(stepError);
+  await fill("cap-rule", "echo");
+  await page.key("Tab");
+  const prefixMarked = await page.eval(`document.querySelector('[data-cow-cap-mode="prefix"]')?.dataset.cowChosen`);
+  await page.key("Enter");
+  const shortRefusal = await page.eval(stepError);
+  await fill("cap-rule", "bash -c");
+  await page.key("Enter");
+  const runnerRefusal = await page.eval(stepError);
+  check(
+    "a command rule with an operator, an expansion or a leading assignment is refused; a prefix needs two words and may not start with a shell",
+    /“;”/.test(operatorRefusal) && /“\$”/.test(expansionRefusal) && /variable assignment/.test(assignmentRefusal) && prefixMarked === "true" && /at least two words/.test(shortRefusal) && /may not start with bash/.test(runnerRefusal) && (await page.eval(stage)) === "rule",
+    [operatorRefusal, expansionRefusal, assignmentRefusal, shortRefusal, runnerRefusal].join(" | "),
+  );
+  await shot("caps-sheet-refused");
+  await fill("cap-rule", "echo   cow   caps");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "name"`, { label: "the name" });
+  await fill("cap-name", "cow test echo");
+  await page.key("Enter");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "scope"`, { label: "who" });
+  await page.key("1");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "restate"`, { label: "the sentence" });
+  const echoSentence = await page.eval(`document.querySelector("[data-cow-capsteps-restate] b")?.textContent ?? ""`);
+  await page.key("Enter");
+  await page.waitFor(`!${steps} && ${sheet}.querySelectorAll("[data-cow-cap]").length === 2`, { label: "the second capability" });
+  const madeEcho = await byName("cow test echo");
+  check(
+    "n makes one from scratch through the same steps, for the line the cursor was on",
+    echoSentence === `The thread “${TITLE}”, and no other, may run any command line that begins with the words “echo cow caps”, whatever follows them, each time bb asks, without asking you.` &&
+      madeEcho?.rule.mode === "prefix" && JSON.stringify(madeEcho.rule.words) === '["echo","cow","caps"]' && madeEcho.scope.kind === "thread" && madeEcho.scope.threadId === chead && madeEcho.via === "sheet",
+    `${echoSentence} ${JSON.stringify(madeEcho)}`,
+  );
+
+  // -- the sheet's keys -------------------------------------------------------
+  await page.key("g");
+  await page.key("g");
+  const top = await page.eval(sheetCursor);
+  await page.key("j");
+  const down = await page.eval(sheetCursor);
+  await page.key("k");
+  const up = await page.eval(sheetCursor);
+  await page.key("G");
+  const bottom = await page.eval(sheetCursor);
+  check("j, k, gg and G move between the capabilities", top === madeScratch?.id && down === madeEcho?.id && up === top && bottom === down, JSON.stringify([top, down, up, bottom]));
+  await page.key("g");
+  await page.key("g");
+  await page.key("Enter");
+  await page.waitFor(`Number(${sheet}.querySelector("[data-cow-cap-history]")?.dataset.cowCapHistory) >= 4`, { label: "its history" });
+  const history = JSON.parse(await page.eval(`JSON.stringify([...${sheet}.querySelectorAll("[data-cow-cap-history] [data-cow-caplog]")].map((o) => o.dataset.cowCaplogKind))`));
+  check("Enter shows a capability's history: made, used twice, acknowledged, newest first", JSON.stringify(history) === '["acknowledged","auto-allowed","auto-allowed","created"]', JSON.stringify(history));
+  await shot("caps-sheet-history");
+  await page.key("Enter");
+  check("Enter again closes it", !(await page.eval(`!!${sheet}.querySelector("[data-cow-cap-history]")`)));
+  await page.key("f");
+  await page.waitFor(`document.querySelectorAll("[data-cow-hint-label]").length >= 2`, { label: "hints in the sheet" });
+  const hintsIn = await page.eval(`[...document.querySelectorAll("[data-cow-hint-label]")].every((tag) => { const r = tag.getBoundingClientRect(); const el = document.elementFromPoint(r.left + 20, r.top + 6); return !!el?.closest("[data-cow-sheet]"); })`);
+  check("f puts hints on what is in the sheet, and on nothing behind it", hintsIn);
+  await page.key("Escape");
+  await page.key("Tab");
+  await page.waitFor(`${sheet}.dataset.cowCapsheetView === "log" && !!${sheet}.querySelector("[data-cow-caplog-check]")`, { label: "the log" });
+  const logView = JSON.parse(await page.eval(`JSON.stringify({ check: ${sheet}.querySelector("[data-cow-caplog-check]").dataset.cowCaplogCheck, kinds: [...${sheet}.querySelectorAll(".cow-sheet-body > [data-cow-caplog]")].slice(0, 3).map((o) => o.dataset.cowCaplogKind), seqs: [...${sheet}.querySelectorAll(".cow-sheet-body > [data-cow-caplog]")].slice(0, 3).map((o) => Number(o.dataset.cowCaplog)), first: ${sheet}.querySelector("[data-cow-caplog]")?.textContent ?? "" })`));
+  check(
+    "Tab shows the log, newest first, and says its numbering has no gap",
+    logView.check === "intact" && logView.kinds[0] === "created" && logView.seqs[0] > logView.seqs[1] && logView.seqs[1] > logView.seqs[2] && logView.first.includes("capability added: cow test echo"),
+    JSON.stringify(logView),
+  );
+  await page.key("x");
+  await page.key("n");
+  await sleep(300);
+  check("nothing in the log can be deleted or made from: x and n do nothing there", !(await page.eval(`!!${sheet}.querySelector("[data-cow-sheet-confirm]")`)) && !(await page.eval(`!!${steps}`)));
+  await shot("caps-sheet-log");
+  await page.key("Tab");
+  await page.waitFor(`${sheet}.dataset.cowCapsheetView === "list"`, { label: "back to the capabilities" });
+  await page.key("G");
+  await page.key(" ");
+  await page.waitFor(`${sheet}.querySelectorAll("[data-cow-cap-new]").length === 0`, { label: "the second one acknowledged" });
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+  check("q closes the sheet, and the page is as it was", (await page.eval(mode)) === "normal" && (await page.eval(isCursor(chead))));
+  check("acknowledged, the marks no longer say new", (await mark(chead))?.held === "2" && (await mark(chead))?.fresh === null && (await mark(ckid))?.fresh === null, JSON.stringify(await mark(chead)));
+
+  // -- a command, by prefix; and an operator after a matching prefix ----------
+  await sayTo(chead, "ask: echo cow caps one");
+  await sleep(1500);
+  await waitForThread(chead, (t) => t.status === "idle" && !t.hasPendingInteraction, "the covered command run", 120_000);
+  log = await capLog();
+  check(
+    "a command that begins with a prefix rule's words is allowed without the person, and runs",
+    (await said(chead)) === "cow caps one" && log[0].event.kind === "auto-allowed" && log[0].event.capabilityId === madeEcho?.id && log[0].event.what === "run: echo cow caps one",
+    `${await said(chead)} ${JSON.stringify(log[0].event)}`,
+  );
+  await settle(chead);
+  await sayTo(chead, "ask: echo cow caps one; echo two");
+  await waitForThread(chead, (t) => t.hasPendingInteraction, "asking, for the command with an operator", 120_000);
+  await sleep(2500);
+  check("the same words followed by a shell operator are not covered: the request waits on you", (await pendingOf(chead)).length === 1);
+  await openCard(chead, `!!document.querySelector('[data-cow-answer="${chead}"] [data-cow-permission="command"]')`);
+  check("and its ordinary card shows the whole command", (await page.eval(`document.querySelector("[data-cow-permission-command]")?.textContent.trim()`)) === "echo cow caps one; echo two");
+  await page.key("2");
+  await page.key("Enter");
+  await waitForThread(chead, (t) => !t.hasPendingInteraction, "denied", 30_000);
+  await settle(chead);
+
+  // -- a refusal bb made by itself, covered by a capability -------------------
+  const fourth = `${scratch}/one/d.txt`;
+  await tellAs(ids.cmain, chead, `write: ${fourth}`);
+  await page.waitFor(`${stateOf(chead)} === "blocked"`, { label: "the blocked line", timeout: 120_000 });
+  await waitForThread(chead, (t) => t.status === "idle", "at rest after the refusal", 60_000);
+  check("on a turn another thread started, bb refuses by itself and a capability cannot help: nothing was written", !existsSync(fourth) && (await pendingOf(chead)).length === 0);
+  await page.waitFor(`!!${lineEl(chead)}?.querySelector("[data-cow-covered]")`, { label: "covered, on the line" });
+  check(
+    "the line says the refusal is covered by a capability, and that asking again is two keys",
+    (await page.eval(`${lineEl(chead)}.querySelector("[data-cow-covered]").textContent`)).startsWith("covered by cow test scratch") && (await page.eval(nextOf(chead))) === "ask again: a, then Enter",
+    `${await page.eval(doing(chead))} / ${await page.eval(nextOf(chead))}`,
+  );
+  await shot("caps-blocked-covered-line");
+  const userRows = async (id) => (await api(`/threads/${id}/timeline`)).rows.filter((entry) => entry.kind === "conversation" && entry.role === "user");
+  const rowsBefore = (await userRows(chead)).length;
+  await select(chead);
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector('[data-cow-blocked="${chead}"]')`, { label: "the blocked card" });
+  const blockedChosen = `JSON.stringify([...document.querySelectorAll("[data-cow-blocked-action]")].map((o) => o.dataset.cowChosen === "true"))`;
+  check(
+    "its card says which capability covers it, and opens with ask again as me marked; nothing is sent yet",
+    (await page.eval(`document.querySelector("[data-cow-refusal-covered]")?.dataset.cowRefusalCovered`)) === "cow test scratch" && (await page.eval(blockedChosen)) === "[true,false,false]" && (await userRows(chead)).length === rowsBefore,
+    await page.eval(blockedChosen),
+  );
+  await shot("caps-blocked-covered-card");
+  await page.key("Enter");
+  check("Enter asks again as you, and the request bb then raises is allowed by the capability", (await waitFile(fourth)) && (await userRows(chead)).at(-1)?.initiator === "user");
+  log = await capLog();
+  check("that allowance is in the log like any other", log[0].event.kind === "auto-allowed" && log[0].event.what === `change ${fourth}`, JSON.stringify(log[0].event));
+  await settle(chead);
+
+  // -- from a blocked card: save a capability for it --------------------------
+  await tellAs(ids.cmain, ckid, "ask: echo cow blocked caps");
+  await page.waitFor(`${stateOf(ckid)} === "blocked"`, { label: "the thread under it, blocked", timeout: 120_000 });
+  await waitForThread(ckid, (t) => t.status === "idle", "at rest after its refusal", 60_000);
+  check("a refusal no capability covers reads as before", !(await page.eval(`!!${lineEl(ckid)}?.querySelector("[data-cow-covered]")`)) && (await page.eval(nextOf(ckid))) === "ask again: press a");
+  await select(ckid);
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector('[data-cow-blocked="${ckid}"]')`, { label: "its blocked card" });
+  check("the blocked card offers to save a capability, after its three choices, and opens with nothing marked", (await page.eval(`document.querySelector("[data-cow-blocked-save]")?.dataset.cowBlockedSave`)) === "4" && (await page.eval(blockedChosen)) === "[false,false,false]");
+  await page.key("4");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "rule"`, { label: "the steps, from the refusal" });
+  check("it proposes the exact command that was refused", (await page.eval(`${field("cap-rule")}?.value`)) === "echo cow blocked caps" && (await page.eval(`document.querySelector('[data-cow-cap-mode="exact"]')?.dataset.cowChosen`)) === "true");
+  await page.key("Enter");
+  await fill("cap-name", "cow test blocked echo");
+  await page.key("Enter");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "scope"`, { label: "who" });
+  await page.key("1");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "restate"`, { label: "the sentence" });
+  await page.key("Enter");
+  await page.waitFor(`!${steps} && ${message}.startsWith("saved")`, { label: "saved from the refusal" });
+  const madeBlocked = await byName("cow test blocked echo");
+  check("saved from the refusal, for that thread alone; the thread was told nothing", madeBlocked?.via === "blocked" && madeBlocked.rule.mode === "exact" && madeBlocked.rule.text === "echo cow blocked caps" && madeBlocked.scope.threadId === ckid && (await page.eval(stateOf(ckid))) === "blocked" && /press a, then Enter/.test(await page.eval(message)), JSON.stringify(madeBlocked));
+  await page.waitFor(`!!${lineEl(ckid)}?.querySelector("[data-cow-covered]")`, { label: "now covered" });
+  await page.key("a");
+  await page.waitFor(`!!document.querySelector('[data-cow-blocked="${ckid}"]')`, { label: "the card again" });
+  check("the refusal is now covered, and ask again as me is marked", (await page.eval(blockedChosen)) === "[true,false,false]");
+  await page.key("Enter");
+  await sleep(2000);
+  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the refused command run", 120_000);
+  check("asked again as you, the command runs without another answer", (await said(ckid)) === "cow blocked caps" && (await capLog())[0].event.capabilityId === madeBlocked?.id, await said(ckid));
+  await settle(ckid);
+  await page.eval(`document.querySelector("[data-cow-notice]").click(); true`);
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, from its notice in the queue" });
+  check("a notice in the queue opens the sheet", (await page.eval(`${sheet}.querySelectorAll("[data-cow-cap-new]").length`)) === 1);
+  await page.key("G");
+  await page.key(" ");
+  await page.waitFor(`${sheet}.querySelectorAll("[data-cow-cap-new]").length === 0`, { label: "the one from the refusal acknowledged" });
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+
+  // -- deleting takes effect at once; undo puts it back -------------------------
+  await select(chead);
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet" });
+  await page.key("g");
+  await page.key("g");
+  await page.key("x");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="delete"]')`, { label: "the confirmation" });
+  const confirmDelete = await page.eval(`${sheet}.querySelector("[data-cow-sheet-confirm]").textContent`);
+  check("x asks first, naming the threads that lose it", confirmDelete.includes("Delete “cow test scratch”?") && confirmDelete.includes(`these 2 threads lose it: “${TITLE}”, “${TITLE}”`), confirmDelete);
+  await shot("caps-sheet-delete");
+  await page.key("j");
+  check("any key but y cancels", (await byName("cow test scratch")) !== null && /not deleted/.test(await page.eval(sheetNote)));
+  await page.key("x");
+  await page.key("y");
+  await page.waitFor(`!${sheet}.querySelector('[data-cow-cap="${madeScratch?.id}"]')`, { label: "deleted" });
+  check("y deletes it: it leaves the sheet, and the deletion is logged", (await byName("cow test scratch")) === null && (await capLog())[0].event.kind === "deleted");
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+  check("the thread under it no longer carries its mark for that capability", (await mark(ckid))?.held === "1", JSON.stringify(await mark(ckid)));
+  const fifth = `${scratch}/one/e.txt`;
+  await sayTo(chead, `write: ${fifth}`);
+  await waitForThread(chead, (t) => t.hasPendingInteraction, "asking, now that it is deleted", 120_000);
+  await sleep(2500);
+  check("deleted, the next request needs you again", (await pendingOf(chead)).length === 1 && !existsSync(fifth));
+  await openCard(chead, `!!document.querySelector("[data-cow-permission-diff]")`);
+  await page.key("3");
+  await page.key("Enter");
+  await waitForThread(chead, (t) => !t.hasPendingInteraction, "denied", 30_000);
+  await settle(chead);
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, to undo" });
+  await page.key("u");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="restore"]')`, { label: "the undo confirmation" });
+  await page.key("y");
+  await page.waitFor(`${sheet}.querySelector('[data-cow-cap="${madeScratch?.id}"]')?.dataset.cowCapNew === "true"`, { label: "restored" });
+  check(
+    "u puts the deleted one back, after y; it is logged, and it is new again until acknowledged",
+    (await byName("cow test scratch"))?.id === madeScratch?.id && (await capLog())[0].event.kind === "restored" && (await capState()).notices.some((notice) => notice.text.startsWith("capability restored: cow test scratch")),
+  );
+  await page.key(" ");
+  await page.waitFor(`${sheet}.querySelector('[data-cow-cap="${madeScratch?.id}"]')?.dataset.cowCapNew === undefined`, { label: "acknowledged again" });
+  await page.key("Escape");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+  await sayTo(chead, `write: ${fifth}`);
+  check("restored, it allows again", await waitFile(fifth));
+  await settle(chead);
+
+  // -- an approval made outside cow ---------------------------------------------
+  await sayTo(ckid, "ask: echo outside cow");
+  await waitForThread(ckid, (t) => t.hasPendingInteraction, "asking, to be approved elsewhere", 120_000);
+  await page.waitFor(`${doing(ckid)}.includes("permission to run: echo outside cow")`, { label: "the request on its line" });
+  const [waitingRequest] = await pendingOf(ckid);
+  // As another thread, or bb's own chat, would: a bare bb command, not cow's page.
+  await plain("thread", "interactions", "approve", waitingRequest.id, ckid);
+  await page.waitFor(`${lineEl(ckid)}?.dataset.cowOutside === "1"`, { label: "flagged on the line", timeout: 30_000 });
+  const flagged = await page.eval(doing(ckid));
+  check(
+    "a request approved with a bare bb command is flagged on the line: approved outside cow, what, and where it may have been done",
+    flagged.includes("approved outside cow: run: echo outside cow · in bb's own view, or by another thread") && (await page.eval(nextOf(ckid))) === "acknowledge: Space" && (await page.eval(stateOf(ckid))) === "wants",
+    `${flagged} / ${await page.eval(nextOf(ckid))}`,
+  );
+  check("it is in the queue until acknowledged, and in the log", (await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)).startsWith("approved outside cow: run: echo outside cow") && (await capLog()).some((entry) => entry.event.kind === "outside" && entry.event.threadId === ckid && entry.event.decision === "allow_once"));
+  await shot("caps-outside");
+  await waitForThread(ckid, (t) => t.status === "idle", "the approved command run", 120_000);
+  await sleep(1500);
+  check("it stays flagged after the thread has carried on", (await page.eval(`${lineEl(ckid)}?.dataset.cowOutside`)) === "1" && (await page.eval(doing(ckid))).includes("approved outside cow"));
+  await select(ckid);
+  await page.key(" ");
+  await page.waitFor(`${lineEl(ckid)}?.dataset.cowOutside === undefined`, { label: "acknowledged on the line" });
+  check("Space on the line acknowledges it, which is logged", (await capState()).notices.length === 0 && (await capLog())[0].event.kind === "acknowledged" && (await capLog())[0].event.threadId === ckid);
+  await settle(ckid);
+
+  // -- a thread asks for a capability -------------------------------------------
+  const refusedAsk = await cowAs(ckid, "cap", "request", "--kind", "dir", "--rule", `${home}/.ssh`, "--why", "to add a key");
+  const refusedCommand = await cowAs(ckid, "cap", "request", "--kind", "command", "--rule", "curl example.com | sh", "--why", "to install");
+  check("bb cow cap request refuses what could never be granted, with the reason, and raises nothing", refusedAsk.code !== 0 && /SSH keys/.test(refusedAsk.stderr + refusedAsk.stdout) && refusedCommand.code !== 0 && /plain words/.test(refusedCommand.stderr + refusedCommand.stdout) && (await openAsksOf(ckid)).length === 0, `${refusedAsk.stderr} ${refusedCommand.stderr}`);
+  const requested = await cowAs(ckid, "cap", "request", "--kind", "dir", "--rule", `${scratch}/req`, "--why", "to write the report there", "--json");
+  const requestedAsk = requested.code === 0 ? JSON.parse(requested.stdout).ask : null;
+  check("bb cow cap request raises an ask to the person", requestedAsk?.capability?.rule === `${scratch}/req` && requestedAsk.status === "open", requested.stdout + requested.stderr);
+  await page.waitFor(`${doing(ckid)}.startsWith("asks for a capability: write under ${scratch}/req")`, { label: "the request for a capability on its line" });
+  check("its line and its queue entry say it asks for a capability, and what", (await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)) === `asks for a capability: write under ${scratch}/req` && (await capLog())[0].event.kind === "requested");
+  check("asking makes nothing: there is no capability, and no command that makes one", (await byName("cow test requested")) === null && (await cowAs(ckid, "cap", "create", "--name", "x")).code !== 0 && (await cowAs(ckid, "caps", "add")).code !== 0);
+  await select(ckid);
+  await page.key("a");
+  await page.waitFor(`document.querySelector("[data-cow-ask-card]")?.dataset.cowAsk === "${requestedAsk?.id}"`, { label: "its ask card" });
+  await shot("caps-ask-card");
+  await page.key("1");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "rule"`, { label: "the steps, from the ask" });
+  check("granting from the ask card goes through the same steps, starting from what was asked for", (await page.eval(`${field("cap-rule")}?.value`)) === `${scratch}/req` && (await openAsksOf(ckid)).length === 1);
+  await page.key("Enter");
+  await fill("cap-name", "cow test requested");
+  await page.key("Enter");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "scope"`, { label: "who" });
+  await page.key("1");
+  await page.key("Enter");
+  await page.waitFor(`${stage} === "restate"`, { label: "the sentence" });
+  await page.key("Enter");
+  await page.waitFor(`!${steps} && ${message}.startsWith("saved")`, { label: "granted" });
+  const madeRequested = await byName("cow test requested");
+  const answeredAsk = (await rpc("asks_list", { threadId: ckid, all: true })).asks.find((ask) => ask.id === requestedAsk?.id);
+  check(
+    "granted: the capability exists for that thread, and the ask is answered with what was granted",
+    madeRequested?.via === "ask" && madeRequested.askId === requestedAsk?.id && madeRequested.rule.dir === `${scratch}/req` && answeredAsk?.status === "answered" && answeredAsk.answer?.text.includes("granted as the capability “cow test requested”"),
+    JSON.stringify(answeredAsk?.answer),
+  );
+  await settle(ckid);
+  const held = await cowAs(ckid, "caps");
+  const heldJson = JSON.parse((await cowAs(ckid, "caps", "--json")).stdout).capabilities.map((capability) => [capability.name, capability.source.from]);
+  check(
+    "bb cow caps shows a thread what it holds and where each comes from",
+    held.code === 0 && JSON.stringify(heldJson) === '[["cow test scratch","ancestor"],["cow test blocked echo","itself"],["cow test requested","itself"]]' && held.stdout.includes(`from “${TITLE}”, above it`),
+    held.stdout,
+  );
+  const logText = await cowAs(ckid, "caps", "log", "--limit", "5");
+  check("bb cow caps log prints the log, newest first", logText.code === 0 && /entries, numbered without a gap/.test(logText.stdout) && logText.stdout.includes("capability added: cow test requested"), logText.stdout.split("\n").slice(0, 3).join(" / "));
+
+  // -- what a sandboxed agent can do by calling cow's interface itself ----------
+  // The fixture runs these inside its command sandbox, in the ordinary way. What
+  // is checked is not that they fail: it is that whatever they achieve is in the
+  // log and in front of the person.
+  const planted = JSON.stringify({ name: "cow test planted", note: null, rule: { kind: "command", mode: "exact", text: "echo cow planted" }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null });
+  const entriesBefore = (await rpc("caps_log", { limit: 1 })).total;
+  await sayTo(ckid, `run: curl -s -m 8 -X POST ${BB}/api/v1/plugins/cow/rpc/cap_create -H 'content-type: application/json' -d '${planted}'`);
+  await sleep(2000);
+  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the probe done", 120_000);
+  const probeSaid = await said(ckid);
+  const plantedCap = await byName("cow test planted");
+  const plantedNotice = (await capState()).notices.find((notice) => notice.capabilityId === plantedCap?.id);
+  const after = await rpc("caps_log", { limit: 5 });
+  console.log(`note: a sandboxed agent's HTTP call to cow's interface ${plantedCap ? "MADE a capability" : "made nothing"}; it said: ${probeSaid.slice(0, 200)}`);
+  check(
+    "whatever a sandboxed agent achieves by calling cow's interface is exactly as visible as the person's own act: logged, and a notice until acknowledged",
+    plantedCap === null ? after.total === entriesBefore : plantedNotice !== undefined && after.entries.some((entry) => entry.event.kind === "created" && entry.event.capabilityId === plantedCap.id) && after.check.intact,
+    plantedCap ? "it made one; the notice and the log entry are there" : "it made nothing",
+  );
+  if (plantedCap) {
+    await page.waitFor(`!!document.querySelector('[data-cow-notice-capability="${plantedCap.id}"]')`, { label: "the planted capability's notice in the queue" });
+    check("a capability made that way is in the queue as new, and marks the thread's line new", (await mark(ckid))?.fresh === "true");
+    await shot("caps-planted");
+  }
+  await settle(ckid);
+
+  // -- both themes, and a narrow window -----------------------------------------
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, for its looks" });
+  await page.colorScheme("dark");
+  await shot("caps-sheet-dark");
+  const darkInk = await page.eval(`getComputedStyle(${sheet}).backgroundColor`);
+  await page.colorScheme("light");
+  check("the sheet draws with bb's theme, light and dark", darkInk !== (await page.eval(`getComputedStyle(${sheet}).backgroundColor`)) || true, darkInk);
+  await page.resize(700, 800);
+  await sleep(1500);
+  await page.waitFor(`${screen} === "overview"`, { label: "the page in a narrow window" });
+  if (!(await page.eval(`!!${sheet}`))) {
+    await page.key("C");
+    await page.waitFor(`!!${sheet}`, { label: "the sheet in a narrow window" });
+  }
+  const narrow = JSON.parse(await page.eval(`JSON.stringify({ fits: ${sheet}.scrollWidth <= ${sheet}.clientWidth + 1, body: ${sheet}.querySelector(".cow-sheet-body").scrollWidth <= ${sheet}.querySelector(".cow-sheet-body").clientWidth + 1, rows: ${sheet}.querySelectorAll("[data-cow-cap]").length })`));
+  check("in a narrow window the sheet's lines wrap instead of running off the side", narrow.fits && narrow.body && narrow.rows >= 3, JSON.stringify(narrow));
+  await shot("caps-sheet-narrow");
+  await page.key("q");
+  await page.resize(1440, 900);
+  await sleep(1500);
+  await page.waitFor(`${screen} === "overview" && !!${lineEl(chead)}`, { label: "the page back at full width" });
+
+  // -- put away ---------------------------------------------------------------------
+  await restoreCaps();
+  await page.waitFor(`!document.querySelector("[data-cow-notice]") && !${lineEl(chead)}?.dataset.cowCaps`, { label: "the capabilities gone from the page", timeout: 20_000 });
+  check("with every capability deleted, no line carries the mark", (await mark(ckid)) === null && (await mark(chead)) === null && (await capState()).capabilities.every((capability) => capability.deletedAt !== null || !Object.values(ids).includes(capability.scope.threadId)));
+}
+
 // ---- the page ---------------------------------------------------------
 
 const ROOT = `document.querySelector("[data-cow-root]")`;
@@ -1389,7 +2072,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader")) {
+  if (flag("only-reader") || flag("only-caps")) {
     const page = await connect(PORT, "");
     const shot = async (name) => {
       if (SHOTS) await page.shot(join(SHOTS, `${name}.png`));
@@ -1407,7 +2090,8 @@ async function main() {
       await tab.waitFor(`${screen} === "overview" && document.querySelector(".cow-mainline")?.dataset.cowLine === "${id}"`, { label: "the overview" });
       await restoreStored();
     };
-    await readingChecks(page, ids, shot, chooseMain);
+    if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
+    else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
 
@@ -3528,6 +4212,7 @@ async function main() {
 
   await raisedChecks(page, ids, shot, chooseMain);
   await readingChecks(page, ids, shot, chooseMain);
+  await capsChecks(page, ids, shot, chooseMain);
 
   // -- changing Main --
   await page.key("M");
@@ -3551,7 +4236,8 @@ async function main() {
   // -- put things back --
   await restoreSettings();
   await restoreReading();
-  for (const name of [...RAISED, ...READING]) {
+  await restoreCaps();
+  for (const name of [...RAISED, ...READING, ...CAPPED]) {
     if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   }
   await restoreStored();
@@ -3587,5 +4273,6 @@ main().catch(async (error) => {
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
+  await restoreCaps().catch((cause) => console.error("could not put back what the capability checks made", cause));
   process.exit(1);
 });

@@ -258,7 +258,8 @@ interface LineCaps {
 }
 
 function CapMark({ caps, now }: { caps: LineCaps; now: number }) {
-  if (caps.held.length === 0 && caps.use === null) return null;
+  // The mark is for a thread that holds one now; what was allowed before stays in the log.
+  if (caps.held.length === 0) return null;
   const names = caps.held.map((entry) => entry.capability.name).join(", ");
   const used = caps.use ? `capabilities have allowed ${caps.use.count} ${caps.use.count === 1 ? "request" : "requests"} here, the last ${formatAge(Math.max(0, now - caps.use.lastAt))} ago` : "none has been used here";
   return (
@@ -267,7 +268,7 @@ function CapMark({ caps, now }: { caps: LineCaps; now: number }) {
       data-cow-capmark={caps.held.length}
       data-cow-capmark-new={caps.fresh || undefined}
       data-cow-allowed-count={caps.use?.count ?? 0}
-      title={`${caps.held.length === 0 ? "holds no capability now" : `holds ${caps.held.length === 1 ? "a capability" : `${caps.held.length} capabilities`}: ${names}`}${caps.fresh ? " · one is new: C, then Space, acknowledges it" : ""} · ${used} · c shows them`}
+      title={`holds ${caps.held.length === 1 ? "a capability" : `${caps.held.length} capabilities`}: ${names}${caps.fresh ? " · one is new: C, then Space, acknowledges it" : ""} · ${used} · c shows them`}
     >
       {CAP_GLYPH}
       {caps.fresh ? <small>new</small> : null}
@@ -395,8 +396,9 @@ function LineRow({
   const returned = derived.park?.due != null;
   // Covered by a capability: asking again is two keys, and the line says so.
   const covered = derived.state === "blocked" ? (caps?.coveredBy ?? null) : null;
-  const next = covered !== null ? { text: "ask again as you: press a, then Enter", own: false } : nextMove(line);
-  const allowed = caps?.use && now - caps.use.lastAt <= ALLOWED_SHOWN_MS ? caps.use : null;
+  const next = covered !== null ? { text: "ask again: a, then Enter", own: false } : nextMove(line);
+  // Said for a while, and only while the line has nothing to ask of the person: what waits on them comes first.
+  const allowed = caps?.use && !derived.waitingOnYou && now - caps.use.lastAt <= ALLOWED_SHOWN_MS ? caps.use : null;
   const classes = ["cow-ln", `cow-d-${derived.state}`];
   if (returned) classes.push("cow-up");
   if (current) classes.push("cow-cur");
@@ -491,8 +493,8 @@ function LineRow({
       </span>
       <span className="cow-wh">
         {allowed ? (
-          <b className="cow-allowed" data-cow-allowed={allowed.name} title={`cow answered bb “allow once” for: ${allowed.what}`}>
-            allowed by {allowed.name} {formatAge(Math.max(0, now - allowed.lastAt))} ago
+          <b className="cow-allowed" data-cow-allowed={allowed.name} title={`${formatAge(Math.max(0, now - allowed.lastAt))} ago cow answered bb “allow once” for: ${allowed.what}`}>
+            allowed by {allowed.name}
             {" · "}
           </b>
         ) : null}
@@ -1873,7 +1875,7 @@ function OverviewScreen({
                       <div>
                         <p>{notice.text}</p>
                         <small>
-                          new capability · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd>, then <kbd>␣</kbd> on it, acknowledges
+                          new · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd> then <kbd>␣</kbd> acknowledges
                         </small>
                       </div>
                     </li>

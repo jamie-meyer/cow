@@ -140,7 +140,7 @@ export function PermissionBody({
         );
       })}
       {canSave(ask) ? (
-        <div className={save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-answer-option={ask.options.length + 1} data-cow-permission-save="" data-cow-chosen={save || undefined}>
+        <div className={save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-permission-save={ask.options.length + 1} data-cow-chosen={save || undefined}>
           <kbd>{ask.options.length + 1}</kbd>
           <span className="cow-ans-mark">{save ? "◉" : "○"}</span>
           <span>

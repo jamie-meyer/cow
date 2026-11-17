@@ -136,7 +136,7 @@ export function BlockedCard({
           </div>
         );
       })}
-      <div className={state.save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-answer-option={BLOCKED_OPTIONS.length + 1} data-cow-blocked-save="" data-cow-chosen={state.save || undefined}>
+      <div className={state.save ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-blocked-save={BLOCKED_OPTIONS.length + 1} data-cow-chosen={state.save || undefined}>
         <kbd>{BLOCKED_OPTIONS.length + 1}</kbd>
         <span className="cow-ans-mark">{state.save ? "◉" : "○"}</span>
         <span>
