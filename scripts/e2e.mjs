@@ -32,6 +32,9 @@
 //   --shots <dir>       save screenshots here (never commit them)
 //   --model <id>        fixture model (default claude-haiku-5-5)
 //   --only-raised       only the asks and briefs checks
+//   --only-reader       only the reader, projects, asks answered in chat and
+//                       chat scrolling: four fixtures, and --environment must
+//                       be a checkout of cow, whose files the fixture links to
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -159,7 +162,7 @@ From then on:
 - reply to anything else with exactly: ok
 Never run anything else, and never ask again by yourself.`;
 
-const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer"];
+const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader"];
 /** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
 const RAISED = ["amain", "asker", "briefer"];
 
@@ -173,10 +176,11 @@ const RAISED = ["amain", "asker", "briefer"];
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const missing = FIXTURES.filter((name) => !ids[name]);
+  const wanted = flag("only-reader") ? READING : FIXTURES;
+  const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
-    if (ids[name]) return;
+    if (ids[name] || !wanted.includes(name)) return;
     ids[name] = await spawn(options);
     if (STATE) writeFileSync(STATE, JSON.stringify(ids));
   };
@@ -191,7 +195,12 @@ async function fixtures() {
   await make("amain", { prompt: QUIET });
   await make("asker", { prompt: ASKER, parent: ids.amain });
   await make("briefer", { prompt: QUIET, parent: ids.amain });
-  return ids;
+  await make("pmain", { prompt: QUIET });
+  await make("phead", { prompt: QUIET, parent: ids.pmain });
+  await make("pkid", { prompt: QUIET, parent: ids.phead });
+  await make("reader", { prompt: READER, parent: ids.pmain, permissionMode: "accept-edits" });
+  // Only the fixtures this run uses are acted on.
+  return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
 
 /** Bring fixtures from an earlier run back to where a run starts. */
@@ -206,6 +215,7 @@ async function reset(ids) {
     await cow("next", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
+  if (flag("only-reader")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -433,14 +443,14 @@ async function raisedChecks(page, ids, shot, chooseMain) {
 
   // -- the medium-risk ask: restated, then a second Enter --
   const mediumText = await page.eval(`${card}.textContent`);
-  const proofHref = await page.eval(`${card}.querySelector('[data-cow-ask-proof="proof.txt"]')?.getAttribute("href") ?? null`);
+  const proofHref = await page.eval(`${card}.querySelector('[data-cow-ask-proof="proof.txt"]')?.dataset.cowFile ?? null`);
   check(
     "the card shows the ask's context, its risk, and its proof file as a link",
     mediumText.includes("The migration cannot be rolled back.") && (await page.eval(`${card}.querySelector("[data-cow-ask-risk]")?.dataset.cowAskRisk`)) === "medium" && typeof proofHref === "string" && proofHref.length > 0,
     String(proofHref),
   );
   await page.key("f");
-  const proofHint = await page.eval(`[...document.querySelectorAll("[data-cow-hint-label]")].some((tag) => (tag.dataset.cowHintFor ?? "").startsWith("a:") && tag.dataset.cowHintIn === "page")`);
+  const proofHint = await page.eval(`[...document.querySelectorAll("[data-cow-hint-label]")].some((tag) => (tag.dataset.cowHintFor ?? "").startsWith("button:proof.txt") && tag.dataset.cowHintIn === "page")`);
   await page.key("Escape");
   check("f puts a hint on the proof link", proofHint);
   await page.key("1");
@@ -549,7 +559,7 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   await page.key("G");
   await page.key("Enter");
   const supported = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:timeout"]').textContent`);
-  const fileHref = await page.eval(`${sheet}.querySelector('[data-cow-brief-file="config.txt"]')?.getAttribute("href") ?? null`);
+  const fileHref = await page.eval(`${sheet}.querySelector('[data-cow-brief-file="config.txt"]')?.dataset.cowFile ?? null`);
   check(
     "a claim the checker supported says only that, and its file evidence is shown as submitted with a link to the file",
     (await page.eval(sheetCursor)) === "claim:timeout" && supported.includes("found it supported") && !/verified/i.test(supported) && supported.includes("request_timeout_seconds = 30") && typeof fileHref === "string" && fileHref.length > 0,
@@ -642,6 +652,676 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   check("the legend explains the brief marks and lists b", legend.includes("a brief.") && legend.includes("disputed.") && legend.includes("open the line's brief"), legend.slice(0, 80));
 }
 
+// ---- the reader, projects, asks answered in chat, scrolling the chat -------
+
+const READER = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
+From then on:
+- when you receive the message "files", do these three things in order:
+  1. run this shell command once, exactly as written:
+     mkdir -p "$BB_THREAD_STORAGE" && printf 'storage proof\\nsecond line\\nthird line\\n' > "$BB_THREAD_STORAGE/proof.txt" && echo "S=$BB_THREAD_STORAGE" && echo "W=$PWD"
+  2. use your file-writing tool once to create the file .cow-e2e/sample.txt inside your working directory, containing exactly the three lines alpha, beta and gamma;
+  3. reply with exactly these four lines of Markdown, where W is the directory printed after W= and S is the directory printed after S=:
+     - [the readme](W/README.md#L40-L44)
+     - [the proof](S/proof.txt)
+     - [the keys](W/src/keys.ts:62)
+     - [the sample](W/.cow-e2e/sample.txt)
+- when you receive the message "edit", use your file-editing tool once to change the line beta to delta in .cow-e2e/sample.txt, then reply with exactly: edited
+- reply to anything else with exactly: ok
+Never do anything else.`;
+
+/** The fixtures of the reader and project checks: a Main of their own, a group head with one member, and a thread with files. */
+const READING = ["pmain", "phead", "pkid", "reader"];
+const PROOF_TEXT = "storage proof\nsecond line\nthird line\n";
+
+/** Puts back what the reader checks changed outside bb's threads. */
+let restoreReading = async () => undefined;
+
+async function prepareReading(ids) {
+  const dataDir = /Data dir:\s*(\S+)/.exec(await plain("status"))?.[1];
+  if (!dataDir) throw new Error("could not find bb's data directory in `bb status`");
+  for (const name of READING) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  const storage = join(dataDir, "thread-storage", ids.reader);
+  mkdirSync(storage, { recursive: true });
+  const [thread] = await api(`/threads?threadIds=${ids.reader}&limit=1`);
+  const workspace = (await api(`/environments/${thread.environmentId}`)).path;
+  if (!existsSync(join(workspace, "README.md")) || !existsSync(join(workspace, "src", "keys.ts"))) {
+    throw new Error("the reader checks need --environment to be a checkout of cow: its fixture links to README.md and src/keys.ts");
+  }
+  // The fixture makes its files and links once; a later run finds them in its chat.
+  const said = (await api(`/threads/${ids.reader}/output`)).output ?? "";
+  const rows = JSON.stringify((await api(`/threads/${ids.reader}/timeline`)).rows ?? []);
+  if (!rows.includes("the readme") || !rows.includes(":file-change:")) {
+    await tellAs(null, ids.reader, "files");
+    await sleep(3000);
+    await waitForThread(ids.reader, (t) => t.status === "idle", "the reader's files made");
+  } else if (!said) await sleep(0);
+  writeFileSync(join(storage, "proof.txt"), PROOF_TEXT);
+  writeFileSync(join(storage, "notes.md"), "# Notes\n\nSee [the proof](proof.txt) beside this file, and [where keys are read](" + join(workspace, "src/keys.ts") + ":62).\n\n- one\n- two\n");
+  // Every run starts with nothing marked, nothing asked, and every reply seen.
+  for (const name of READING) {
+    const id = ids[name];
+    await cow("project", id, "--clear");
+    for (const ask of await openAsksOf(id)) await cow("ask", "withdraw", ask.id);
+    const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+    if (end !== undefined) await rpc("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+  }
+  // A brief is submitted without a check: only its evidence link is used here.
+  const before = JSON.parse(await plain("plugin", "config", "cow", "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", "cow", ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  restoreReading = async () => {
+    await set("checkOnSubmit", before.checkOnSubmit);
+    writeFileSync(join(storage, "proof.txt"), PROOF_TEXT);
+  };
+  if ((await briefOf(ids.reader)) === null) {
+    await set("checkOnSubmit", false);
+    const file = join(storage, "brief.json");
+    writeFileSync(file, JSON.stringify({ summary: "Wrote the proof file.", claims: [{ id: "proof", text: "The proof file has three lines.", label: "checked", evidence: [{ description: "the proof file", path: "proof.txt" }] }] }));
+    const done = await cowAs(ids.reader, "brief", "submit", file, "--json");
+    await set("checkOnSubmit", before.checkOnSubmit);
+    if (done.code !== 0) throw new Error(`could not submit the reader's brief: ${done.stderr}`);
+  }
+  return { storage, workspace };
+}
+
+async function readingChecks(page, ids, shot, chooseMain) {
+  const { storage, workspace } = await prepareReading(ids);
+  await chooseMain(page, ids.pmain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const stateOf = (id) => `(${lineEl(id)}?.dataset.cowState ?? null)`;
+  const inTree = (id) => `(${lineEl(id)}?.dataset.cowDepth !== undefined)`;
+  const projectOf = (id) => `(${lineEl(id)}?.dataset.cowProject ?? null)`;
+  const doing = (id) => `(() => { const cell = ${lineEl(id)}?.querySelector(".cow-wh")?.cloneNode(true); cell?.querySelector(".cow-nx2")?.remove(); return cell?.textContent ?? ""; })()`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+    if (!(await page.eval(isCursor(id)))) throw new Error(`could not select ${id}`);
+  };
+  /** Everything a line's state has been since `watch(id)`, in order. */
+  const watch = (id) =>
+    page.eval(`(() => { window.__cowStates ??= {}; const seen = (window.__cowStates["${id}"] = []); let last = null; const tick = () => { const el = ${lineEl(id)}; const now = el ? el.dataset.cowState + (el.dataset.cowDepth === undefined ? ":flat" : "") : "gone"; if (now !== last) seen.push((last = now)); if (window.__cowStates["${id}"] === seen) requestAnimationFrame(tick); }; tick(); return true; })()`);
+  const watched = (id) => page.eval(`JSON.stringify(window.__cowStates["${id}"] ?? [])`).then(JSON.parse);
+
+  // -- projects: never done ------------------------------------------------
+  await page.waitFor(`${stateOf(ids.reader)} === "done" && ${stateOf(ids.phead)} === "idle"`, { label: "the fixtures at rest" });
+  check("a quiet thread with nothing under it and no mark is done, in the Done section", !(await page.eval(inTree(ids.reader))) && (await page.eval(projectOf(ids.reader))) === null);
+  check(
+    "a group head is a project without being marked: at rest it is idle, in the tree, with its member under it",
+    (await page.eval(stateOf(ids.phead))) === "idle" && (await page.eval(inTree(ids.phead))) && (await page.eval(projectOf(ids.phead))) === "head" && (await page.eval(`${lineEl(ids.pkid)}?.dataset.cowDepth`)) === "1",
+    JSON.stringify([await page.eval(stateOf(ids.phead)), await page.eval(projectOf(ids.phead))]),
+  );
+  // bb keeps the unread reply of a Main with no parent itself; opening its chat reads it.
+  await page.key("m");
+  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "idle"`, { label: "Main's reply read" });
+  await page.key("Escape");
+  await page.waitFor(`!document.querySelector("[data-cow-pane]")`, { label: "Main's chat closed" });
+  check("Main is a project: at rest its heading reads idle", (await page.eval(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState`)) === "idle");
+  await select(ids.reader);
+  await page.key("P");
+  await page.waitFor(`${stateOf(ids.reader)} === "idle"`, { label: "the line marked as a project" });
+  check(
+    "P marks the line as a project: it is idle, back in the tree, and carries the project mark",
+    (await page.eval(inTree(ids.reader))) && (await page.eval(projectOf(ids.reader))) === "marked" && (await page.eval(`!!${lineEl(ids.reader)}.querySelector(".cow-projectmark")`)) && (await page.eval(message)).startsWith("marked as a project"),
+    await page.eval(message),
+  );
+  check("the mark is one of cow's notes on the thread", (await rpc("notes_list", { threadIds: [ids.reader] })).projects[ids.reader] !== undefined);
+  await shot("project-marked");
+  await page.key("u");
+  check("u offers to take the mark back", (await page.eval(`document.querySelector("[data-cow-confirm] label")?.textContent ?? ""`)).includes("as a project"));
+  await page.key("y");
+  await page.waitFor(`${stateOf(ids.reader)} === "done" && !${inTree(ids.reader)}`, { label: "the mark undone" });
+  check("undone, it is done again and has no mark", (await rpc("notes_list", { threadIds: [ids.reader] })).projects[ids.reader] === undefined);
+  const refusedMark = await cowAs(ids.pkid, "project", ids.reader);
+  check("bb cow project refuses a thread that is neither the target nor above it", refusedMark.code !== 0 && /only for itself and for the threads under it/.test(refusedMark.stderr + refusedMark.stdout), refusedMark.stderr);
+  const marked = await cowAs(ids.pmain, "project", ids.reader);
+  await page.waitFor(`${stateOf(ids.reader)} === "idle" && ${inTree(ids.reader)}`, { label: "the CLI's mark on the page" });
+  check("bb cow project marks a thread under the caller, and the page shows it without a reload", marked.code === 0 && /is marked as a project/.test(marked.stdout), marked.stdout);
+  const cleared = await cowAs(ids.pmain, "project", ids.reader, "--clear");
+  await page.waitFor(`${stateOf(ids.reader)} === "done"`, { label: "the CLI's mark cleared" });
+  check("bb cow project --clear takes the mark off", cleared.code === 0 && /no longer marked/.test(cleared.stdout), cleared.stdout);
+  await cowAs(ids.pmain, "project", ids.reader);
+  await page.waitFor(`${stateOf(ids.reader)} === "idle"`, { label: "marked again" });
+  const status = (await cow("status", "--main", ids.pmain)).stdout;
+  const statusLine = (id) => status.split("\n").find((line) => line.includes(`(${id})`) && /^[ \d]{4}\w/.test(line)) ?? "";
+  check(
+    "bb cow status gives idle as a state and marks the projects",
+    /^Main: .* · idle /.test(status) && /^\s+idle\s.*\[project\]/.test(statusLine(ids.reader)) && /^\s+idle\s.*\[project\]/.test(statusLine(ids.phead)) && /^\s+done\s/.test(statusLine(ids.pkid)) && !statusLine(ids.pkid).includes("[project]"),
+    JSON.stringify([statusLine(ids.reader), statusLine(ids.phead), statusLine(ids.pkid)]),
+  );
+
+  // A marked project finishes a turn: replied to you, then idle; never done, never under Done.
+  await watch(ids.reader);
+  await tellAs(null, ids.reader, "hello");
+  await page.waitFor(`${stateOf(ids.reader)} === "running"`, { label: "the project running", timeout: 60_000 });
+  await page.waitFor(`${stateOf(ids.reader)} === "wants" && ${lineEl(ids.reader)}.dataset.cowReply === ""`, { label: "the project's reply", timeout: 120_000 });
+  check("a marked project that finishes a turn reads replied to you, though you did not start its first prompt", (await page.eval(doing(ids.reader))).startsWith("replied to you: ok"), await page.eval(doing(ids.reader)));
+  await sleep(1500);
+  const turnStates = await watched(ids.reader);
+  check(
+    "between running and replied to you the line never reads done or idle, and never leaves the tree",
+    JSON.stringify(turnStates) === JSON.stringify(["idle", "running", "wants"]),
+    JSON.stringify(turnStates),
+  );
+  await select(ids.reader);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(ids.reader)} === "idle"`, { label: "the reply seen" });
+  const idleDoing = await page.eval(doing(ids.reader));
+  check("once its reply is seen it is idle, in its place, saying what it last said", (await page.eval(inTree(ids.reader))) && idleDoing.startsWith("ok"), idleDoing);
+  check("an idle project is not in the queue", !(await page.eval(`!!document.querySelector('[data-cow-queue="${ids.reader}"]')`)));
+
+  // A group head likewise, with a turn another thread started.
+  await watch(ids.phead);
+  await tellAs(ids.pmain, ids.phead, "hello");
+  await page.waitFor(`${stateOf(ids.phead)} === "wants" && ${lineEl(ids.phead)}.dataset.cowReply === ""`, { label: "the head's reply", timeout: 120_000 });
+  await select(ids.phead);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(ids.phead)} === "idle"`, { label: "the head idle again" });
+  await sleep(500);
+  const headStates = await watched(ids.phead);
+  check(
+    "a group head that finishes a turn reads replied to you, then idle: never done, never under Done",
+    headStates[0] === "idle" && headStates[headStates.length - 1] === "idle" && headStates.includes("wants") && !headStates.some((state) => state.startsWith("done") || state.endsWith(":flat") || state === "gone"),
+    JSON.stringify(headStates),
+  );
+  await page.key("?");
+  const legend = await page.eval(`document.querySelector("[data-cow-help]")?.textContent ?? ""`);
+  await page.key("Escape");
+  const sideLegend = await page.eval(`[...document.querySelectorAll(".cow-legend .cow-lg b")].map((b) => b.textContent).join(" ")`);
+  check("the legend has idle with a glyph of its own, the project mark, P, the reader and the chat's scroll keys", legend.includes("idle.") && legend.includes("a project.") && legend.includes("mark a line as a project") && legend.includes("scroll the open chat") && legend.includes("a file opens over the page") && sideLegend.includes("idle"), sideLegend);
+
+  // -- the reader ----------------------------------------------------------
+  const reader = `document.querySelector("[data-cow-reader]")`;
+  const rd = (name) => `(${reader}?.dataset.cowReader${name} ?? null)`;
+  const rdPath = `(${reader}?.dataset.cowReader ?? null)`;
+  const rdLine = `Number(${reader}?.dataset.cowReaderLine ?? 0)`;
+  const rdScroll = `Math.round(${reader}?.querySelector("[data-cow-reader-scroll]")?.scrollTop ?? -1)`;
+  const cursorShown = `(() => { const sc = ${reader}?.querySelector("[data-cow-reader-scroll]")?.getBoundingClientRect(); const cur = ${reader}?.querySelector(".cow-rd-cursor")?.getBoundingClientRect(); return !!sc && !!cur && cur.top >= sc.top - 1 && cur.bottom <= sc.bottom + 1; })()`;
+  const rootWidth = `Math.round(${ROOT}.getBoundingClientRect().width)`;
+  // Scrolled into view only when it is not: bb's chat pulls itself back to its newest message, which would move the target under the mouse.
+  const centre = (expression) =>
+    page.eval(`(() => { const el = ${expression}; if (!el) return null; const at = () => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }; const hit = (p) => { const top = document.elementFromPoint(p[0], p[1]); return !!top && (top === el || el.contains(top)); }; if (!hit(at())) el.scrollIntoView({ block: "center" }); return at(); })()`);
+  const inView = (expression) => page.eval(`(() => { const el = ${expression}; if (!el) return false; const r = el.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!top && (top === el || el.contains(top)); })()`);
+  /** Bring something in the open chat into view with cow's own keys: up from the newest message until it shows. */
+  const reveal = async (expression, label) => {
+    for (let i = 0; i < 80 && !(await inView(expression)); i += 1) {
+      await page.key(i === 0 ? "\\" : '"');
+      await sleep(350);
+    }
+    if (!(await inView(expression))) throw new Error(`could not scroll the chat to ${label}`);
+  };
+  /** A click of the mouse on the middle of an element, once it has stopped moving: the chat scrolls as it loads. */
+  const clickOn = async (expression, label) => {
+    if (expression.includes("[data-cow-chat]") && !expression.includes("work-summary")) await reveal(expression, label);
+    let at = await centre(expression);
+    for (let i = 0; i < 30; i += 1) {
+      await sleep(200);
+      const now = await centre(expression);
+      if (at && now && Math.abs(now[0] - at[0]) < 1 && Math.abs(now[1] - at[1]) < 1) break;
+      at = now;
+    }
+    if (!at) throw new Error(`nothing to click: ${label}`);
+    await sleep(150);
+    await page.click(...at);
+  };
+  const chatLink = (name) => `[...document.querySelectorAll('[data-cow-chat] a[href^="file:"]')].filter((a) => a.textContent.trim() === ${JSON.stringify(name)}).pop()`;
+  /** Press f and type the hint whose target is described by `test`, a JS predicate over (for, in). */
+  const hintTo = async (test, label) => {
+    await page.key("f");
+    await page.waitFor(`document.querySelectorAll("[data-cow-hint-label]").length > 0`, { label: `hints for ${label}` });
+    const found = await page.eval(`(() => { const tags = [...document.querySelectorAll("[data-cow-hint-label]")].filter((tag) => (${test})(tag.dataset.cowHintFor ?? "", tag.dataset.cowHintIn)); return tags.length ? tags[tags.length - 1].dataset.cowHintLabel : null; })()`);
+    if (!found) {
+      await page.key("Escape");
+      throw new Error(`no hint for ${label}`);
+    }
+    for (const letter of found) await page.key(letter);
+  };
+  const opened = (path, more = "true") => page.waitFor(`${rdPath} === ${JSON.stringify(path)} && Number(${rd("Lines")}) > 0 && ${rd("Kind")} !== "loading" && (${more})`, { label: `the reader on ${path}`, timeout: 20_000 });
+  const closed = () => page.waitFor(`!${reader}`, { label: "the reader closed" });
+
+  await select(ids.reader);
+  await page.key("Enter");
+  // The links are in an early message: bb draws it once the chat is scrolled up to it, which the clicks below do with cow's keys.
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.reader}" && !!document.querySelector("[data-cow-chat] [data-timeline-row-id]")`, { label: "the fixture's chat", timeout: 30_000 });
+  await sleep(2500);
+  const widthBefore = await page.eval(rootWidth);
+
+  // A workspace link with a line, by a click of the mouse.
+  await clickOn(chatLink("the keys"), "the keys link");
+  await opened("src/keys.ts", `${rdLine} === 62`);
+  check(
+    "a click on a workspace link with a line opens the reader on that file, in its workspace, with the line marked and the cursor on it",
+    (await page.eval(rd("Root"))) === "workspace" && (await page.eval(rd("Kind"))) === "source" && (await page.eval(rd("Marked"))) === "62-62" && (await page.eval(`${reader}.querySelectorAll(".cow-rd-marked").length`)) === 1 && (await page.eval(cursorShown)),
+    JSON.stringify(await page.eval(`JSON.stringify(${reader}.dataset)`)),
+  );
+  check("bb's side panel did not open: the page is as wide as it was", (await page.eval(rootWidth)) === widthBefore, `${widthBefore} / ${await page.eval(rootWidth)}`);
+  const heading = await page.eval(`${reader}.querySelector(".cow-rd-head").textContent`);
+  check("its heading gives the path under its root, the root, the thread and the size", heading.includes("src/keys.ts") && heading.includes("workspace") && heading.includes(`of ${TITLE}`) && /\d+ KB/.test(heading) && /\d+ lines/.test(heading), heading);
+  await page.waitFor(`!!${reader}.querySelector("diffs-container")?.shadowRoot?.querySelector('[data-line="62"] span[style]') && !!${reader}.querySelector("diffs-container").shadowRoot.querySelector("[data-gutter] [data-line-number-content]")`, { label: "bb's viewer colouring the file" });
+  check("the file is drawn by bb's own viewer, with highlighting and line numbers", true);
+  check("the reader's mode shows on the page", (await page.eval(mode)) === "read");
+  await shot("reader-source");
+
+  // The page's verbs do not fire while it is open.
+  for (const key of ["p", "e", "x", "a", "b", "I", "m", "M", "?", "P"]) await page.key(key);
+  check(
+    "no key of the page does anything while the reader is open",
+    (await page.eval(mode)) === "read" && (await page.eval(rdLine)) === 62 && !(await page.eval(`!!document.querySelector("[data-cow-confirm], [data-cow-help], [data-cow-say], [data-cow-sheet]")`)) && (await page.eval(screen)) === "overview" && (await page.eval(stateOf(ids.reader))) === "idle",
+    await page.eval(mode),
+  );
+
+  // Movement.
+  await page.key("j");
+  check("j moves down a line", (await page.eval(rdLine)) === 63);
+  await page.key("5");
+  await page.key("k");
+  check("a count goes before a motion: 5k moves up five", (await page.eval(rdLine)) === 58);
+  await page.key("g");
+  await page.key("g");
+  check("gg goes to the first line", (await page.eval(rdLine)) === 1 && (await page.eval(rdScroll)) === 0);
+  await page.key("d", { ctrl: true });
+  const afterHalf = await page.eval(rdLine);
+  const halfScroll = await page.eval(rdScroll);
+  check("Ctrl+d moves half a page, and the window with it", afterHalf > 10 && halfScroll > 100 && (await page.eval(cursorShown)), `${afterHalf} @ ${halfScroll}`);
+  await page.key("u", { ctrl: true });
+  check("Ctrl+u moves back", (await page.eval(rdLine)) === 1 && (await page.eval(rdScroll)) === 0);
+  await page.key("f", { ctrl: true });
+  const afterPage = await page.eval(rdLine);
+  check("Ctrl+f moves a page", afterPage > afterHalf && (await page.eval(cursorShown)), String(afterPage));
+  await page.key("b", { ctrl: true });
+  check("Ctrl+b moves back a page", (await page.eval(rdLine)) === 1);
+  await page.key("G");
+  const lastLine = await page.eval(rdLine);
+  check("G goes to the last line", lastLine === Number(await page.eval(rd("Lines"))) && lastLine > 300 && (await page.eval(cursorShown)), String(lastLine));
+  for (const key of "120G") await page.key(key);
+  check("120G goes to line 120", (await page.eval(rdLine)) === 120 && (await page.eval(cursorShown)));
+  const keysText = readFileSync(join(workspace, "src", "keys.ts"), "utf8").split("\n");
+  await page.key("}");
+  const down = await page.eval(rdLine);
+  check("} goes to the blank line that ends the block", down > 120 && keysText[down - 1].trim() === "" && keysText.slice(120, down - 1).every((line) => line.trim() !== ""), String(down));
+  await page.key("{");
+  const up = await page.eval(rdLine);
+  check("{ goes to the blank line above it", up < down && keysText[up - 1].trim() === "" && keysText.slice(up, down - 1).every((line) => line.trim() !== ""), String(up));
+  const position = await page.eval(`${reader}.querySelector("[data-cow-reader-position]").textContent`);
+  check("the status line says where the cursor is", position.includes(`line ${up} of ${lastLine}`), position);
+
+  // Search.
+  await page.key("/");
+  await page.waitFor(`document.activeElement?.dataset.cowReaderSearch === ""`, { label: "the search field" });
+  await page.type("jkGq");
+  check(
+    "typing in the search field moves nothing and closes nothing: j, k, G and q are text there",
+    (await page.eval(rdLine)) === up && (await page.eval(`document.activeElement.value`)) === "jkGq" && (await page.eval(mode)) === "search",
+    await page.eval(`document.activeElement.value`),
+  );
+  await page.key("Escape");
+  check("Escape cancels the search and leaves the file open", (await page.eval(mode)) === "read" && (await page.eval(rd("Query"))) === null && (await page.eval(rdLine)) === up);
+  await page.key("/");
+  await page.waitFor(`document.activeElement?.dataset.cowReaderSearch === ""`, { label: "the search field again" });
+  await page.type("hint");
+  await sleep(400);
+  const typedMarks = await page.eval(`${reader}.querySelectorAll(".cow-rd-match").length`);
+  await page.key("Enter");
+  const expected = keysText.map((line, index) => (line.toLowerCase().includes("hint") ? index + 1 : 0)).filter(Boolean);
+  const total = keysText.reduce((sum, line) => sum + (line.toLowerCase().split("hint").length - 1), 0);
+  const firstAt = await page.eval(rdLine);
+  check(
+    "/ searches forward from the cursor: every match is counted and marked, and Enter goes to the first at or after the cursor",
+    Number(await page.eval(rd("Matches"))) === total && typedMarks > 0 && firstAt === expected.find((line) => line >= up) && (await page.eval(`${reader}.querySelectorAll(".cow-rd-current").length`)) >= 1 && (await page.eval(cursorShown)),
+    JSON.stringify([await page.eval(rd("Matches")), total, firstAt, typedMarks]),
+  );
+  const markOnLine = await page.eval(`(() => { const cur = ${reader}.querySelector(".cow-rd-cursor").getBoundingClientRect(); const mark = ${reader}.querySelector(".cow-rd-current").getBoundingClientRect(); return mark.top >= cur.top - 1 && mark.bottom <= cur.bottom + 1; })()`);
+  check("the match the cursor is on is drawn on the cursor's line", markOnLine);
+  const matchBefore = Number(await page.eval(rd("Match")));
+  await page.key("n");
+  const nextAt = await page.eval(rdLine);
+  check("n goes to the next match", Number(await page.eval(rd("Match"))) === matchBefore + 1 && nextAt >= firstAt && (await page.eval(cursorShown)), String(nextAt));
+  await page.key("N");
+  check("N goes back to the one before", Number(await page.eval(rd("Match"))) === matchBefore && (await page.eval(rdLine)) === firstAt);
+  check("the status line shows the search and where it is among the matches", (await page.eval(`${reader}.querySelector("[data-cow-reader-search-state]")?.textContent ?? ""`)).includes(`/hint · ${matchBefore} of ${total}`));
+  await shot("reader-search");
+
+  // Copying.
+  await page.key("y");
+  check("y copies the file's path", (await page.eval(rd("Copied"))) === "src/keys.ts");
+  await page.key("Y");
+  check("Y copies the path with the cursor's line", (await page.eval(rd("Copied"))) === `src/keys.ts:${firstAt}`);
+
+  await page.key("q");
+  await closed();
+  check(
+    "q closes the reader: the page is as it was, the chat still open and the cursor on its line",
+    (await page.eval(mode)) === "normal" && (await page.eval(`document.querySelector("[data-cow-pane]")?.dataset.cowPane`)) === ids.reader && (await page.eval(isCursor(ids.reader))) && (await page.eval(`document.activeElement === ${ROOT}`)),
+  );
+
+  // The same kind of link, by a hint; a Markdown file with lines opens raw.
+  await reveal(chatLink("the readme"), "the readme link");
+  await hintTo(`(target, where) => where === "chat" && target.includes("README.md")`, "the readme link");
+  await opened("README.md", `${rdLine} === 40`);
+  check(
+    "a hint on a file link opens the reader too: a Markdown file linked by lines opens raw, with the lines marked",
+    (await page.eval(rd("Kind"))) === "raw" && (await page.eval(rd("Marked"))) === "40-44" && (await page.eval(`${reader}.querySelectorAll(".cow-rd-marked").length`)) === 5 && (await page.eval(cursorShown)),
+    JSON.stringify(await page.eval(`JSON.stringify(${reader}.dataset)`)),
+  );
+  await page.key("r");
+  await page.waitFor(`${rd("Kind")} === "rendered" && !!${reader}.querySelector("[data-markdown-preview] h1")`, { label: "the Markdown rendered" });
+  check("r shows the Markdown rendered", (await page.eval(`${reader}.querySelector("[data-markdown-preview] h1").textContent`)).includes("cow"));
+  await page.key("j");
+  await page.key("j");
+  check("the cursor moves over what is drawn, block by block", (await page.eval(rdLine)) === 3 && (await page.eval(`!!${reader}.querySelector(".cow-rd-cursor")`)));
+  await shot("reader-markdown");
+  await page.key("r");
+  await page.waitFor(`${rd("Kind")} === "raw"`, { label: "the Markdown raw again" });
+  check("r again shows it raw", Number(await page.eval(rd("Lines"))) === readFileSync(join(workspace, "README.md"), "utf8").replace(/\n$/, "").split("\n").length);
+  await page.key("Escape");
+  await closed();
+  check("Escape closes the reader as q does", (await page.eval(mode)) === "normal");
+
+  // A file in the thread's storage, and the file changing on disk.
+  await clickOn(chatLink("the proof"), "the proof link");
+  await opened("proof.txt", `Number(${rd("Lines")}) === 3`);
+  check("a link to a file in the thread's storage opens it there", (await page.eval(rd("Root"))) === "storage" && (await page.eval(`${reader}.querySelector("[data-cow-reader-rootname]").textContent`)) === "thread storage");
+  await page.key("j");
+  writeFileSync(join(storage, "proof.txt"), `${PROOF_TEXT}a fourth line\n`);
+  await page.waitFor(`${rd("Changed")} === "true" && Number(${rd("Lines")}) === 4`, { label: "the file's change on disk", timeout: 20_000 });
+  check("a file that changes on disk is shown as it is now, marked changed, with the cursor where it was", (await page.eval(rdLine)) === 2 && (await page.eval(`${reader}.querySelector(".cow-rd-changed")?.textContent`)) === "changed");
+  writeFileSync(join(storage, "proof.txt"), PROOF_TEXT);
+  await page.key("q");
+  await closed();
+
+  // A file change in the chat's timeline: a diff.
+  const rowButton = `[...document.querySelectorAll('[data-cow-chat] [data-timeline-row-id*=":file-change:"] button[aria-expanded]')].filter((b) => !b.closest("[data-timeline-file-diff]")).pop()`;
+  if (!(await page.eval(`!!${rowButton}`))) {
+    // bb folds a turn's work into one line; its heading is the first toggle of that turn's row.
+    await clickOn(`[...document.querySelectorAll('[data-cow-chat] [data-timeline-row-id*=":work-summary:"] button[aria-expanded="false"]')].pop()`, "the turn's work");
+    await page.waitFor(`!!${rowButton}`, { label: "the file row in the timeline" });
+  }
+  await clickOn(rowButton, "the file row");
+  await opened(".cow-e2e/sample.txt", `${rd("Kind")} === "diff"`);
+  const sides = await page.eval(`${reader}.querySelector("[data-cow-reader-sides]").textContent`);
+  check(
+    "a click on a file row in the timeline opens its change in the reader as a diff, with the two sides in the heading",
+    sides.includes("/dev/null → .cow-e2e/sample.txt") && sides.includes("+3") && (await page.eval(rd("View"))) === "unified" && (await page.eval(`!!${reader}.querySelector("diffs-container")?.shadowRoot?.querySelector('[data-line-type="change-addition"]')`)),
+    sides,
+  );
+  check("bb did not unfold the row in the chat under the reader", (await page.eval(`${rowButton}?.getAttribute("aria-expanded")`)) === "false");
+  await page.key("j");
+  check("the cursor moves over the diff's lines", (await page.eval(rdLine)) === 2);
+  await page.key("u");
+  await page.waitFor(`${rd("View")} === "split"`, { label: "the split diff" });
+  check("u shows the diff split", await page.eval(`!!${reader}.querySelector("diffs-container")?.shadowRoot?.querySelector('[data-diff-type="split"]')`));
+  await shot("reader-diff");
+  await page.key("u");
+  await page.waitFor(`${rd("View")} === "unified"`, { label: "the unified diff" });
+  await page.key("q");
+  await closed();
+  await reveal(rowButton, "the file row");
+  await hintTo(`(target, where) => where === "chat" && target.startsWith("button:") && target.includes("sample.txt") && !target.includes("Copy")`, "the file row");
+  await opened(".cow-e2e/sample.txt", `${rd("Kind")} === "diff"`);
+  check("a hint on the file row opens the same diff", true);
+  await page.key("q");
+  await closed();
+
+  // o hands the file to bb's own panel; q then closes that.
+  await clickOn(chatLink("the proof"), "the proof link");
+  await opened("proof.txt");
+  await page.key("o");
+  await page.waitFor(`!${reader} && ${rootWidth} < ${widthBefore} - 50`, { label: "bb's panel beside the page" });
+  check("o opens the same file in bb's own panel, beside the page, and the reader steps aside", (await page.eval(mode)) === "normal");
+  await sleep(1000);
+  check("a file tab cow asked for is left open", (await page.eval(rootWidth)) < widthBefore - 50);
+  await page.key("q");
+  await page.waitFor(`${rootWidth} === ${widthBefore}`, { label: "bb's panel closed" });
+  check("q on the page closes the file tab bb was showing", (await page.eval(`document.querySelectorAll('[role="tab"]').length`)) === 0 && (await page.eval(`document.querySelector("[data-cow-pane]")?.dataset.cowPane`)) === ids.reader);
+
+  // -- scrolling the chat from the overview ----------------------------------
+  const scroller = `(() => { let best = null; for (const el of document.querySelectorAll("[data-cow-chat] *")) { if (el.scrollHeight <= el.clientHeight + 1 || el.clientHeight === 0) continue; const o = getComputedStyle(el).overflowY; if (o !== "auto" && o !== "scroll") continue; if (!best || el.clientHeight > best.clientHeight) best = el; } return best; })()`;
+  const chatTop = `Math.round(${scroller}?.scrollTop ?? -1)`;
+  const settle = async () => {
+    let last = -2;
+    for (let i = 0; i < 40; i += 1) {
+      const now = await page.eval(chatTop);
+      if (now === last) return now;
+      last = now;
+      await sleep(120);
+    }
+    return last;
+  };
+  await page.key("\\");
+  const bottom = await settle();
+  const chatMax = await page.eval(`Math.round(${scroller}.scrollHeight - ${scroller}.clientHeight)`);
+  check("\\ scrolls the open chat to its newest message", bottom > 0 && Math.abs(bottom - chatMax) <= 2, `${bottom} of ${chatMax}`);
+  await page.key("'");
+  const upOnce = await settle();
+  check("' scrolls the chat up a few lines", bottom - upOnce > 30 && bottom - upOnce < 120, String(bottom - upOnce));
+  await page.key(";");
+  check("; scrolls it down again", (await settle()) === bottom);
+  await page.key('"');
+  const upHalf = await settle();
+  const chatHeight = await page.eval(`${scroller}.clientHeight`);
+  check('" scrolls up half a page', Math.abs(bottom - upHalf - Math.min(bottom, Math.round(chatHeight / 2))) <= 3, `${bottom - upHalf} of ${chatHeight}`);
+  await page.key(":");
+  check(": scrolls down half a page", (await settle()) === bottom);
+  for (let i = 0; i < 6; i += 1) await page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "'", code: "Quote", windowsVirtualKeyCode: 222, autoRepeat: i > 0 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "'", code: "Quote", windowsVirtualKeyCode: 222 });
+  const held = await settle();
+  check("a held key keeps scrolling", bottom - held > 250 || held === 0, String(bottom - held));
+  check(
+    "the cursor stays where it was and the chat does not take the keyboard",
+    (await page.eval(isCursor(ids.reader))) && (await page.eval(mode)) === "normal" && !(await page.eval(`!!document.activeElement?.closest("[data-cow-chat]")`)),
+  );
+  await page.key("\\");
+  await settle();
+
+  // Scrolling up while text arrives. bb pins the chat to its newest message again each time
+  // it grows, so a scroll in small steps, a trackpad's, never got away. The fixture's provider
+  // delivers a message at a time, so text arriving a little at a time is stood in for here:
+  // the last row grows many times a second, which is what bb's chat sees while an agent writes.
+  const fromEnd = `Math.round(${scroller}.scrollHeight - ${scroller}.clientHeight - ${scroller}.scrollTop)`;
+  await page.eval(`(() => { const rows = ${scroller}.querySelectorAll("[data-timeline-row-id]"); const pad = document.createElement("div"); pad.dataset.cowTestGrowth = ""; rows[rows.length - 1].append(pad); let grown = 0; window.__cowGrowth = setInterval(() => { grown += 3; pad.style.height = grown + "px"; }, 16); return true; })()`);
+  await sleep(700);
+  check("while text arrives the chat follows its newest message", (await page.eval(fromEnd)) <= 12, String(await page.eval(fromEnd)));
+  const middle = await page.eval(`(() => { const r = ${scroller}.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  for (let i = 0; i < 150; i += 1) {
+    await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: middle[0], y: middle[1], deltaX: 0, deltaY: -2 });
+    await sleep(8);
+  }
+  const wheeled = await page.eval(fromEnd);
+  check("scrolling up in small steps, as a trackpad does, leaves the newest message while text arrives", wheeled > 200, String(wheeled));
+  await sleep(600);
+  const putAt = await page.eval(`Math.round(${scroller}.scrollTop)`);
+  await sleep(600);
+  check("and the chat stays where it was put while more arrives", Math.abs((await page.eval(`Math.round(${scroller}.scrollTop)`)) - putAt) <= 2 && (await page.eval(fromEnd)) > wheeled);
+  await page.waitFor(`!!document.querySelector("[data-cow-chat-below]")`, { label: "the mark for new output below" });
+  check("the pane says there is new output below, with the key that goes to it", (await page.eval(`document.querySelector("[data-cow-chat-below]").textContent`)).includes("new output below"));
+  await page.key("\\");
+  await page.waitFor(`${fromEnd} <= 12 && !document.querySelector("[data-cow-chat-below]")`, { label: "back at the newest message" });
+  check("\\ goes back to the newest message, follows it again, and the mark goes", true);
+  for (let i = 0; i < 5; i += 1) await page.key("'");
+  await sleep(500);
+  const keyed = await page.eval(fromEnd);
+  check("' scrolls up while text arrives, and is not pulled back", keyed > 300, String(keyed));
+  await page.eval(`clearInterval(window.__cowGrowth); document.querySelector("[data-cow-test-growth]")?.remove(); true`);
+  await sleep(300);
+  await page.key("\\");
+  await settle();
+
+  await page.key("/");
+  await page.waitFor(`document.activeElement?.dataset.cowFilter === ""`, { label: "the filter" });
+  await page.type(";':\"\\");
+  const beforeTyping = await page.eval(chatTop);
+  check("in the filter the same keys are ordinary characters", (await page.eval(`document.activeElement.value`)) === ";':\"\\");
+  check("and typing them there scrolls nothing", (await page.eval(chatTop)) === beforeTyping);
+  await page.key("Escape");
+  await page.key("Escape");
+  await page.waitFor(`!document.querySelector("[data-cow-pane]")`, { label: "the pane closed" });
+  for (const key of [";", "'", ":", '"', "\\"]) await page.key(key);
+  check("with no chat open they do nothing", (await page.eval(mode)) === "normal" && (await page.eval(isCursor(ids.reader))) && (await page.eval(message)) === "");
+
+  // -- the brief's evidence opens the reader, and returns to the sheet ------------
+  const sheet = `document.querySelector("[data-cow-sheet]")`;
+  await select(ids.reader);
+  await page.key("b");
+  await page.waitFor(`!!${sheet}?.querySelector("[data-cow-brief-item]")`, { label: "the fixture's brief" });
+  await page.key("l");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-brief-file="proof.txt"]')`, { label: "the claim's evidence" });
+  await hintTo(`(target, where) => where === "page" && target.startsWith("button:proof.txt")`, "the evidence file");
+  await opened("proof.txt");
+  check("a hint on a brief's evidence file opens it in the reader, over the sheet", (await page.eval(rd("Root"))) === "storage" && (await page.eval(`!!${sheet}`)) && (await page.eval(mode)) === "read");
+  await page.key("j");
+  check("in the reader over a brief, j is the reader's: the sheet's cursor does not move", (await page.eval(rdLine)) === 2 && (await page.eval(`${sheet}.querySelector(".cow-bf-item.cow-cur")?.dataset.cowBriefItem`)) === "claim:proof");
+  await page.key("q");
+  await closed();
+  check("q returns to the brief, still open with its evidence showing", (await page.eval(mode)) === "brief" && (await page.eval(`!!${sheet}.querySelector('[data-cow-brief-file="proof.txt"]')`)));
+  await clickOn(`${sheet}.querySelector('[data-cow-brief-file="proof.txt"]')`, "the evidence file");
+  await opened("proof.txt");
+  check("a click on it opens the reader too", true);
+  await page.key("q");
+  await closed();
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the brief closed" });
+
+  // -- an ask's proof, and files opened one from another -----------------------
+  const withProof = JSON.parse((await cowAs(ids.reader, "ask", "--question", "Are the notes right?", "--option", "yes", "--option", "no", "--proof", "notes.md", "--json")).stdout).ask;
+  const second = JSON.parse((await cowAs(ids.reader, "ask", "--question", "Ship it on Friday?", "--json")).stdout).ask;
+  await page.waitFor(`${stateOf(ids.reader)} === "wants" && ${lineEl(ids.reader)}.dataset.cowAsks === "2"`, { label: "the fixture's asks" });
+  const card = `document.querySelector("[data-cow-ask-card]")`;
+  await select(ids.reader);
+  await page.key("a");
+  await page.waitFor(`${card}?.dataset.cowAsk === "${withProof.id}"`, { label: "the ask's card" });
+  check("an ask the person has not written about since does not offer to be closed", !(await page.eval(`!!${card}.querySelector("[data-cow-ask-chat]")`)));
+  await hintTo(`(target, where) => where === "page" && target.startsWith("button:notes.md")`, "the proof file");
+  await opened("notes.md", `${rd("Kind")} === "rendered"`);
+  check("a hint on an ask's proof file opens it in the reader, rendered", (await page.eval(rd("Depth"))) === "1" && (await page.eval(rd("Root"))) === "storage");
+  await page.key("j");
+  await page.key("j");
+  const notesLine = await page.eval(rdLine);
+  await hintTo(`(target, where) => where === "page" && target.startsWith("a:proof.txt")`, "the link inside the file");
+  await opened("proof.txt", `${rd("Depth")} === "2"`);
+  check("a link inside the file opens the file it names, over the first", (await page.eval(`${reader}.querySelector(".cow-rd-head").textContent`)).includes("2 files open"));
+  await page.key("q");
+  await opened("notes.md", `${rd("Depth")} === "1"`);
+  check("q goes back to the file before, with the cursor where it was left", (await page.eval(rdLine)) === notesLine && (await page.eval(rd("Kind"))) === "rendered", `${await page.eval(rdLine)} / ${notesLine}`);
+  await clickOn(`[...${reader}.querySelectorAll("a[href]")].find((a) => a.textContent.includes("where keys are read"))`, "the link to a line");
+  await opened("src/keys.ts", `${rd("Depth")} === "2" && ${rdLine} === 62`);
+  check("a link with a line, clicked inside a file, lands on its line in the file it names", (await page.eval(rd("Root"))) === "workspace" && (await page.eval(rd("Marked"))) === "62-62");
+  await page.key("q");
+  await opened("notes.md", `${rd("Depth")} === "1"`);
+  await page.key("q");
+  await closed();
+  check("q from the first file returns to the ask's card, still open", (await page.eval(mode)) === "ask" && (await page.eval(`${card}?.dataset.cowAsk`)) === withProof.id);
+  await page.key("Escape");
+  await page.waitFor(`!${card}`, { label: "the card closed" });
+
+  // -- an ask answered in chat ---------------------------------------------------
+  await sleep(1200);
+  await tellAs(null, ids.reader, "the notes are right, and yes, ship it on Friday");
+  await page.waitFor(`${doing(ids.reader)}.includes("you have messaged this thread since it asked")`, { label: "the line saying the person wrote since", timeout: 120_000 });
+  await waitForThread(ids.reader, (t) => t.status === "idle", "the reader at rest");
+  check("a line whose thread the person has messaged since it asked says so, and still asks", (await page.eval(stateOf(ids.reader))) === "wants" && (await page.eval(`${lineEl(ids.reader)}.dataset.cowAsks`)) === "2" && (await openAsksOf(ids.reader)).length === 2);
+  const queueText = await page.eval(`document.querySelector('[data-cow-queue="${ids.reader}"] p')?.textContent ?? ""`);
+  check("so does its entry in the queue", queueText.includes("you have messaged this thread since it asked"), queueText);
+  await select(ids.reader);
+  await page.key("a");
+  await page.waitFor(`${card}?.dataset.cowAsk === "${withProof.id}" && !!${card}.querySelector("[data-cow-ask-chat]")`, { label: "the card with the choice to close" });
+  const cardText = await page.eval(`${card}.textContent`);
+  check("the card says so plainly and offers one more choice: already answered in chat", cardText.includes("You have messaged this thread since it asked") && cardText.includes("already answered in chat"));
+  await page.key("4");
+  check("its digit, the one after the options and the field for words, only marks it: nothing is closed yet", (await page.eval(`${card}.querySelector("[data-cow-ask-chat]").dataset.cowChosen`)) === "true" && (await openAsksOf(ids.reader)).length === 2);
+  await shot("ask-answered-in-chat");
+  const sentBefore = (await api(`/threads/${ids.reader}/events?types=client/turn/requested&limit=1&order=desc`))[0]?.seq;
+  await page.key("Enter");
+  await page.waitFor(`${card}?.dataset.cowAsk === "${second.id}"`, { label: "the next ask in the card" });
+  const closedAsk = (await rpc("asks_list", { threadId: ids.reader, all: true })).asks.find((ask) => ask.id === withProof.id);
+  check(
+    "Enter closes it as answered in chat, by the person: not an answer, not a withdrawal, and nothing is sent to the thread",
+    closedAsk.status === "closed" && closedAsk.closed.by === "person" && closedAsk.answer === null && closedAsk.withdrawnAt === null && (await api(`/threads/${ids.reader}/events?types=client/turn/requested&limit=1&order=desc`))[0]?.seq === sentBefore,
+    JSON.stringify(closedAsk.closed),
+  );
+  check("the card says what happened and moves to the next ask", (await page.eval(`${card}.querySelector("[data-cow-ask-sent]")?.textContent ?? ""`)).includes("closed as answered in chat: nothing was sent"));
+  check(
+    "the next ask has no options: its field does not take the caret while the choice is offered, and each has a digit",
+    (await page.eval(`${card}.querySelector("[data-cow-ask-chat] kbd").textContent`)) === "2" && (await page.eval(`${card}.querySelector(".cow-ans-text kbd")?.textContent`)) === "1" && (await page.eval(`document.activeElement?.dataset.cowInput ?? null`)) === null,
+  );
+  await page.key("Escape");
+  await page.waitFor(`!${card}`, { label: "the card closed" });
+  const notTheirs = await cowAs(ids.pkid, "ask", "close", second.id, "--answered", "yes");
+  check("bb cow ask close is refused for a thread that is neither the asking thread nor above it", notTheirs.code !== 0, notTheirs.stderr);
+  const noAnswer = await cowAs(ids.reader, "ask", "close", second.id, "--answered", " ");
+  check("it needs the answer the person gave", noAnswer.code !== 0 && /--answered is empty/.test(noAnswer.stderr + noAnswer.stdout), noAnswer.stderr);
+  const byThread = await cowAs(ids.reader, "ask", "close", second.id, "--answered", "yes, ship it on Friday");
+  await page.waitFor(`${lineEl(ids.reader)}?.dataset.cowAsks === undefined && ${stateOf(ids.reader)} === "wants"`, { label: "the line without its asks" });
+  check(
+    "bb cow ask close, run by the asking thread, closes it with the answer as quoted, and it leaves the page at once",
+    byThread.code === 0 && /closed ask_\w+ as answered in chat/.test(byThread.stdout) && !(await page.eval(doing(ids.reader))).includes("asks you") && (await openAsksOf(ids.reader)).length === 0,
+    byThread.stdout + byThread.stderr,
+  );
+  const listed = (await cow("asks", "--thread", ids.reader, "--all")).stdout;
+  check(
+    "bb cow asks --all lists both, each labelled by who closed it",
+    listed.includes("closed by the user on cow's page: answered in chat") && listed.includes("closed by the thread: answered in chat: yes, ship it on Friday"),
+    listed.slice(-400),
+  );
+
+  // -- archiving a project is the person saying it is finished -----------------
+  await page.waitFor(`${lineEl(ids.reader)}.dataset.cowReply === ""`, { label: "the reply to the person's message" });
+  await select(ids.reader);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(ids.reader)} === "idle"`, { label: "the project idle again" });
+  await page.key("e");
+  await page.waitFor(`!!document.querySelector('[data-cow-input="archive-reason"]')`, { label: "the archive prompt" });
+  check("e offers to archive an idle project", true);
+  await page.type("finished for good");
+  await page.key("Enter");
+  await page.waitFor(`${stateOf(ids.reader)} === "done" && !${inTree(ids.reader)}`, { label: "the project under Done" });
+  check("archived, a project leaves the tree and is listed under Done with its reason", (await page.eval(`${lineEl(ids.reader)}.querySelector("[data-cow-archive-reason]")?.textContent ?? ""`)).includes("finished for good") && (await page.eval(projectOf(ids.reader))) === null);
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${stateOf(ids.reader)} === "idle" && ${inTree(ids.reader)}`, { label: "the archive undone" });
+  check("undone, it is a project again, idle in the tree", (await page.eval(projectOf(ids.reader))) === "marked");
+  await rpc("archive_note_set", { threadId: ids.reader, note: null });
+
+  // -- both themes, and a narrow window --------------------------------------
+  await select(ids.reader);
+  await page.key("Enter");
+  // Its links are further up by now, perhaps not drawn yet: the click scrolls to them with cow's keys.
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.reader}" && !!document.querySelector("[data-cow-chat] [data-timeline-row-id]")`, { label: "the chat again", timeout: 30_000 });
+  await sleep(2500);
+  await page.colorScheme("dark");
+  await clickOn(chatLink("the keys"), "the keys link");
+  await opened("src/keys.ts", `${rdLine} === 62`);
+  const colours = await page.eval(`(() => { const s = getComputedStyle(${reader}); return [s.backgroundColor, s.color, getComputedStyle(${ROOT}).backgroundColor].join("|"); })()`);
+  const [paper, ink, pagePaper] = colours.split("|");
+  check("the reader draws with bb's theme: its paper is the page's, and its ink differs from it", paper === pagePaper && paper !== ink, colours);
+  await shot("reader-dark");
+  await page.colorScheme("light");
+  await page.resize(700, 800);
+  await sleep(1500);
+  if (!(await page.eval(`!!${reader}`))) {
+    // bb remounts the page when its layout changes; the file is opened again.
+    await page.waitFor(`${screen} === "overview"`, { label: "the page in a narrow window" });
+    await select(ids.reader);
+    await page.key("Enter");
+    await page.waitFor(`!!document.querySelector("[data-cow-chat] [data-timeline-row-id]")`, { label: "the chat in a narrow window", timeout: 30_000 });
+    await sleep(2500);
+    await clickOn(chatLink("the keys"), "the keys link");
+    await opened("src/keys.ts", `${rdLine} === 62`);
+  }
+  check("in a narrow window the reader fits without scrolling sideways, and the cursor's line is in view", (await page.eval(`${reader}.scrollWidth <= ${reader}.clientWidth + 1 && ${reader}.querySelector("[data-cow-reader-scroll]").scrollWidth <= ${reader}.querySelector("[data-cow-reader-scroll]").clientWidth + 1`)) && (await page.eval(cursorShown)));
+  await shot("reader-narrow");
+  await page.key("q");
+  await closed();
+  await page.resize(1440, 900);
+  await sleep(1500);
+  await page.waitFor(`${screen} === "overview"`, { label: "the page at full width again" });
+  if (await page.eval(`!!document.querySelector("[data-cow-pane]")`)) await page.key("Escape");
+
+  // -- put back --
+  await cow("project", ids.reader, "--clear");
+  await restoreReading();
+  if (!flag("keep")) rmSync(join(workspace, ".cow-e2e"), { recursive: true, force: true });
+}
+
 // ---- the page ---------------------------------------------------------
 
 const ROOT = `document.querySelector("[data-cow-root]")`;
@@ -688,6 +1368,28 @@ async function main() {
       await rpc("main_choose", { projectId: current, threadId: now.mains[current] });
     }
   };
+
+  if (flag("only-reader")) {
+    const page = await connect(PORT, "");
+    const shot = async (name) => {
+      if (SHOTS) await page.shot(join(SHOTS, `${name}.png`));
+    };
+    await page.goto(`${BB}/plugins/cow/main`);
+    await page.eval(`sessionStorage.removeItem("cow:main"); sessionStorage.removeItem("cow:test-clock-offset-ms"); true`);
+    await page.resize(1440, 900);
+    await page.colorScheme("light");
+    await page.goto(`${BB}/plugins/cow/main`);
+    await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
+    const chooseMain = async (tab, id) => {
+      if ((await tab.eval(screen)) === "overview") await tab.key("M");
+      await tab.waitFor(`${screen} === "picker"`, { label: "the picker" });
+      await tab.eval(`document.querySelector('[data-cow-line="${id}"]').click(); true`);
+      await tab.waitFor(`${screen} === "overview" && document.querySelector(".cow-mainline")?.dataset.cowLine === "${id}"`, { label: "the overview" });
+      await restoreStored();
+    };
+    await readingChecks(page, ids, shot, chooseMain);
+    return finish(page);
+  }
 
   await waitForThread(ids.main, (t) => t.status === "idle", "idle");
   await waitForThread(ids.quiet, (t) => t.status === "idle", "idle");
@@ -760,7 +1462,7 @@ async function main() {
   );
   if (flag("only-raised")) {
     await raisedChecks(page, ids, shot, chooseMain);
-    return finish();
+    return finish(page);
   }
 
   // -- each window keeps its own Main --
@@ -910,7 +1612,7 @@ async function main() {
   check("the cursor is on the group head", await page.eval(isCursor(ids.quiet)));
   check("the verb bar offers to mark its reply seen", await page.eval(`!!document.querySelector('[data-cow-verb="seen"]')`));
   await page.key(" ");
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the reply marked seen" });
+  await page.waitFor(`${lineState(ids.quiet)} === "idle"`, { label: "the reply marked seen" });
   const quietEnd = await lastTurnEnd(ids.quiet);
   check(
     "Space marks the reply seen: the line is done, out of the queue, and cow recorded the turn",
@@ -933,7 +1635,7 @@ async function main() {
   await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.quiet}"`, {
     label: "the head's chat",
   });
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "seen by opening its chat" });
+  await page.waitFor(`${lineState(ids.quiet)} === "idle"`, { label: "seen by opening its chat" });
   check("opening its chat from the page marks the reply seen", (await seenOf(ids.quiet))?.seq === quietEnd);
   await page.key("Escape");
   await page.key(" ");
@@ -1375,7 +2077,7 @@ async function main() {
     timeout: 120_000,
   });
   await page.key(" ");
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "that reply marked seen" });
+  await page.waitFor(`${lineState(ids.quiet)} === "idle"`, { label: "that reply marked seen" });
   // A leaf told by another thread reports to that thread: it is done.
   await tellAs(ids.main, ids.perms, "hello");
   await page.waitFor(`${lineState(ids.perms)} === "running"`, { label: "the leaf running", timeout: 30_000 });
@@ -1427,7 +2129,7 @@ async function main() {
   await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ids.main}"`, {
     label: "Main's chat from the heading",
   });
-  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "done"`, {
+  await page.waitFor(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState === "idle"`, {
     label: "Main read",
     timeout: 30_000,
   });
@@ -2306,7 +3008,7 @@ async function main() {
 
   // -- resume, and undo --
   await page.key("r");
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the resumed line" });
+  await page.waitFor(`${lineState(ids.quiet)} === "idle"`, { label: "the resumed line" });
   check(
     "r resumes: the line and its descendant are back in the tree",
     (await parkNote(ids.quiet)) === null && (await page.eval(onPage(ids.fails))),
@@ -2326,7 +3028,7 @@ async function main() {
   check("u then offers the step before", (await page.eval(confirmLabel)).includes("undo keeping"), await page.eval(confirmLabel));
   await page.key("Escape");
   await page.key("r");
-  await page.waitFor(`${lineState(ids.quiet)} === "done"`, { label: "the line resumed again" });
+  await page.waitFor(`${lineState(ids.quiet)} === "idle"`, { label: "the line resumed again" });
 
   // -- archive, and undo --
   await select(ids.fails);
@@ -2474,7 +3176,7 @@ async function main() {
   const status = await cow("status", "--main", ids.main);
   // A thread's own line starts with its place in the queue, or a gap, and then its state.
   const statusLine = (id) =>
-    status.stdout.split("\n").find((line) => line.includes(`(${id})`) && /^[ \d]{4}(wants|blocked|running|stuck|parked|failed|done) /.test(line)) ?? "";
+    status.stdout.split("\n").find((line) => line.includes(`(${id})`) && /^[ \d]{4}(wants|blocked|running|stuck|parked|failed|idle|done) /.test(line)) ?? "";
   check(
     "bb cow status gives one line per thread with its state, and the parked shelf",
     status.code === 0 &&
@@ -2805,6 +3507,7 @@ async function main() {
   await page.resize(1440, 900);
 
   await raisedChecks(page, ids, shot, chooseMain);
+  await readingChecks(page, ids, shot, chooseMain);
 
   // -- changing Main --
   await page.key("M");
@@ -2813,9 +3516,9 @@ async function main() {
   await page.key("Escape");
   check("Escape keeps the current Main", (await page.eval(screen)) === "overview");
 
-  return finish();
+  return finish(page);
 
-  async function finish() {
+  async function finish(page) {
   check("no console errors", page.consoleErrors.length === 0, page.consoleErrors.join(" | "));
   // bb polls services of its own that may be down; only cow's requests count.
   const failedRequests = page.networkErrors.filter((entry) => entry.includes("/plugins/cow"));
@@ -2827,7 +3530,10 @@ async function main() {
 
   // -- put things back --
   await restoreSettings();
-  for (const name of RAISED) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
+  await restoreReading();
+  for (const name of [...RAISED, ...READING]) {
+    if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
+  }
   await restoreStored();
   const after = await rpc("main_state", null);
   check("what the run changed in the stored Mains is still as it was", ours(after) === ours(before), JSON.stringify(after));
@@ -2837,6 +3543,7 @@ async function main() {
       await rpc("archive_note_set", { threadId: id, note: null });
       await rpc("dismissal_set", { threadId: id, dismissal: null });
       await rpc("seen_set", { threadId: id, seen: null });
+      await cow("project", id, "--clear");
       await bb("thread", "archive", id);
       // Archiving leaves a thread that is waiting on its question running.
       await fetch(`${BB}/api/v1/threads/${id}/stop`, {
@@ -2859,5 +3566,6 @@ main().catch(async (error) => {
   // Whatever went wrong, the next cow window must start where it did before.
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
+  await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
   process.exit(1);
 });

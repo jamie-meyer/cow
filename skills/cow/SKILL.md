@@ -39,7 +39,14 @@ bb cow ask --question "Ship the migration tonight or wait for the review?" \
   the user that quotes your question. Carry on with work that does not depend
   on it, or say what you are waiting for and end your turn. Do not ask the
   same thing again, and do not assume an answer.
-- `bb cow ask withdraw <id>` when the question no longer needs an answer.
+- **The user may answer in an ordinary message instead.** After the user
+  messages you, run `bb cow asks --thread $BB_THREAD_ID`, and close every
+  ask that message answered:
+  `bb cow ask close <id> --answered "<their answer, quoted or closely paraphrased>"`.
+  It leaves their queue at once and sends you nothing. Otherwise the ask
+  stays in front of them, already answered.
+- `bb cow ask withdraw <id>` is for a question that no longer needs an
+  answer; it is not for one that was answered.
   `bb cow asks --thread $BB_THREAD_ID` lists what you still have open.
 - `--thread <id>` asks for a thread under yours. You cannot ask for any other
   thread, and you cannot answer an ask: only the user does.
@@ -117,11 +124,13 @@ bb cow archive <thread> [--reason <text>]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
+bb cow project <thread> [--clear]
 bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
 bb cow todo rm <thread> <n>
 bb cow todo list <thread>
 bb cow ask --question <text> [--option <label>[::<detail>]]... [--options-only] [--risk low|medium|high] [--proof <path>]... [--context <text>] [--thread <id>]
+bb cow ask close <id> --answered <the user's answer>
 bb cow ask withdraw <id>
 bb cow asks [--thread <id>] [--all]
 bb cow brief submit <file.json> [--thread <id>] [--wait]
@@ -151,15 +160,16 @@ moves it next. Then the Parked shelf and what finished in the last 2 days.
   addressed to the user that they have not seen: a thread with threads
   under it, or one the user messaged), `blocked` (bb refused it
   a command or file change without asking; only the user can unblock it,
-  from cow's page), `running`, `stuck`, `parked`, `failed`, `done`.
+  from cow's page), `running`, `stuck`, `parked`, `failed`, `idle` (a
+  project with nothing to say; its line ends `[project]`), `done`.
 - Output is bounded: at most 80 open threads, 30 parked, 20 done and 20 queue
   entries; the rest are counted.
 
 ### `bb cow archive <thread> [--reason <text>]`
 
 Archives the thread in bb, recording why. Refused while the thread has an
-open ask: the user answers it, or the thread withdraws it. Refused unless the thread is done
-or failed (or blocked on a permission with no turn running), and refused
+open ask: the user answers it, or the thread closes or withdraws it. Refused unless the thread is done,
+idle or failed (or blocked on a permission with no turn running), and refused
 while threads under it are still open: archive or park those first. bb
 archives the threads under it along with it.
 
@@ -184,6 +194,14 @@ undone. Main itself cannot be parked or archived.
 
 Removes the park note. The thread goes back into the tree in whatever state
 bb gives it; it is told nothing, so message it if it should carry on.
+
+## Marking a project
+
+When you start a thread that the user will talk to over days, mark it as a
+project: `bb cow project <thread>`. A project is never shown as done; quiet,
+it reads idle and keeps its place, and its replies are the user's to read. Do
+not mark a worker that does one job and reports to you. `--clear` takes the
+mark off; you may mark only yourself and threads under you.
 
 ## Saying what is next
 

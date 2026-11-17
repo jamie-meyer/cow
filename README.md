@@ -12,7 +12,9 @@ Early. The page shows every thread's state and acts on it: you can answer a
 question, grant or deny a permission request, deal with a permission bb
 refused without asking, park work and get it back, stop a turn, archive with
 a reason, and undo. A thread with threads under it is drawn as a group that
-folds. An agent can leave the same notes with the `bb cow` CLI, and say what
+folds. A file named anywhere on the page opens in cow's own reader, read
+with the keyboard. A thread you talk to over days is a project, and is never
+shown as done. An agent can leave the same notes with the `bb cow` CLI, and say what
 is next for it. An agent can also put a question to you as an ask that stays
 on the page until you answer it, and report a finished job as a brief that a
 separate checker audits before you read it. A state comes from what bb knows about a thread plus cow's
@@ -63,6 +65,9 @@ Moving and looking:
 | `Enter` | open the line's chat beside the overview, or switch the pane to it; it never types into the chat |
 | `Esc` | leave the chat, then close it; cancel whatever is open |
 | `m` | open Main's chat the same way |
+| `;` `'` | scroll the open chat down, up a few lines, from the overview; see "Scrolling the chat" |
+| `:` `"` | scroll it down, up half a page |
+| `\` | go to its newest message |
 | `i` | type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main |
 | `I` | say something to the selected thread |
 | `Tab`, `Shift+Tab` | next, previous entry in the queue |
@@ -86,11 +91,12 @@ verb takes no hint, and its key says why it does not apply.
 | `r` | a parked line | resumes it: back into the tree |
 | `x` | a line whose turn is running | stops the turn, after `y` |
 | `x` | parked work that came back | drops it: asks for a reason, then stops and archives it |
-| `e` | a done or failed line | asks for a reason, then archives the thread in bb |
+| `e` | a done, idle or failed line | asks for a reason, then archives the thread in bb |
 | `Space` | a line that replied to you | marks the reply as seen: the line stops waiting on you |
 | `x` | a not-started item | removes it from its thread's list, after `y` |
 | `J`, `K` | a not-started item | moves it down, up its list |
-| `u` | anywhere | undoes the last park, resume, archive, dismissal or mark as seen, after showing what and `y` |
+| `P` | any line but Main | marks it as a project, or takes the mark off; see "Projects" |
+| `u` | anywhere | undoes the last park, resume, archive, dismissal, mark as seen or project mark, after showing what and `y` |
 
 A confirmation takes `y`; any other key cancels it and does nothing else.
 
@@ -100,11 +106,95 @@ disclosure toggles, copy buttons, file links and the composer. cow's own
 lines are labelled first, home row first, so their letters stay short and do
 not change with what the chat shows; two letters are used only when there
 are more targets than letters. A hint acts as a click of the mouse would: a
-link opens the way it does when clicked, and a field takes the caret. When
+link opens the way it does when clicked, and a field takes the caret. A link
+to a file, clicked or hinted, opens in the reader: see "The reader". When
 that opens a menu or a dialog of bb's, press `f` again: the hints are then
 on what it offers, and on nothing else. Only things in view take a hint;
 scroll the chat to reach the rest. In a bb menu `f` is cow's, so it cannot
 be used there to jump to an entry by its first letter.
+
+## The reader
+
+A file opens over the whole page, read-only, in a reader that is cow's own:
+never in bb's side panel. It opens from a click or a hint on:
+
+| On the page | Opens |
+| --- | --- |
+| a link to a file in a chat, with or without lines (`src/keys.ts:62`, `README.md#L40-L44`) | that file, at those lines, with the lines marked |
+| a file row in a chat's timeline ("Created sample.txt +3") | that change, as a diff |
+| an evidence file in a brief, a proof file on an ask | the file in the thread's storage, as it is now |
+| a link inside a file the reader is showing | the file it names, over the first |
+
+cow hears the click before bb does, so bb's panel never opens. A click with
+Cmd, Ctrl, Alt or Shift held is left to bb: on a file row it unfolds the diff
+in the chat, as it did. If bb opens a file tab on cow's page some other way,
+cow closes it in the same moment and shows the file in the reader.
+
+The heading gives the file's path under its root, which root that is
+(workspace, thread storage, or the thread's machine), the thread it belongs
+to and its size; for a diff, the kind of change, the two sides and the lines
+added and removed. bb's own components draw the content, so code is
+highlighted with line numbers, Markdown is rendered, and a diff is a diff, in
+bb's theme. An image is shown. Anything else that is text is shown as text.
+
+| Key in the reader | Does |
+| --- | --- |
+| `j` `k`, arrows | down, up a line; a number first repeats it (`5j`) |
+| `Ctrl+d` `Ctrl+u` | half a page down, up |
+| `Ctrl+f` `Ctrl+b`, `Space` | a page down, up |
+| `g g`, `G` | the first, the last line |
+| `12G`, `12 g g` | line 12 |
+| `}` `{` | the blank line that ends the block below, above |
+| `/` | search forward: every match is marked as you type; `Enter` goes to the first at or after the cursor, `Esc` cancels. Case is ignored unless the search has a capital |
+| `n` `N` | the next, the previous match, round the end |
+| `f` | hints on the links in the file |
+| `r` | a Markdown file: rendered, or raw |
+| `u` | a diff: unified, or split |
+| `y` `Y` | copy the path; copy it with the cursor's line (`src/keys.ts:62`). The path is under the workspace for a workspace file, and absolute otherwise |
+| `o` | open the same file in bb's own panel instead; `q` on the page then closes that tab |
+| `q`, `Esc` | back: to the file this one was opened from, then to the page, which is as it was |
+
+While it is open every key is the reader's: none of the page's verbs fire.
+In the search field every letter is text. A link to lines of a Markdown file
+opens it raw, so the lines can be marked; `r` renders it. In rendered
+Markdown and in a diff the cursor moves over what is drawn (blocks, rows),
+and `}` `{` move half a page.
+
+An open file is read again every few seconds. When it has changed on disk
+the reader shows it as it is now, keeps its place, and marks the heading
+"changed".
+
+What it does not show: a file that is not text or an image says so, with its
+size, and offers `o` and `y`. A file of more than 6,000 lines is shown as
+plain text without highlighting, and only the first 3 MB of a longer one is
+shown. A diff comes from a chat's timeline; the reader does not diff a file
+against git. There is no editing.
+
+## Scrolling the chat
+
+With a chat open in the pane and the cursor in the overview, `;` and `'`
+scroll the chat down and up a few lines, `:` and `"` half a page, and `\`
+goes to its newest message. They are `j` and `k` moved one key to the right.
+A held key keeps scrolling. The cursor does not move and the chat does not
+take the keyboard. With no chat open they do nothing, and in any field they
+are ordinary characters.
+
+bb keeps a chat pinned to its newest message, and pins it again each time
+text arrives. Two things follow, both bb's own behaviour and the same in its
+thread view:
+
+- a scroll bb does not take to be yours is put back. cow tells the chat a
+  wheel moved before it scrolls it, and its first step away from the newest
+  message is big enough to leave the pin;
+- while text arrives, scrolling up in small steps (a trackpad's) never gets
+  away from the newest message. In cow's pane, when you scroll up and the
+  chat has not moved, cow moves it that far in one step, and it stays.
+
+Scrolled away, the pane's heading says "new output below" when more has
+arrived; `\` goes to it.
+
+cow finds what to scroll without naming anything of bb's: of everything in
+the pane that scrolls up and down, the tallest.
 
 ## Filtering
 
@@ -127,6 +217,8 @@ cancels: the cursor and the folds are as they were.
 ## Groups
 
 Any thread that has threads under it is a group: there is nothing to mark.
+Its head is a project (see "Projects"), so a group stays on the page until
+you archive it.
 Its line is the head, in bold with a fold mark (▾), and its members are
 listed under it along one continuous rule, so what belongs to what reads at
 a glance. Groups nest, one rule per level.
@@ -148,15 +240,41 @@ Where a finished line goes:
 - A member that finishes stays in its group, dimmed, for 2 days, so a
   project's recent history stays with the project. After that it is counted
   in the head's rollup and no longer listed.
-- A line directly under Main that is finished, with everything under it
-  finished too, goes to Done as one line that says how many threads are
-  under it.
+- A line directly under Main that is finished goes to Done. A group's head
+  is a project, so it is not finished until you archive it: then the group
+  goes to Done as one line that says how many threads are under it.
 - An archived line always leaves its place: archiving is you putting it
   away. It is listed under Done with its reason, as before.
 - A line with a note of what is next, or with work listed as not started
   (see "What is next"), is not finished, and stays in the tree.
 
 Parking a head takes its members to the shelf with it, counted on its line.
+
+## Projects
+
+A **project** is a thread that lives for a long time and that you talk to. A
+thread is a project when:
+
+- it is Main; or
+- it has, or has had, threads under it (a group's head); or
+- it is marked as one: `P` on its line (and again to unmark; `u` takes
+  either back), or `bb cow project <thread>` and `--clear` from the CLI.
+
+A project that is not archived is never done, and never moves to the Done
+section. When it has nothing to say (no turn running, nothing waiting on
+you, no reply you have not seen) it is **idle**: a state of its own, with
+its own mark (○), that shows how long it has been quiet and, in the next
+column, what it says is next. It stays in its place in the tree.
+
+Everything else happens to a project as to any thread. Its finished turn is
+a reply addressed to you until you have seen it, whoever started the turn. It
+can ask, be parked (it goes to the shelf), run, and read as stuck or failed.
+Archiving it with `e` is you saying it is finished: it leaves the tree and
+is listed under Done with its reason.
+
+A project with nothing under it carries a small square (▫) before its name,
+so it can be told from a worker at a glance; a group's head has its fold
+mark instead. The mark is one of cow's notes on the thread.
 
 ## Replies addressed to you
 
@@ -165,7 +283,8 @@ Under cow you also talk to threads that have one: a project thread that
 Main started, say. So cow works out for itself whose a finished turn's
 reply is. It is addressed to you when:
 
-- the thread is a group head, whoever started the turn. bb's own notice
+- the thread is a project (a group head, or marked as one), whoever started
+  the turn. bb's own notice
   that a thread under it finished starts a turn too, and that turn ends in
   a reply for you; or
 - you started the turn with a message, from the page or anywhere else in
@@ -435,7 +554,8 @@ colours and font alone.
 | ◆ | stuck | running with no event for 2 hours, or waiting on you for 7 days |
 | ‖ | parked | you set it aside with `p`; it is on the shelf until it comes back |
 | ✕ | failed | its last turn ended in an error; stays in the queue |
-| ✓ | done | finished, or archived, in the last 2 days; older ones are only counted |
+| ○ | idle | a project with nothing to say: quiet, in its place, never done; see "Projects" |
+| ✓ | done | finished, or archived, in the last 2 days; older ones are only counted. A project is done only when archived |
 | ◌ | not started | not a thread: work a thread has listed for later |
 
 Two more marks sit beside a title, and say nothing about the thread's state:
@@ -451,6 +571,11 @@ running turn; an open ask; a permission bb refused; a brief with disputes or
 judgement calls; a reply addressed to you. The others are still there when
 that one is dealt with.
 
+A line does not read done for a moment between its turn ending and cow
+reading how it ended: a thread bb says is at rest, whose newest turn event
+read so far is a start, keeps reading as running until its end is read (or
+for a minute at most).
+
 The limits live in one place, `LIMITS` in `src/state.ts`.
 
 ## Asks
@@ -464,6 +589,7 @@ bb cow ask --question <text> [--option <label>[::<detail>]]... [--options-only]
            [--risk low|medium|high] [--proof <path>]... [--context <text>] [--thread <id>]
 bb cow asks [--thread <id>] [--all] [--json]
 bb cow ask withdraw <id>
+bb cow ask close <id> --answered <the answer you were given>
 ```
 
 - A thread asks for itself, or for a thread under it; asking for an unrelated
@@ -488,12 +614,36 @@ that asked cannot edit the record of what you answered. They survive a
 plugin reload and a restart of bb. An answer is recorded before it is sent:
 if sending fails, cow sends it again the next time it loads.
 
+### An ask answered in chat
+
+You may answer an ask in an ordinary message to the thread instead of on
+the page. The ask is not closed by that: cow never closes one by itself.
+It can be closed from either side, and nothing is sent to the thread either
+way:
+
+- **The asking thread** closes it with `bb cow ask close <id> --answered
+  "<your answer, quoted or closely paraphrased>"`. A thread above it may do
+  the same; any other thread is refused. Withdrawing is for a question that
+  no longer needs an answer.
+- **You** close it on the page. When you have sent the thread a message
+  since it asked (from anywhere in bb), its line and its queue entry say
+  "you have messaged this thread since it asked", and the card offers one
+  more choice, "already answered in chat", with the digit after the others.
+  The digit marks it and `Enter` closes it. A message cow sent for you, as
+  the answer to another ask of the same thread, is not counted.
+
+A closed ask is a record of its own: not an answer given on the page and not
+a withdrawal. `bb cow asks --all` shows each ask that has ended with who
+ended it: "answered on cow's page", "closed by the thread: answered in
+chat: …" with the answer as the thread gave it, "closed by the user on cow's
+page: answered in chat", or withdrawn.
+
 ### Answering an ask
 
 `a` on the line opens the ask under it: the question, its context, how much
 is at stake, the options numbered with what each means, a field for an
 answer in your own words (unless the ask takes only its options), and its
-proof files as links that open in bb's file preview. `f` puts a hint on each
+proof files as links that open in the reader. `f` puts a hint on each
 link.
 
 A digit marks an option; the same digit again unmarks it. With an option
@@ -619,7 +769,7 @@ decision, puts nothing in the queue.
 | Key in the sheet | Does |
 | --- | --- |
 | `j` `k`, `g g`, `G` | move between claims and judgement calls |
-| `l`, `Enter` | open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link to the file |
+| `l`, `Enter` | open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link that opens the file as it is now in the reader; `q` there returns to the brief |
 | `h` | close it |
 | `a` | answer the judgement call under the cursor, when it is open as an ask |
 | `c` | run the check again, after `y`: it costs a model run for each run in the settings and replaces the verdicts |
@@ -670,6 +820,7 @@ bb cow archive <thread> [--reason <text>]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
+bb cow project <thread> [--clear]
 bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
 bb cow todo rm <thread> <n>
@@ -684,6 +835,7 @@ bb cow help
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
 | `next` | sets, or with `--clear` removes, the one line that says what happens next for a thread |
+| `project` | marks a thread as a project, or with `--clear` takes the mark off: it then reads idle, never done, until it is archived |
 | `todo add` | adds a piece of work not started to the end of a thread's list; the list holds 12 |
 | `todo done`, `todo rm` | take item `n` off the list: its work has started, or it will not be done |
 | `todo list` | the list, numbered from 1 |
@@ -695,7 +847,7 @@ counted. `park` refuses a thread whose turn is running unless `--stop` is
 given, which stops the turn first, as the page does after asking. A refused
 command exits non-zero and says why; every command takes `--json`.
 
-`next` and `todo` may be run by a thread only on itself and on the threads
+`next`, `todo` and `project` may be run by a thread only on itself and on the threads
 under it; bb tells the command which thread is calling, and any other
 target is refused. `status` shows each thread's note and list, and for a
 group what is under it by state.
@@ -712,7 +864,7 @@ these commands.
 ## Develop
 
 ```sh
-npm test            # unit tests: states, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker
+npm test            # unit tests: states, projects, replies addressed to you, groups and folding, plans, refused permissions, parking, pick-up dates, verbs, answers, permission requests, the CLI, hints, asks, briefs, the checker, the reader, scrolling the chat
 npm run typecheck
 ```
 
@@ -722,11 +874,14 @@ the cheapest model. It sets cow's checker model while it runs and puts it
 back. See the top of `scripts/e2e-asks.mjs`.
 
 `npm run e2e` drives the real page in a separate headless Chrome. It creates
-ten cheap fixture threads titled "cow test", and the first time cow starts
+fourteen cheap fixture threads titled "cow test", and the first time cow starts
 two hidden checker threads for the briefs it submits. It acts only on those (it answers,
 stops and archives them for real, grants them permission to run `echo` and to
 write one file under `/tmp`, and runs `bb cow` on them), and archives them
-afterwards. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it.
+afterwards. It sets cow's checker model while it runs and puts it back. See the top of `scripts/e2e.mjs` for how to run it. With `--only-reader` it makes four fixtures and checks
+only the reader, projects, asks answered in chat and scrolling the chat; its
+`--environment` must then be a checkout of cow, because the fixture links to
+cow's own files, and it writes and removes a `.cow-e2e` folder there.
 
 ## Turn it off
 
@@ -738,10 +893,11 @@ bb plugin remove cow    # uninstall it and delete what it stored
 cow stores five things: which thread was last chosen as Main for each
 project; which reply of each thread you have seen; its notes on a thread
 (why it is parked, why it was archived, which refused permissions you
-dismissed, what the thread says is next and has not started), kept in that
-thread's plugin metadata; asks and briefs, with the checker's verdicts, in
+dismissed, what the thread says is next and has not started, whether it is a
+project), kept in that thread's plugin metadata; asks and briefs, with the checker's verdicts, in
 the plugin's own storage; and, in each window's session storage, the Main
-that window shows and the groups folded in it.
+that window shows and the groups folded in it. When a thread is deleted in
+bb, cow deletes its record of which reply you saw and its notes on it.
 
 ## License
 
