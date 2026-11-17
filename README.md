@@ -1273,8 +1273,11 @@ node scripts/copy-for-checks.mjs /some/empty/folder     # the id is cow-check
 bb plugin install /some/empty/folder --yes
 npm run e2e -- --plugin cow-check --project <id> --environment <id>
 npm run e2e:asks -- --plugin cow-check --project <id> --environment <id>
-bb plugin remove cow-check                              # and everything it stored
+bb plugin remove cow-check
 ```
+
+On bb 0.49 removing a plugin leaves what it stored in bb's database, under
+the copy's id, where nothing reads it again.
 
 `npm run e2e:asks` checks asks and briefs against a running bb, without
 a browser: two "cow test" fixtures and up to three hidden checker threads, on

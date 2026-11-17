@@ -4,7 +4,8 @@
 // The checks reset enrollment, make capabilities and write to the log. Run
 // against the installed cow, they would do that to its storage, and race the
 // page of whoever has it open. A copy has its own id, so its own storage,
-// page, settings and `bb <id>` command; removing it removes all of that.
+// page, settings and `bb <id>` command; removing it takes all of that out of
+// use (bb 0.49 leaves its stored rows in its database, under the copy's id).
 //
 //   node scripts/copy-for-checks.mjs <empty folder> [--id cow-check]
 //   bb plugin install <that folder> --yes
