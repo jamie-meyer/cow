@@ -20,6 +20,12 @@
 // time: the briefs they audit are kept and used again. While it runs it sets
 // cow's checker model and provider, and puts both back as they were.
 //
+// What only the person may do on the page is signed with a key the page
+// holds. The check resets cow's enrollment with the reset file when it starts
+// and when it finishes, enrols a key of its own for the calls it makes
+// itself, and approves its browser's key with it. Whoever uses this bb has
+// their own page enrolled again, by first use, when they next open cow.
+//
 // Choosing a Main records it on the server as where a new cow window starts.
 // The check puts that record back at once, each time, for the fixtures'
 // project only, and no window that is already open is moved by it. A Main
@@ -46,9 +52,10 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { connect, newTab, sleep } from "./cdp.mjs";
+import { connect, newContextTab, newTab, sleep } from "./cdp.mjs";
+import { createSigner } from "./sign.mjs";
 
 const run = promisify(execFile);
 
@@ -66,6 +73,28 @@ const STATE = option("state", "");
 const SHOTS = option("shots", "");
 const MODEL = option("model", "claude-haiku-5-5");
 const TITLE = "cow test";
+
+/** This check's own key, for the calls only the person may make. Made in main(). */
+let signer = null;
+/** Make sure the check's own key is enrolled: when it is not, enrollment is reset and it is the first. */
+async function ownKey() {
+  if ((await signer.state()).keys.some((key) => key.fingerprint === signer.fingerprint)) return;
+  await signer.resetEnrollment();
+  if ((await signer.enrol()) !== "enrolled-first") throw new Error("the check's key was not enrolled by first use");
+}
+
+/** Enrol the key of this check's browser, by approving it with the check's own key: every page of this Chrome profile shares it. */
+async function enrolPage() {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const state = await signer.state();
+    const waiting = state.requests.filter((request) => request.status === "pending" && /headless Chrome/.test(request.label));
+    for (const request of waiting) await signer.must("key_approve", { fingerprint: request.fingerprint });
+    if (state.keys.some((key) => /headless Chrome/.test(key.label)) || waiting.length > 0) return;
+    if (Date.now() > deadline) throw new Error("the page never asked for its key to be enrolled");
+    await sleep(300);
+  }
+}
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -1384,13 +1413,15 @@ const pendingOf = async (id) => (await api(`/threads/${id}/interactions`)).filte
 
 /** Every capability that applies to a fixture is deleted, and every notice about a fixture acknowledged: nothing else is touched. */
 async function clearCaps(ids) {
+  if (signer === null) return;
+  await ownKey();
   const ours = new Set(Object.values(ids));
   const state = await capState();
   const mine = state.capabilities.filter((capability) => ours.has(capability.scope.threadId));
-  for (const capability of mine) if (capability.deletedAt === null) await rpc("cap_delete", { id: capability.id });
+  for (const capability of mine) if (capability.deletedAt === null) await signer.must("cap_delete", { id: capability.id });
   const gone = new Set(mine.map((capability) => capability.id));
   for (const notice of (await capState()).notices) {
-    if ((notice.capabilityId && gone.has(notice.capabilityId)) || (notice.threadId && ours.has(notice.threadId))) await rpc("cap_ack", { noticeId: notice.id });
+    if ((notice.capabilityId && gone.has(notice.capabilityId)) || (notice.threadId && ours.has(notice.threadId))) await signer.must("cap_ack", { noticeId: notice.id });
   }
 }
 
@@ -1485,6 +1516,163 @@ async function capsChecks(page, ids, shot, chooseMain) {
 
   await page.waitFor(`!!${lineEl(chead)} && !!${lineEl(ckid)}`, { label: "the capability fixtures on the page", timeout: 30_000 });
   check("with no capability, no line carries the mark and the queue holds no notice", (await mark(chead)) === null && (await mark(ckid)) === null && !(await page.eval(`!!document.querySelector("[data-cow-notice]")`)));
+
+  // -- the page's key: enrolled by first use ------------------------------------
+  const banner = `document.querySelector("[data-cow-key-status]")`;
+  const bannerOf = async (tab) => JSON.parse(await tab.eval(`JSON.stringify(${banner} ? { status: ${banner}.dataset.cowKeyStatus, key: ${banner}.dataset.cowKeyFingerprint, text: ${banner}.textContent } : null)`));
+  const keyKinds = async (count) => (await capLog(count)).map((entry) => [entry.event.kind, entry.by]);
+  const userRows = async (id) => (await api(`/threads/${id}/timeline`)).rows.filter((entry) => entry.kind === "conversation" && entry.role === "user");
+  /** Put the cursor on a line of the sheet, as a click does. */
+  const sheetRow = async (tab, selector) => {
+    await tab.waitFor(`!!${sheet}?.querySelector('${selector}')`, { label: `the sheet's line ${selector}` });
+    await tab.eval(`${sheet}.querySelector('${selector}').click(); true`);
+    await sleep(200);
+  };
+  const pageKey = (await signer.state()).keys.find((key) => /headless Chrome/.test(key.label))?.fingerprint;
+  const resetPath = await signer.resetEnrollment();
+  await page.waitFor(`${banner}?.dataset.cowKeyStatus === "first"`, { label: "the page enrolled by first use", timeout: 20_000 });
+  const firstUse = await bannerOf(page);
+  let keyState = await signer.state();
+  check(
+    "with no key enrolled, the first page to open cow enrols its key, says so plainly, and shows the key's fingerprint",
+    firstUse.key === pageKey && firstUse.text.includes(`This page's key ${pageKey} is now enrolled, by first use.`) && keyState.keys.length === 1 && keyState.keys[0].fingerprint === pageKey && keyState.keys[0].how === "first",
+    firstUse.text.slice(0, 160),
+  );
+  check("the reset and the enrollment are both in the log", JSON.stringify(await keyKinds(2)) === JSON.stringify([["key-enrolled", null], ["enrollment-reset", null]]), JSON.stringify(await keyKinds(2)));
+  await shot("keys-first-use");
+  await page.eval(`document.querySelector("[data-cow-key-dismiss]").click(); true`);
+  await page.waitFor(`!${banner}`, { label: "the notice put away" });
+
+  // -- another key asks, and is approved from the enrolled page -----------------
+  const asked = await signer.enrol();
+  const meanwhile = await signer.call("cap_ack", { noticeId: "note_none" });
+  check("a key that is not enrolled can ask to be, and can do nothing until it is", asked === "pending" && meanwhile.ok === false && /is not enrolled with cow/.test(meanwhile.error?.message ?? ""), `${asked} ${meanwhile.error?.message}`);
+  await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${signer.fingerprint}"]')`, { label: "the request in the queue" });
+  check("the enrolled page shows the request in its queue, with the key that asks", (await page.eval(`document.querySelector('[data-cow-key-waiting="${signer.fingerprint}"] p').textContent`)).includes(`a page asks to act as you: key ${signer.fingerprint}`));
+  await shot("keys-request-queue");
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, for its keys" });
+  await sheetRow(page, `[data-cow-key-request="${signer.fingerprint}"]`);
+  await page.key("Enter");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="approve"]')`, { label: "the approval, to confirm" });
+  const approveText = await page.eval(`${sheet}.querySelector("[data-cow-sheet-confirm]").textContent`);
+  await shot("keys-approve");
+  await page.key("n");
+  check("approving asks first, naming the key; any key but y leaves it waiting", approveText.includes(`Enrol the key ${signer.fingerprint}?`) && (await signer.state()).requests.some((request) => request.fingerprint === signer.fingerprint && request.status === "pending"));
+  await page.key("Enter");
+  await page.key("y");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-key="${signer.fingerprint}"]')`, { label: "the key enrolled" });
+  keyState = await signer.state();
+  const approved = keyState.keys.find((key) => key.fingerprint === signer.fingerprint);
+  const works = await signer.call("key_remove", { fingerprint: "0000-0000-0000-0000" });
+  check(
+    "approved from the enrolled page by a signed call, the key is enrolled, the log names the key that approved it, and its calls are now accepted",
+    approved?.how === "approved" && approved.approvedBy === pageKey && JSON.stringify((await keyKinds(1))[0]) === JSON.stringify(["key-enrolled", pageKey]) && works.ok === false && /there is no key 0000/.test(works.error?.message ?? ""),
+    JSON.stringify([approved?.how, approved?.approvedBy, works.error?.message]),
+  );
+  check("the sheet lists the enrolled keys, and marks this page's own", (await page.eval(`${sheet}.querySelectorAll("[data-cow-key]").length`)) === 2 && (await page.eval(`${sheet}.querySelector("[data-cow-key-mine]")?.dataset.cowKey`)) === pageKey && (await page.eval(`${sheet}.querySelector("[data-cow-key-own]").textContent`)).includes(`This page's key is ${pageKey}, and it is enrolled.`));
+  await shot("keys-sheet");
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+
+  // -- a second browser: it waits, explains itself, is approved, and then works ---
+  const openOther = async () => {
+    const tab = await newContextTab(PORT);
+    await tab.resize(1440, 900);
+    await tab.goto(`${BB}/plugins/cow/main`);
+    await tab.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page in another browser", timeout: 60_000 });
+    await chooseMain(tab, ids.cmain);
+    await tab.waitFor(`!!${banner}`, { label: "its key's standing", timeout: 20_000 });
+    return tab;
+  };
+  const sayFrom = async (tab, text) => {
+    await tab.key("i");
+    await tab.type(text);
+    await tab.key("Enter");
+    await sleep(1200);
+    return tab.eval(message);
+  };
+  const otherTab = await openOther();
+  const waitingPage = await bannerOf(otherTab);
+  const mainRows = (await userRows(ids.cmain)).length;
+  check(
+    "a page whose key is not enrolled says so loudly: the person's actions are held by a key that is not this page's, with its own key and how to reset",
+    waitingPage.status === "pending" && waitingPage.key !== pageKey && /^[0-9a-f]{4}(-[0-9a-f]{4}){3}$/.test(waitingPage.key) && waitingPage.text.includes("cow's person-only actions are held by a key that is not this page's.") && waitingPage.text.includes(`touch ${resetPath}`),
+    waitingPage.text.slice(0, 200),
+  );
+  await shot("keys-unenrolled", otherTab);
+  const refusedSay = await sayFrom(otherTab, "this must not be sent");
+  await otherTab.key("Escape");
+  check("its verbs explain themselves instead of acting: saying something to Main is not sent, and says why and how to get enrolled", /^not sent: this page's key .* is not enrolled, so this page can only read\. Approve it from a page that is enrolled/.test(refusedSay) && (await userRows(ids.cmain)).length === mainRows, refusedSay);
+  await otherTab.key("C");
+  await otherTab.waitFor(`!!${sheet}`, { label: "the sheet in the other browser" });
+  check("it can still read everything: the sheet opens, and says the same about its key", (await otherTab.eval(`${sheet}.querySelector("[data-cow-key-own]")?.dataset.cowKeyOwnStatus`)) === "pending" && (await otherTab.eval(`${sheet}.querySelectorAll("[data-cow-key]").length`)) === 2);
+  await otherTab.key("n");
+  await otherTab.waitFor(`${stage} === "kind"`, { label: "the steps in the other browser" });
+  await otherTab.key("2");
+  await otherTab.key("Enter");
+  await otherTab.type("echo not enrolled");
+  await otherTab.key("Enter");
+  await otherTab.key("Enter");
+  await otherTab.key("Enter");
+  await otherTab.key("1");
+  await otherTab.key("Enter");
+  await otherTab.key("Enter");
+  await otherTab.waitFor(`${stepError}.startsWith("not saved")`, { label: "the refusal to save" });
+  check("making a capability from it is refused the same way, and nothing is made", /not saved: this page's key .* is not enrolled/.test(await otherTab.eval(stepError)) && (await capState()).capabilities.every((capability) => capability.deletedAt !== null || capability.rule.text !== "echo not enrolled"), await otherTab.eval(stepError));
+  await otherTab.key("Escape");
+  await otherTab.key("Escape");
+  await otherTab.key("Escape");
+  await otherTab.key("Escape");
+  await otherTab.key("Escape");
+  await otherTab.key("Escape");
+  await otherTab.key("q");
+  await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${waitingPage.key}"]')`, { label: "the second browser's request" });
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, to approve it" });
+  await sheetRow(page, `[data-cow-key-request="${waitingPage.key}"]`);
+  await page.key("Enter");
+  await page.key("y");
+  await otherTab.waitFor(`!${banner}`, { label: "the second browser enrolled", timeout: 20_000 });
+  await page.key("q");
+  const saidFrom = await sayFrom(otherTab, "said from the second browser");
+  const lastRow = (await userRows(ids.cmain)).at(-1);
+  check(
+    "approved, the second browser's page works: what it says to Main is sent as the person, and the log names its key",
+    saidFrom.startsWith("said to") && lastRow?.text === "said from the second browser" && lastRow.initiator === "user" && JSON.stringify((await keyKinds(1))[0]) === JSON.stringify(["sent", waitingPage.key]),
+    `${saidFrom} ${JSON.stringify(await keyKinds(1))}`,
+  );
+  await settle(ids.cmain);
+
+  // -- a third: refused -------------------------------------------------------------
+  const thirdTab = await openOther();
+  const thirdKey = (await bannerOf(thirdTab)).key;
+  await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${thirdKey}"]')`, { label: "the third browser's request" });
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, to refuse it" });
+  await sheetRow(page, `[data-cow-key-request="${thirdKey}"]`);
+  await page.key("x");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="refuse"]')`, { label: "the refusal, to confirm" });
+  await page.key("y");
+  await thirdTab.waitFor(`${banner}?.dataset.cowKeyStatus === "refused"`, { label: "the third browser refused", timeout: 20_000 });
+  const refusedPage = await sayFrom(thirdTab, "this must not be sent either");
+  check(
+    "refused, the page says so, still cannot act, and is out of the queue; the refusal is logged with the key that refused",
+    /was refused, so this page can only read/.test(refusedPage) && (await userRows(ids.cmain)).at(-1)?.text === "said from the second browser" && !(await page.eval(`!!document.querySelector('[data-cow-key-waiting="${thirdKey}"]')`)) && JSON.stringify((await keyKinds(1))[0]) === JSON.stringify(["key-refused", pageKey]),
+    refusedPage,
+  );
+  await thirdTab.close();
+  // The second browser's key is removed again: a removed key can do nothing at once.
+  await sheetRow(page, `[data-cow-key="${waitingPage.key}"]`);
+  await page.key("x");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="remove"]')`, { label: "the removal, to confirm" });
+  await page.key("y");
+  await otherTab.waitFor(`!!${banner}`, { label: "the second browser, no longer enrolled", timeout: 20_000 });
+  check("x removes an enrolled key after y, and the page that held it can only read again", !(await signer.state()).keys.some((key) => key.fingerprint === waitingPage.key) && /not sent/.test(await sayFrom(otherTab, "nor this")));
+  await otherTab.close();
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+  for (const request of (await signer.state()).requests) await signer.must("key_remove", { fingerprint: request.fingerprint });
 
   // -- from a permission card: allow once, and save as a capability ---------
   const first = `${scratch}/one/a.txt`;
@@ -1815,7 +2003,6 @@ async function capsChecks(page, ids, shot, chooseMain) {
     `${await page.eval(doing(chead))} / ${await page.eval(nextOf(chead))}`,
   );
   await shot("caps-blocked-covered-line");
-  const userRows = async (id) => (await api(`/threads/${id}/timeline`)).rows.filter((entry) => entry.kind === "conversation" && entry.role === "user");
   const rowsBefore = (await userRows(chead)).length;
   await select(chead);
   await page.key("a");
@@ -1995,30 +2182,129 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const logText = await cowAs(ckid, "caps", "log", "--limit", "5");
   check("bb cow caps log prints the log, newest first", logText.code === 0 && /entries, numbered without a gap/.test(logText.stdout) && logText.stdout.includes("capability added: cow test requested"), logText.stdout.split("\n").slice(0, 3).join(" / "));
 
-  // -- what a sandboxed agent can do by calling cow's interface itself ----------
-  // The fixture runs these inside its command sandbox, in the ordinary way. What
-  // is checked is not that they fail: it is that whatever they achieve is in the
-  // log and in front of the person.
-  const planted = JSON.stringify({ name: "cow test planted", note: null, rule: { kind: "command", mode: "exact", text: "echo cow planted" }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null });
-  const entriesBefore = (await rpc("caps_log", { limit: 1 })).total;
-  await sayTo(ckid, `run: curl -s -m 8 -X POST ${BB}/api/v1/plugins/cow/rpc/cap_create -H 'content-type: application/json' -d '${planted}'`);
-  await sleep(2000);
-  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the probe done", 120_000);
-  const probeSaid = await said(ckid);
-  const plantedCap = await byName("cow test planted");
-  const plantedNotice = (await capState()).notices.find((notice) => notice.capabilityId === plantedCap?.id);
-  const after = await rpc("caps_log", { limit: 5 });
-  console.log(`note: a sandboxed agent's HTTP call to cow's interface ${plantedCap ? "MADE a capability" : "made nothing"}; it said: ${probeSaid.slice(0, 200)}`);
+  // -- what a sandboxed agent can do against the person's actions ------------------
+  // One fixture runs every route in one script, inside its command sandbox, in the
+  // ordinary way. Each of the person's actions must fail; bb's own approve command
+  // still works, because it is bb's, and must be flagged.
+  const [probeThread] = await api(`/threads?threadIds=${ckid}&limit=1`);
+  const workspace = (await api(`/environments/${probeThread.environmentId}`)).path;
+  const probeDir = join(workspace, ".cow-e2e-probe");
+  rmSync(probeDir, { recursive: true, force: true });
+  mkdirSync(probeDir, { recursive: true });
+  const probeCap = await signer.must("cap_create", { name: "cow test probe", note: null, rule: { kind: "command", mode: "exact", text: "echo cow probe" }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null });
+  const probeNotice = (await capState()).notices.find((notice) => notice.capabilityId === probeCap.id);
+  const probeAsk = JSON.parse((await cowAs(ckid, "ask", "--question", "May the probe answer this itself?", "--option", "yes", "--option", "no", "--json")).stdout).ask;
+  await sayTo(chead, "ask: echo cow probe pending");
+  await waitForThread(chead, (t) => t.hasPendingInteraction, "a request for the probe to try", 120_000);
+  const [probeRequest] = await pendingOf(chead);
+  const agentKey = await createSigner(BB, "made by a fixture");
+  const planted = { name: "cow test planted", note: null, rule: { kind: "command", mode: "exact", text: "echo cow planted" }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null };
+  const enrolledPage = (await signer.state()).keys.find((key) => /headless Chrome/.test(key.label)).fingerprint;
+  const allow = { threadId: chead, interactionId: probeRequest.id, resolution: { decision: "allow_once", grantedPermissions: null } };
+  const answer = { id: probeAsk.id, option: 1, text: null };
+  const unsigned = (action, args) => ({ action, args });
+  const bodies = {
+    "old-create": planted,
+    "unsigned-create": unsigned("cap_create", planted),
+    // Signed by nobody, naming the enrolled page's key.
+    "forged-create": { action: "cap_create", args: planted, at: Date.now(), nonce: "0123456789abcdef0123456789abcdef", key: enrolledPage, sig: "A".repeat(86) },
+    "unsigned-ack": unsigned("cap_ack", { noticeId: probeNotice.id }),
+    "unsigned-delete": unsigned("cap_delete", { id: probeCap.id }),
+    "unsigned-decide": unsigned("permission_decide", allow),
+    "old-decide": allow,
+    "unsigned-answer": unsigned("ask_answer", answer),
+    "old-answer": answer,
+    "enrol-key": { key: agentKey.key, label: "made by a fixture" },
+    "unsigned-approve": unsigned("key_approve", { fingerprint: agentKey.fingerprint }),
+  };
+  for (const [name, body] of Object.entries(bodies)) writeFileSync(join(probeDir, `${name}.json`), JSON.stringify(body));
+  const rpcUrl = `${BB}/api/v1/plugins/cow/rpc`;
+  const post = (name, method) => `curl -s -m 8 -X POST ${rpcUrl}/${method} -H content-type:application/json -d @${probeDir}/${name}.json`;
+  const routes = [
+    ["old-create", post("old-create", "cap_create")],
+    ["bb-rpc-create", `bb plugin rpc call cow cap_create --input-file ${probeDir}/old-create.json --json`],
+    ["bb-rpc-signed-create", `bb plugin rpc call cow signed --input-file ${probeDir}/unsigned-create.json --json`],
+    ["unsigned-create", post("unsigned-create", "signed")],
+    ["forged-create", post("forged-create", "signed")],
+    ["unsigned-ack", post("unsigned-ack", "signed")],
+    ["old-ack", post("unsigned-ack", "cap_ack")],
+    ["unsigned-delete", post("unsigned-delete", "signed")],
+    ["unsigned-decide", post("unsigned-decide", "signed")],
+    ["old-decide", post("old-decide", "permission_decide")],
+    ["unsigned-answer", post("unsigned-answer", "signed")],
+    ["old-answer", post("old-answer", "ask_answer")],
+    ["enrol-key", post("enrol-key", "key_enrol")],
+    ["unsigned-approve", post("unsigned-approve", "signed")],
+    ["reset-file", `sh -c 'mkdir -p "${dirname(resetPath)}" && touch "${resetPath}" && echo CREATED-THE-RESET-FILE'`],
+    ["bb-approve", `bb thread interactions approve ${probeRequest.id} ${chead}`],
+  ];
+  writeFileSync(join(probeDir, "run.sh"), `${routes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-240; echo`).join("\n")}\n`);
+  const keysBefore = (await signer.state()).keys.map((key) => key.fingerprint).sort().join(" ");
+  await sayTo(ckid, `run: sh ${probeDir}/run.sh`);
+  await sleep(3000);
+  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the probe done", 180_000);
+  const probeRows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(".cow-e2e-probe/run.sh"));
+  const probeOutput = String(probeRows.at(-1)?.output ?? "");
+  const got = Object.fromEntries(routes.map(([name]) => [name, (new RegExp(`ROUTE ${name}: (.*)`).exec(probeOutput)?.[1] ?? "(no output)").trim()]));
+  console.log("what each route gave a sandboxed fixture:");
+  for (const [name] of routes) console.log(`  ${name.padEnd(22)} ${got[name].slice(0, 200)}`);
+  rmSync(probeDir, { recursive: true, force: true });
+  await sleep(2500);
+  const afterProbe = await capState();
+  const keysAfter = await signer.state();
+  const only = /only the person may do/;
+  check("the probe ran, inside the fixture's sandbox", probeRows.length === 1 && routes.every(([name]) => got[name] !== "(no output)"), probeOutput.slice(0, 200));
   check(
-    "whatever a sandboxed agent achieves by calling cow's interface is exactly as visible as the person's own act: logged, and a notice until acknowledged",
-    plantedCap === null ? after.total === entriesBefore : plantedNotice !== undefined && after.entries.some((entry) => entry.event.kind === "created" && entry.event.capabilityId === plantedCap.id) && after.check.intact,
-    plantedCap ? "it made one; the notice and the log entry are there" : "it made nothing",
+    "a sandboxed agent can no longer make a capability: the old method is gone, by HTTP and by bb plugin rpc call, and an unsigned or forged signed call is refused",
+    (await byName("cow test planted")) === null && !/"ok":true/.test(got["old-create"]) && !/cap_[0-9a-f]{6}/.test(got["bb-rpc-create"]) && only.test(got["bb-rpc-signed-create"]) && only.test(got["unsigned-create"]) && /signature does not match/.test(got["forged-create"]),
+    [got["old-create"], got["bb-rpc-create"], got["unsigned-create"], got["forged-create"]].map((line) => line.slice(0, 90)).join(" | "),
   );
-  if (plantedCap) {
-    await page.waitFor(`!!document.querySelector('[data-cow-notice-capability="${plantedCap.id}"]')`, { label: "the planted capability's notice in the queue" });
-    check("a capability made that way is in the queue as new, and marks the thread's line new", (await mark(ckid))?.fresh === "true");
-    await shot("caps-planted");
-  }
+  check(
+    "nor acknowledge a notice or delete a capability: the notice still waits and the capability is still in force",
+    only.test(got["unsigned-ack"]) && !/"ok":true/.test(got["old-ack"]) && only.test(got["unsigned-delete"]) && afterProbe.notices.some((notice) => notice.id === probeNotice.id) && afterProbe.capabilities.some((capability) => capability.id === probeCap.id && capability.deletedAt === null),
+    [got["unsigned-ack"], got["old-ack"], got["unsigned-delete"]].map((line) => line.slice(0, 90)).join(" | "),
+  );
+  check(
+    "nor decide a permission request through cow, nor answer an ask as the person: the ask is still open",
+    only.test(got["unsigned-decide"]) && !/"ok":true/.test(got["old-decide"]) && only.test(got["unsigned-answer"]) && !/"ok":true/.test(got["old-answer"]) && (await openAsksOf(ckid)).some((ask) => ask.id === probeAsk.id) && !(await capLog(40)).some((entry) => entry.event.kind === "decided" && entry.event.interactionId === probeRequest.id),
+    [got["unsigned-decide"], got["old-decide"], got["unsigned-answer"], got["old-answer"]].map((line) => line.slice(0, 90)).join(" | "),
+  );
+  check(
+    "it can ask for a key to be enrolled, which only puts a request in front of the person; it cannot approve it, and the enrolled keys are as they were",
+    /pending/.test(got["enrol-key"]) && only.test(got["unsigned-approve"]) && keysAfter.keys.map((key) => key.fingerprint).sort().join(" ") === keysBefore && keysAfter.requests.some((request) => request.fingerprint === agentKey.fingerprint && request.status === "pending"),
+    `${got["enrol-key"].slice(0, 80)} | ${got["unsigned-approve"].slice(0, 90)}`,
+  );
+  await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"]')`, { label: "the fixture's request in the queue" });
+  check("that request is in the person's queue, under the name the fixture gave it", (await page.eval(`document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"] p').textContent`)).includes("made by a fixture"));
+  await shot("keys-agent-request");
+  check(
+    "it cannot create the reset file: the sandbox stops it, and enrollment stands",
+    !got["reset-file"].includes("CREATED-THE-RESET-FILE") && /not permitted|denied|read-only/i.test(got["reset-file"]) && !existsSync(resetPath) && keysAfter.keys.length > 0,
+    got["reset-file"].slice(0, 160),
+  );
+  await page.waitFor(`${lineEl(chead)}?.dataset.cowOutside === "1"`, { label: "bb's own approve, flagged", timeout: 40_000 });
+  check(
+    "bb's own approve command still works for it, because that is bb's: and the approval is flagged on the line as made outside cow",
+    /approved/.test(got["bb-approve"]) && (await page.eval(doing(chead))).includes("approved outside cow: run: echo cow probe pending") && (await capLog(40)).some((entry) => entry.event.kind === "outside" && entry.event.interactionId === probeRequest.id && entry.by === null),
+    got["bb-approve"].slice(0, 120),
+  );
+  await shot("keys-probe-outside");
+  // Put away what the probe was given to try.
+  await signer.must("key_refuse", { fingerprint: agentKey.fingerprint });
+  await signer.must("key_remove", { fingerprint: agentKey.fingerprint });
+  await cow("ask", "withdraw", probeAsk.id);
+  await select(chead);
+  await page.key(" ");
+  await page.waitFor(`${lineEl(chead)}?.dataset.cowOutside === undefined`, { label: "acknowledged" });
+  const signedEntries = (await capLog(200)).filter((entry) => ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "key-refused", "key-removed"].includes(entry.event.kind));
+  const enrolledNow = new Set((await signer.state()).keys.map((key) => key.fingerprint));
+  check(
+    "every log entry for one of the person's actions names the key that signed it",
+    signedEntries.length > 10 && signedEntries.every((entry) => /^[0-9a-f]{4}(-[0-9a-f]{4}){3}$/.test(entry.by ?? "")) && signedEntries.slice(0, 3).every((entry) => enrolledNow.has(entry.by)),
+    JSON.stringify(signedEntries.find((entry) => !entry.by) ?? signedEntries.length),
+  );
+  await waitForThread(chead, (t) => t.status === "idle", "the approved command run", 120_000);
+  await settle(chead);
   await settle(ckid);
 
   // -- both themes, and a narrow window -----------------------------------------
@@ -2074,6 +2360,7 @@ let restoreStored = async () => undefined;
 async function main() {
   const ids = await fixtures();
   await assertOurs(ids);
+
   // A page left open by an earlier run would go on acting on the fixtures:
   // a chat open in its pane marks that thread's reply seen as it arrives.
   // This Chrome is the check's own, so every tab but one is closed too.
@@ -2082,6 +2369,9 @@ async function main() {
   const stale = await connect(PORT, "");
   await stale.goto("about:blank");
   stale.close();
+  // The check's own key is the first enrolled; its browser's is approved with it when the page opens.
+  signer = await createSigner(BB);
+  await ownKey();
   await reset(ids);
   const before = await rpc("main_state", null);
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -2116,6 +2406,7 @@ async function main() {
     await page.colorScheme("light");
     await page.goto(`${BB}/plugins/cow/main`);
     await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
+    await enrolPage();
     const chooseMain = async (tab, id) => {
       if ((await tab.eval(screen)) === "overview") await tab.key("M");
       await tab.waitFor(`${screen} === "picker"`, { label: "the picker" });
@@ -2155,6 +2446,7 @@ async function main() {
   await page.colorScheme("light");
   await page.goto(`${BB}/plugins/cow/main`);
   await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page" });
+  await enrolPage();
 
   // -- choosing Main --
   const heading = `(document.querySelector(".cow-mainline")?.dataset.cowLine ?? null)`;
@@ -4270,6 +4562,9 @@ async function main() {
   await restoreSettings();
   await restoreReading();
   await restoreCaps();
+  // No key of this check stays enrolled: the next page to open cow is enrolled by first use.
+  await signer.resetEnrollment();
+  check("the check leaves no key enrolled", (await signer.state()).keys.length === 0);
   for (const name of [...RAISED, ...READING, ...CAPPED]) {
     if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   }
@@ -4307,5 +4602,6 @@ main().catch(async (error) => {
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
   await restoreCaps().catch((cause) => console.error("could not put back what the capability checks made", cause));
+  await signer?.resetEnrollment().catch((cause) => console.error("could not reset cow's enrollment", cause));
   process.exit(1);
 });

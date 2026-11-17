@@ -42,6 +42,47 @@ export async function newTab(port) {
   return page;
 }
 
+/**
+ * Open a tab in a browser context of its own: its own storage, as another
+ * browser would have. Returns the page, with `close` taking the context away.
+ */
+export async function newContextTab(port) {
+  const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const ws = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = reject;
+  });
+  let nextId = 0;
+  const pending = new Map();
+  ws.onmessage = (message) => {
+    const msg = JSON.parse(message.data);
+    if (!msg.id || !pending.has(msg.id)) return;
+    const { resolve, reject } = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+    else resolve(msg.result);
+  };
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      pending.set(++nextId, { resolve, reject });
+      ws.send(JSON.stringify({ id: nextId, method, params }));
+    });
+  const { browserContextId } = await send("Target.createBrowserContext");
+  const { targetId } = await send("Target.createTarget", { url: "about:blank", browserContextId });
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+  const target = targets.find((entry) => entry.id === targetId);
+  if (!target) throw new Error("the new browser context's tab was not found");
+  const page = await attach(target);
+  const close = page.close;
+  page.close = async () => {
+    close();
+    await send("Target.disposeBrowserContext", { browserContextId }).catch(() => undefined);
+    ws.close();
+  };
+  return page;
+}
+
 async function attach(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {

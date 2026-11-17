@@ -5,6 +5,11 @@
 // briefs they submit. It acts only on those, withdraws any ask it leaves
 // open, and archives the fixtures when it finishes.
 //
+// Answering an ask is the person's, and is signed. The check holds a key of
+// its own: it resets cow's enrollment with the reset file when it starts, so
+// that its key is the first, and again when it finishes. Whoever uses this bb
+// has their page enrolled again, by first use, when they next open cow.
+//
 // While it runs it sets cow's checker model and provider to the fixture
 // model, so that a brief submitted by a fixture is checked on the cheap
 // model, and puts both settings back as they were afterwards.
@@ -21,6 +26,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { createSigner } from "./sign.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -161,6 +167,10 @@ async function main() {
   const ids = {};
   const checkers = new Set();
   let failure = null;
+  // This check's key is the first enrolled, as a page's is on a fresh cow.
+  const signer = await createSigner(BB, "the asks end-to-end check");
+  await signer.resetEnrollment();
+  if ((await signer.enrol()) !== "enrolled-first") throw new Error("the check's key was not enrolled by first use");
 
   try {
     await config("set", "checkerModel", MODEL);
@@ -252,12 +262,21 @@ async function main() {
     check("a checker that cannot answer is a failed check, shown as one", failed.check.state === "failed" && failed.disputes.length === 0 && failed.claims.every((entry) => entry.verdict === null), JSON.stringify(failed.check));
     check("a failed check is not a pass in `brief show`", /CHECK FAILED/.test((await cow(null, "brief", "show", ids.briefer)).stdout));
 
-    // ---- the answer, through the RPC the page will use -------------------
-    const bad = await rpc("ask_answer", { id: ask.id, option: 5, text: null });
+    // ---- the answer, as the page makes it: a signed call ------------------
+    const old = await rpc("ask_answer", { id: ask.id, option: 2, text: null });
+    const unsigned = await rpc("signed", { action: "ask_answer", args: { id: ask.id, option: 2, text: null } });
+    const forged = await rpc("signed", { ...(await signer.envelope("ask_answer", { id: ask.id, option: 2, text: null })), args: { id: ask.id, option: 1, text: null } });
+    check(
+      "an answer that is not signed by an enrolled key is refused: the old method is gone, an unsigned call and a changed one are refused, and the ask stays open",
+      old.ok !== true && unsigned.ok === false && /only the person may do/.test(unsigned.error?.message ?? "") && forged.ok === false && /signature does not match/.test(forged.error?.message ?? "") && (await rpc("asks_list", { threadId: ids.asker })).result.asks.some((entry) => entry.id === ask.id),
+      JSON.stringify([old.error?.code ?? old, unsigned.error?.message, forged.error?.message]),
+    );
+    const bad = await signer.call("ask_answer", { id: ask.id, option: 5, text: null });
     check("an answer that does not fit is refused", bad.ok === false, JSON.stringify(bad.error?.message ?? bad));
     const idleBefore = (await thread(ids.asker)).status === "idle";
-    const answer = await rpc("ask_answer", { id: ask.id, option: 2, text: null });
-    check("the ask was answered through RPC while its thread was idle", idleBefore && answer.ok && answer.result.status === "answered" && answer.result.deliveredAt !== null, JSON.stringify(answer.error ?? ""));
+    const signedAnswer = await signer.call("ask_answer", { id: ask.id, option: 2, text: null });
+    const answer = { ok: signedAnswer.ok, result: signedAnswer.result?.result, error: signedAnswer.error };
+    check("the ask was answered by a signed call while its thread was idle", idleBefore && answer.ok && answer.result.status === "answered" && answer.result.deliveredAt !== null, JSON.stringify(answer.error ?? ""));
     const got = await waitFor("the fixture's reply to the answer", async () => {
       const said = await output(ids.asker);
       return said.includes("GOT") ? said : null;
@@ -267,7 +286,7 @@ async function main() {
     const delivered = JSON.stringify(timeline).includes(`Answer to your question (${ask.id}):`) && JSON.stringify(timeline).includes("> Which colour?");
     check("the message quotes the question", delivered);
     check("an answered ask leaves the open list", !(await rpc("asks_list", { threadId: ids.asker })).result.asks.some((entry) => entry.id === ask.id));
-    const twice = await rpc("ask_answer", { id: ask.id, option: 1, text: null });
+    const twice = await signer.call("ask_answer", { id: ask.id, option: 1, text: null });
     check("an ask is answered once", twice.ok === false);
 
     const withdrawn = second ? await cow(ids.asker, "ask", "withdraw", second.id) : { code: 1, stderr: "" };
@@ -279,6 +298,8 @@ async function main() {
     const open = (await rpc("asks_list", {})).result?.asks ?? [];
     for (const entry of open) if (Object.values(ids).includes(entry.threadId)) await cow(null, "ask", "withdraw", entry.id);
     for (const [key, value] of Object.entries(was)) await (value === "" ? config("unset", key) : config("set", key, value));
+    // No key of this check stays enrolled.
+    await signer.resetEnrollment().catch((cause) => console.error("could not reset cow's enrollment", cause));
     for (const id of checkers) {
       const left = await thread(id);
       if (left && left.title === "cow check" && left.archivedAt == null) await bbAs(null, "thread", "archive", id);
