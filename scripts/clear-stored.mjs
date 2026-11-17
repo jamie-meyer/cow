@@ -3,7 +3,8 @@
 // `bb plugin remove cow` (bb 0.49) deletes the plugin's settings and leaves
 // the rest in bb's database: cow's own storage (Mains, seen replies, asks,
 // briefs, capabilities, the log, enrolled keys) and its notes on threads.
-// This deletes those rows, and the folder that held the reset file.
+// This deletes those rows, the folder that held the reset file, and the
+// folder bb kept the plugin's state in across an update.
 //
 //   bb plugin remove cow
 //   node scripts/clear-stored.mjs            # says what it would delete
@@ -89,8 +90,8 @@ const TABLES = [
   ["plugin_settings", "settings"],
   ["plugin_schedules", "schedules"],
 ].filter(([table]) => has(table));
-const folder = join(dir, "plugins", id);
-const inFolder = existsSync(folder) ? readdirSync(folder) : null;
+// The folder that held the reset file, and the one where bb keeps a plugin's state from before an update, to roll back to.
+const FOLDERS = [join(dir, "plugins", id), join(dir, "plugins", "snapshots", id)];
 
 console.log(`${yes ? "Clearing" : "Would clear"} what the plugin “${id}” stored in ${database}:`);
 let total = 0;
@@ -100,13 +101,18 @@ for (const [table, what] of TABLES) {
   console.log(`  ${String(rows).padStart(5)} ${rows === 1 ? "row " : "rows"} in ${table}  (${what})`);
   if (yes && rows > 0) db.run(`delete from ${table} where plugin_id = ?`, id);
 }
-console.log(inFolder === null ? `  no folder ${folder}` : `  the folder ${folder} (${inFolder.length === 0 ? "empty" : inFolder.join(", ")})`);
-if (yes && inFolder !== null) rmSync(folder, { recursive: true, force: true });
+for (const folder of FOLDERS) {
+  const inFolder = existsSync(folder) ? readdirSync(folder) : null;
+  console.log(inFolder === null ? `  no folder ${folder}` : `  the folder ${folder} (${inFolder.length === 0 ? "empty" : inFolder.join(", ")})`);
+  if (yes && inFolder !== null) rmSync(folder, { recursive: true, force: true });
+}
+const foldersLeft = () => FOLDERS.filter((folder) => existsSync(folder));
 
 if (yes) {
   const left = TABLES.reduce((sum, [table]) => sum + db.count(`select count(*) from ${table} where plugin_id = ?`, id), 0);
-  console.log(left === 0 && !existsSync(folder) ? `Done: ${total} ${total === 1 ? "row" : "rows"} deleted, nothing of “${id}” is left in bb's data directory.` : `Not everything went: ${left} rows are left${existsSync(folder) ? `, and ${folder}` : ""}.`);
-  if (left > 0 || existsSync(folder)) process.exitCode = 1;
+  const still = foldersLeft();
+  console.log(left === 0 && still.length === 0 ? `Done: ${total} ${total === 1 ? "row" : "rows"} deleted, nothing of “${id}” is left in bb's data directory.` : `Not everything went: ${left} rows are left${still.length > 0 ? `, and ${still.join(", ")}` : ""}.`);
+  if (left > 0 || still.length > 0) process.exitCode = 1;
 } else {
   console.log("Nothing was changed. Run it again with --yes to delete; that cannot be undone.");
 }

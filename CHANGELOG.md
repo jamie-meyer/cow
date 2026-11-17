@@ -8,7 +8,7 @@ What changed for someone who uses cow. Versions are tags in this repository:
 
 Ready for a machine that is not the one cow was written on.
 
-- **Install from GitHub.** `bb plugin install git:https://github.com/jamie-meyer/cow.git@^0.2.0`
+- **Install from GitHub.** `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'`
   installs a tagged release; `bb plugin update cow` moves to the next one in
   the range. Mains, notes, asks, briefs, capabilities and enrolled keys are
   kept across an update.

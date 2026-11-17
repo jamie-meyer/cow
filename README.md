@@ -34,7 +34,7 @@ The rules behind each idea, in full, are in
 You need bb 0.49 and `git` on your `PATH`.
 
 ```sh
-bb plugin install git:https://github.com/jamie-meyer/cow.git@^0.2.0
+bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'
 ```
 
 bb shows the source and the exact tag and commit it resolved, and asks before
@@ -52,13 +52,18 @@ bb cow help
 ```
 
 Then open cow from its entry in bb's navigation, or go to
-`/plugins/cow/main` at bb's address.
+`/plugins/cow/main` at the address you open bb at. Do that once yourself,
+straight after installing and before any agent runs: the first browser to
+open the page is the one cow will take your actions from (see
+[Signing](#the-limits-of-signing-and-capabilities)).
+
+The quotes are there because some shells give `^` a meaning of their own.
 
 Other ways bb can install it, and when to prefer them:
 
 | Command | Follows | Use it when |
 | --- | --- | --- |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@^0.2.0` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
+| `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
 | `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.0` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
@@ -299,6 +304,7 @@ no storage of its own outside bb.
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, whether it is marked a project |
 | the same database, table `plugin_settings` | the four settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
+| `plugins/snapshots/cow` under bb's data directory, written by bb | when you update cow, bb's own copy of what cow had stored before the update, kept to roll back to if the new version fails to start |
 | bb's log for the plugin (`plugins/cow/logs/plugin.log` under bb's data directory), written by bb | a warning when something cow tried failed: what it was, a thread id, and the error's text |
 | the browser, IndexedDB database `cow-signing`, for bb's address | this browser's signing key pair. The private half is created non-extractable: no script, cow's included, can read it out through the browser |
 | the browser, session storage (`cow:main`, `cow:folds`) | per window: the Main it shows and the groups folded in it |
@@ -520,7 +526,7 @@ cow and install the new one:
 
 ```sh
 bb plugin remove cow
-bb plugin install git:https://github.com/jamie-meyer/cow.git@^0.3.0
+bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.3.0'
 ```
 
 Removing deletes the four settings, so set them again if you had changed
@@ -541,8 +547,12 @@ removing:
 
 ```sh
 sqlite3 ~/.bb/bb.db "delete from plugin_kv where plugin_id = 'cow'; delete from thread_plugin_metadata where plugin_id = 'cow';"
-rm -rf ~/.bb/plugins/cow
+rm -rf ~/.bb/plugins/cow ~/.bb/plugins/snapshots/cow
 ```
+
+The first folder is where the reset file goes. The second is where bb keeps
+a copy of a plugin's state from before an update, to roll back to; after an
+update and a removal of a copy of cow it was there and empty.
 
 `~/.bb` is bb's data directory; `bb status` prints it. This cannot be undone.
 From a checkout of this repository, the same with a count of what goes and a
