@@ -109,6 +109,9 @@ import type { FileRef } from "./reader/link.ts";
 import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
+import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
+import { pickAction, pickChoice } from "./plugins.ts";
+import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { VERB_KEYS, type Verb as VerbName, verbBlocked, verbLabel } from "./verbs.ts";
 
 const HOUR = 3_600_000;
@@ -413,8 +416,11 @@ function LineRow({
   onOpen,
   onFold,
   settle = false,
+  sidebar,
 }: {
   line: Line;
+  /** bb's own copy of the thread, which other plugins' badges are drawn for; absent when bb's list does not hold it. */
+  sidebar?: PluginSidebarThread;
   /** It is listed under To settle: its age is how long since it finished, warm then red, and it says what archiving it leaves behind. */
   settle?: boolean;
   /** What capabilities add to the line; null when there is nothing to add. */
@@ -593,7 +599,10 @@ function LineRow({
         ) : null}
         {next.text ? <span className="cow-nx2"> → {nextNode}</span> : null}
       </span>
-      <span className="cow-nx">{nextNode}</span>
+      <span className="cow-nx">
+        {nextNode}
+        {sidebar ? <RowBadges thread={sidebar} /> : null}
+      </span>
     </div>
   );
 }
@@ -1579,6 +1588,12 @@ function OverviewScreen({
   const [sending, setSending] = useState(false);
   const [help, setHelp] = useState(false);
   const [message, setMessage] = useState("");
+  const sidebarIndex = useSidebarIndex();
+  /** What other plugins offer for the selected line, as its probe last reported. */
+  const [otherRows, setOtherRows] = useState<{ threadId: string; rows: ActionRow[] }>({ threadId: "", rows: [] });
+  const reportRows = useCallback((threadId: string, rows: ActionRow[]) => setOtherRows({ threadId, rows }), []);
+  /** The menu of what other plugins offer, open under the selected line. */
+  const [more, setMore] = useState<MoreState | null>(null);
 
   // A line whose state just changed glows briefly, since it does not move.
   const lastStates = useRef(new Map<string, LineState>());
@@ -1949,6 +1964,31 @@ function OverviewScreen({
       return next;
     });
 
+  /** What other plugins offer for the selected line; empty until its probe has reported. */
+  const lineRows = selectedLine && otherRows.threadId === selectedLine.thread.id ? otherRows.rows : [];
+  const moreOpen = more !== null && selectedLine !== null && more.threadId === selectedLine.thread.id ? more : null;
+  const moreKey = (key: string) => {
+    if (moreOpen === null) return;
+    if (key === "Escape" || key === "q") return setMore(moreOpen.choicesOf !== null && key === "Escape" ? { ...moreOpen, choicesOf: null } : null);
+    const opened = moreOpen.choicesOf === null ? null : (lineRows.find((row) => row.pick === moreOpen.choicesOf) ?? null);
+    if (moreOpen.choicesOf !== null && opened === null) {
+      setMore(null);
+      return setMessage("that action is no longer offered");
+    }
+    const picked = opened === null ? pickAction(lineRows, key) : pickChoice(opened.entry, key);
+    if (picked.kind === "miss") return setMessage(key.length === 1 ? `nothing is on ${key}: pick a key from the list, or Esc` : "");
+    if (picked.kind === "disabled") return setMessage(`“${picked.label}” is not available now: its plugin has turned it off`);
+    if (picked.kind === "choices") return setMore({ ...moreOpen, choicesOf: key });
+    const { entry, value } = picked;
+    const label = entry.action.label;
+    setMore(null);
+    setMessage(`${entry.pluginId} is running “${label}”…`);
+    entry.action.run(value).then(
+      () => setMessage(`${entry.pluginId} ran “${label}”${value === undefined ? "" : `: ${entry.action.choices?.items.find((choice) => choice.id === value)?.label ?? value}`}`),
+      (cause: unknown) => setMessage(`${entry.pluginId} could not run “${label}”: ${cause instanceof Error ? cause.message : String(cause)}`),
+    );
+  };
+
   const run = (command: Command) => {
     // An open brief covers the page, and the keys are its own.
     if (sheet.threadId !== null && sheet.onCommand(command)) return;
@@ -2044,6 +2084,11 @@ function OverviewScreen({
       case "bring":
         if (!selectedOutside) return setMessage("A brings a thread from Outside Main under Main: select a line there first");
         return verbs.startBring(selectedOutside);
+      case "more":
+        if (!selectedLine) return setMessage(". lists what other plugins offer for a thread: select a thread's line first");
+        if (lineRows.length === 0) return setMessage("no other plugin offers anything for this thread");
+        setMessage("");
+        return setMore({ threadId: selectedLine.thread.id, choicesOf: null });
       default:
         return;
     }
@@ -2074,6 +2119,13 @@ function OverviewScreen({
             verbs.onKey?.(key);
             return true;
           }
+        : moreOpen !== null
+          ? (key) => {
+              // The menu's rows take hints like any other.
+              if (key === "f") return false;
+              moreKey(key);
+              return true;
+            }
         : sayTo !== null
           ? () => {
               // Focus was taken from the say input: give it back.
@@ -2148,6 +2200,7 @@ function OverviewScreen({
   // A card opened for one ask from inside a brief is drawn there, not under the line.
   const allLines = [main, ...listed(overview)];
   const card = (id: string) => {
+    if (moreOpen !== null && moreOpen.threadId === id) return <MoreCard state={moreOpen} rows={lineRows} onPick={moreKey} />;
     if (capSteps.origin?.where === "line" && capSteps.origin.threadId === id) return capSteps.node;
     if (verbs.card?.threadId === id && verbs.card.askId === undefined) return verbs.card.node;
     if (capsFor !== id) return null;
@@ -2186,6 +2239,7 @@ function OverviewScreen({
         flash={flashing.has(line.thread.id)}
         onSelect={setCursor}
         onOpen={openChat}
+        sidebar={sidebarIndex.get(line.thread.id)}
       />
       {card(line.thread.id)}
     </Fragment>
@@ -2208,11 +2262,12 @@ function OverviewScreen({
               ? "help"
               : capSteps.origin !== null
                 ? "cap"
-                : (verbs.mode?.toLowerCase() ?? (filter !== null ? "filter" : capSheet.open ? "caps" : sheet.threadId !== null ? "brief" : "normal"))
+                : (verbs.mode?.toLowerCase() ?? (moreOpen !== null ? "more" : filter !== null ? "filter" : capSheet.open ? "caps" : sheet.threadId !== null ? "brief" : "normal"))
       }
       tabIndex={-1}
       ref={rootRef}
     >
+      {selectedLine ? <ActionsProbe key={selectedLine.thread.id} facts={selectedLine.thread} sidebar={sidebarIndex.get(selectedLine.thread.id)} onRows={reportRows} /> : null}
       <div className="cow-app">
         <header className="cow-head">
           <div
@@ -2584,6 +2639,15 @@ function OverviewScreen({
             </>
           ) : verbs.footer ? (
             verbs.footer
+          ) : moreOpen !== null ? (
+            <>
+              <span className="cow-mode cow-m-prompt">MORE</span>
+              <span className="cow-noun">{selectedLine?.thread.title ?? ""}</span>
+              <span className="cow-sep">▸</span>
+              <span>
+                {moreOpen.choicesOf === null ? "what other plugins offer: pick one to run it there" : "pick a choice"} · <kbd>f</kbd> hints · <kbd>Esc</kbd> {moreOpen.choicesOf === null ? "close" : "back"}
+              </span>
+            </>
           ) : filter !== null ? (
             <>
               <span className="cow-mode cow-m-prompt">FILTER</span>
@@ -2646,6 +2710,9 @@ function OverviewScreen({
                 ) : null}
                 {selectedLine && !selectedTodo && selectedLine.run === undefined && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
                   <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
+                ) : null}
+                {lineRows.length > 0 ? (
+                  <Verb keys="." label="more" name="more" why="what other plugins offer for this thread, run by them" onRun={() => run({ kind: "more" })} />
                 ) : null}
               </span>
               <span className="cow-sep">·</span>

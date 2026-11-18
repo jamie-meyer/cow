@@ -25,6 +25,7 @@ test("the keys that were there keep their meaning", () => {
   assert.deepEqual(read("x"), { kind: "verb", verb: "stop" });
   assert.deepEqual(read("3"), { kind: "ask-number", number: 3 });
   assert.deepEqual(read("z"), { kind: "verb", verb: "keep" });
+  assert.deepEqual(read("."), { kind: "more" });
   const reader = new KeyReader();
   assert.equal(reader.read("g", false, 5000), null);
   assert.deepEqual(reader.read("g", false, 5100), { kind: "top" });
@@ -32,7 +33,7 @@ test("the keys that were there keep their meaning", () => {
 
 test("the key map lists every new key", () => {
   const keys = KEY_MAP.map((entry) => entry.keys);
-  for (const key of ["h l", "Space", "J K"]) assert.ok(keys.includes(key), key);
+  for (const key of ["h l", "Space", "J K", "."]) assert.ok(keys.includes(key), key);
 });
 
 test("b opens a brief, and c and q are the brief's own keys", () => {

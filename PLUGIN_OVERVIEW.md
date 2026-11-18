@@ -15,6 +15,9 @@ started, and lets you deal with all of it from the keyboard.
 - For agents, the `bb cow` command: `bb cow ask` puts a question in front of
   you until you answer it, and `bb cow brief submit` reports a finished job as
   claims with evidence, which a separate checker audits before you read it.
+- Other plugins on each line: their badges, a pull request's state for
+  example, at the end of a thread's line, and their actions for a thread
+  under `.`, drawn and run by those plugins, not by cow.
 - Capabilities: named grants that answer bb's permission requests "allow
   once" for the threads you choose, with a log of everything allowed.
 - A theme, paper and ink, for the whole of bb.

@@ -1,0 +1,17 @@
+{
+  "name": "bb-plugin-cow-check-badge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A throwaway plugin for cow's end-to-end checks: one badge and three actions on \"cow test\" fixture threads only.",
+  "license": "MIT",
+  "type": "module",
+  "bb": {
+    "name": "cow-check-badge",
+    "description": "For cow's end-to-end checks only. Remove it with: bb plugin remove cow-check-badge",
+    "branding": {
+      "icon": "./icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  }
+}

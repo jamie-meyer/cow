@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -359,6 +359,58 @@ the parent of a thread's open children to none when it archives it).
   the section under its own heading, "Outside Main", and `--json` has it as
   `outside`, with `outsideNotListed` counting what is left out. Moving is
   not signed: see "What is not signed, method by method".
+
+## Other plugins on a line
+
+bb lets any plugin add a short badge to a thread's row, and actions to a
+thread's menu. cow shows both on its page. It does not know what they mean or
+what they do: the plugin that registered them draws and runs them.
+
+**Badges.** At the end of each line in the tree, Parked, To settle, Kept and
+an automation's runs, after what is next, cow draws every badge other
+plugins registered for that thread: a pull request's state, say. bb's own
+GitHub pull-request status plugin registers one. None show on Main's
+heading or on Outside Main lines.
+
+- The line stays one line. Badges take what room is left after cow's own
+  columns and are cut off with an ellipsis; they never wrap and never push a
+  column. When the page is too narrow for the next-move column, the badges
+  are hidden with it. With no plugin registering a badge, a line is
+  exactly as it was.
+- A badge never changes a line's state, its section or its place in the
+  queue: cow reads nothing from it.
+- A badge that fails takes out only itself: bb removes that badge on that
+  line, and the rest of the line, and the page, carry on.
+- A badge takes no hint and no keyboard focus, and a click on it selects its
+  line. A link inside a badge takes a hint like any other link.
+- Badges are drawn for the threads bb's own thread list holds: open ones.
+  An archived thread's line has none.
+- bb loads each plugin's data for its badges once for the whole page, not
+  once per line. A plugin may make its own request for all the threads at
+  once, as the pull-request one does.
+
+**Actions.** `.` on a line opens, under it, the actions other plugins offer
+for its thread, in bb's menu order. Each row has its label, its detail, the
+plugin that offers it, and a digit or letter that runs it; `f` puts hints
+on the rows. bb's own actions (pin, rename, archive and the rest) are left
+out: cow has its own keys for what it does. bb's bundled plugins offer some
+too: in bb 0.49, Notifications, and Move to section on a thread with no
+parent.
+
+- Picking a row calls the action as bb hands it over, bound to that plugin:
+  it runs in that plugin's own code, under its authority. cow signs nothing,
+  sends nothing for it, and records nothing.
+- A dimmed row is one its plugin has turned off: it cannot be picked, and
+  its key says so in the message line.
+- An action with choices shows them as a second step: a key picks one, and
+  Esc goes back to the list. Esc on the list closes it.
+- The message line says when the plugin has finished. bb keeps an action's
+  own errors to itself, so "ran" means the plugin finished, not that it got
+  what it wanted: look at what it changed.
+- With nothing to offer, `.` says so in the message line and opens nothing,
+  and the verb bar shows `. more` only on a line that has something.
+- Main's heading has actions too; an Outside Main line, an automation's row
+  and an item not yet started have none.
 
 ## What is next
 

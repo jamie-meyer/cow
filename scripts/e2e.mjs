@@ -75,9 +75,18 @@
 //                       and deleted when the run finishes or fails; their two
 //                       run threads are archived with the fixtures. It never
 //                       changes, runs or deletes any other automation
+//   --only-plugins      only other plugins' badges and actions: two fixtures,
+//                       a stand-in Main and a thread under it, and a throwaway
+//                       plugin, cow-check-badge (scripts/cow-check-badge),
+//                       installed for the run and removed when it finishes or
+//                       fails. It shows a badge, a badge that always throws,
+//                       and three actions only on "cow test" threads; the
+//                       actions write to its own metadata on the fixture,
+//                       which the run clears
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { connect, newContextTab, newTab, sleep } from "./cdp.mjs";
@@ -236,6 +245,8 @@ const SETTLING = ["smain", "sjob", "schat"];
 /** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
 const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
 const AUTOMATING = ["umain"];
+/** The fixtures of the other plugins' checks: a Main of their own, and a thread under it. */
+const PLUGGED = ["bmain", "bkid"];
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
 const madeAutomations = [];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
@@ -260,7 +271,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -301,6 +312,8 @@ async function fixtures() {
   await make("ohead", { prompt: QUIET });
   await make("okid", { prompt: QUIET, parent: ids.ohead });
   await make("umain", { prompt: QUIET });
+  await make("bmain", { prompt: QUIET });
+  await make("bkid", { prompt: QUIET, parent: ids.bmain });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -319,7 +332,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1493,6 +1506,188 @@ async function prepareSettle(ids) {
   const end = (await api(`/threads/${ids.schat}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
   if (end !== undefined) await signer.must("seen_set", { threadId: ids.schat, seen: { seq: end, at: Date.now() } });
   await signer.must("seen_set", { threadId: ids.sjob, seen: null });
+}
+
+
+// ---- Other plugins' badges and actions ---------------------------------------
+
+const BADGE_PLUGIN = "cow-check-badge";
+/** Console errors a check means to cause. */
+const EXPECTED_ERRORS = [];
+/** The fixtures the test plugin wrote to: their metadata is cleared when it goes. */
+const badgeWrote = new Set();
+let badgeInstalled = false;
+/** The folder the test plugin was installed from. */
+let badgeCopy = null;
+
+async function badgeMetadata(id) {
+  return api(`/threads/${id}/plugin-metadata?pluginId=${BADGE_PLUGIN}`);
+}
+async function clearBadgeMetadata(id) {
+  const keys = Object.keys(await badgeMetadata(id));
+  if (keys.length === 0) return;
+  const response = await fetch(`${BB}/api/v1/threads/${id}/plugin-metadata?pluginId=${BADGE_PLUGIN}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pluginId: BADGE_PLUGIN, remove: keys }),
+  });
+  if (!response.ok) throw new Error(`clearing ${BADGE_PLUGIN}'s metadata on ${id}: HTTP ${response.status}`);
+}
+async function installBadgePlugin() {
+  // Installed from a copy, so nothing bb builds lands in this checkout.
+  badgeCopy = mkdtempSync(join(tmpdir(), `${BADGE_PLUGIN}-`));
+  cpSync(join(dirname(new URL(import.meta.url).pathname), BADGE_PLUGIN), badgeCopy, { recursive: true });
+  badgeInstalled = true;
+  await run("bb", ["plugin", "install", badgeCopy, "--yes"]);
+}
+/** Remove the test plugin and what it wrote. Safe to call when it is not installed. */
+async function removeBadgePlugin() {
+  for (const id of badgeWrote) await clearBadgeMetadata(id).catch((cause) => console.error(`could not clear ${BADGE_PLUGIN}'s metadata on ${id}`, cause));
+  badgeWrote.clear();
+  if (!badgeInstalled) return;
+  badgeInstalled = false;
+  await run("bb", ["plugin", "remove", BADGE_PLUGIN]);
+  if (badgeCopy) rmSync(badgeCopy, { recursive: true, force: true });
+  badgeCopy = null;
+  console.log(`removed the test plugin ${BADGE_PLUGIN}`);
+}
+
+/** Badges at the end of a line, `.` and its menu, and the page with the test plugin gone. */
+async function pluginChecks(page, ids, shot, chooseMain) {
+  const { bmain, bkid } = ids;
+  for (const name of PLUGGED) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  badgeWrote.add(bkid);
+  badgeWrote.add(bmain);
+  for (const id of badgeWrote) await clearBadgeMetadata(id);
+  EXPECTED_ERRORS.push(/always throws/, /The above error occurred/);
+  await installBadgePlugin();
+  // The page loads the plugins bb runs when it opens: open it again with the test plugin in.
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
+  await chooseMain(page, bmain);
+  await page.send("Page.bringToFront");
+  const lineEl = `document.querySelector('.cow-main [data-cow-line="${bkid}"]')`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const menu = `document.querySelector("[data-cow-more]")`;
+  const row = (key) => `document.querySelector('[data-cow-more-action="${BADGE_PLUGIN}/${key}"]')`;
+  const pickOf = async (key) => page.eval(`${row(key)}?.querySelector("kbd")?.textContent ?? ""`);
+  const rowHeight = await page.eval(`parseFloat(getComputedStyle(${ROOT}).getPropertyValue("--cow-rh")) || 17`);
+
+  // -- the badge --
+  await page.waitFor(`!!${lineEl}?.querySelector("[data-cow-check-badge]")`, { label: "the test badge on the fixture's line", timeout: 30_000 });
+  check("another plugin's badge shows at the end of the fixture's line", await page.eval(`${lineEl}.querySelector(".cow-nx [data-cow-badges] [data-cow-check-badge]")?.textContent.includes("check badge") ?? false`));
+  const fits = async () =>
+    page.eval(`(() => {
+      const line = ${lineEl}.getBoundingClientRect();
+      const column = ${lineEl}.querySelector(".cow-nx").getBoundingClientRect();
+      return Math.round(line.height) === ${rowHeight} && column.right <= line.right + 0.5 && getComputedStyle(${lineEl}.querySelector(".cow-nx")).whiteSpace === "nowrap";
+    })()`);
+  check("the line with a badge is still one line, the badge inside its last column", await fits());
+  const columnsBefore = await page.eval(`[...${lineEl}.children].map((child) => Math.round(child.getBoundingClientRect().width)).join(",")`);
+  await page.resize(1000, 900);
+  await sleep(400);
+  check("narrower, the line is still one line", await fits());
+  await page.resize(1440, 900);
+  await sleep(400);
+  check(
+    "a badge takes the plugin's other badge's place only: the one that throws is gone, the line and the page stay",
+    (await page.eval(`${lineEl}.querySelectorAll('[data-bb-plugin="${BADGE_PLUGIN}"]').length`)) === 1 && (await page.eval(screen)) === "overview",
+  );
+  check("a badge is not a hint target: it is not a link", !(await page.eval(`!!${lineEl}.querySelector("[data-cow-badges] a[href], [data-cow-badges] [role=link]")`)));
+  const stateBefore = await page.eval(`${lineEl}.dataset.cowState`);
+  await shot("plugins-badge");
+
+  // -- . and its menu --
+  await page.eval(`${lineEl}.click(); true`);
+  await page.waitFor(`!!document.querySelector('[data-cow-verb="more"]')`, { label: "the verb bar's . more" });
+  check("the verb bar shows . more on a line with other plugins' actions", true);
+  await page.key(".");
+  await page.waitFor(`!!${menu}`, { label: "the menu" });
+  await shot("plugins-menu");
+  check("pressing . opens the menu under the line", await page.eval(`${menu}.dataset.cowMore === "${bkid}" && ${lineEl}.nextElementSibling === ${menu}`));
+  const keys = await page.eval(`[...${menu}.querySelectorAll("[data-cow-more-action]")].map((el) => el.dataset.cowMoreAction).filter((key) => key.startsWith("${BADGE_PLUGIN}/")).join(" ")`);
+  check("it lists the test plugin's actions in its order", keys === `${BADGE_PLUGIN}/plain ${BADGE_PLUGIN}/disabled ${BADGE_PLUGIN}/choose`, keys);
+  check("bb's own actions are not in it", !(await page.eval(`[...${menu}.querySelectorAll("[data-cow-more-action]")].some((el) => el.dataset.cowMoreAction.startsWith("bb--core/"))`)));
+  check("each row has a key, a label and its detail", (await pickOf("plain")) !== "" && (await page.eval(`${row("plain")}.textContent.includes("Check: mark") && ${row("plain")}.textContent.includes("writes the check's metadata")`)));
+  check("the disabled action is dimmed and takes no hint", await page.eval(`${row("disabled")}.classList.contains("cow-off") && !${row("disabled")}.hasAttribute("data-cow-hint")`));
+  check("the line is in the state it was: a badge or a menu changes nothing", (await page.eval(`${lineEl}.dataset.cowState`)) === stateBefore);
+
+  // f hints the menu's rows, and nothing else.
+  await page.key("f");
+  await page.waitFor(`!!document.querySelector("[data-cow-hints]")`, { label: "hints" });
+  const enabled = await page.eval(`${menu}.querySelectorAll("[data-cow-hint]").length`);
+  const labels = await page.eval(`document.querySelectorAll("[data-cow-hints] [data-cow-hint-label]").length`);
+  check("f hints the menu's rows while it is open, and only them", labels === enabled && enabled >= 2, `${labels} hints, ${enabled} rows`);
+  await page.key("Escape");
+  await sleep(200);
+
+  await page.key(await pickOf("disabled"));
+  await sleep(1500);
+  check("the disabled action cannot be picked: the menu stays, the message says why", (await page.eval(`!!${menu}`)) && (await page.eval(message)).includes("not available"));
+  check("and its plugin's code did not run", (await badgeMetadata(bkid)).disabledRan === undefined);
+
+  await page.key(await pickOf("choose"));
+  await page.waitFor(`!!${menu}?.querySelector("[data-cow-more-choice]")`, { label: "the choices" });
+  check("an action with choices shows them as a second step", (await page.eval(`[...${menu}.querySelectorAll("[data-cow-more-choice]")].map((el) => el.dataset.cowMoreChoice).join(" ")`)) === "red blue grey");
+  check("a disabled choice is dimmed", await page.eval(`${menu}.querySelector('[data-cow-more-choice="grey"]').classList.contains("cow-off")`));
+  await page.key("Escape");
+  await sleep(200);
+  check("Esc on the choices goes back to the list", await page.eval(`!!${row("plain")}`));
+  await page.key(await pickOf("choose"));
+  await page.waitFor(`!!${menu}?.querySelector("[data-cow-more-choice]")`, { label: "the choices again" });
+  await page.key("2");
+  await waitUntil(async () => (await badgeMetadata(bkid)).chose === "blue", "the choice to run");
+  check("picking a choice runs the action in its plugin with that choice", true);
+  await page.waitFor(`${message}.includes("ran")`, { label: "the message" });
+  check("the message line says the plugin ran it", (await page.eval(message)).includes(`${BADGE_PLUGIN} ran “Check: choose”: blue`), await page.eval(message));
+
+  await page.key(".");
+  await page.waitFor(`!!${menu}`, { label: "the menu again" });
+  await page.key(await pickOf("plain"));
+  await waitUntil(async () => typeof (await badgeMetadata(bkid)).marked === "number", "the plain action to run");
+  check("picking the plain action runs it in its plugin: it wrote its own metadata", true);
+  check("and the menu closes", !(await page.eval(`!!${menu}`)));
+  await page.key(".");
+  await page.waitFor(`!!${menu}`, { label: "the menu once more" });
+  await page.key("Escape");
+  await sleep(200);
+  check("Esc closes the menu", !(await page.eval(`!!${menu}`)) && (await page.eval(`${ROOT}.dataset.cowMode`)) === "normal");
+  await page.eval(`document.querySelector('[data-cow-section="settle"], [data-cow-section]')?.click(); true`);
+  await sleep(200);
+  await page.key(".");
+  await sleep(200);
+  check(". on a line that is not a thread opens nothing and says so", !(await page.eval(`!!${menu}`)) && (await page.eval(message)).includes("select a thread"));
+
+  // -- without the test plugin --
+  await removeBadgePlugin();
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!${lineEl}`, { label: "the page again", timeout: 60_000 });
+  await sleep(2000);
+  check("with the test plugin removed, no badge of its shows", !(await page.eval(`!!document.querySelector("[data-cow-check-badge]")`)));
+  check(
+    "and no line draws an empty badge space",
+    await page.eval(`[...document.querySelectorAll(".cow-main [data-cow-badges]")].every((el) => getComputedStyle(el).display === "none")`),
+  );
+  check(
+    "and the fixture's line has the columns it had",
+    (await page.eval(`[...${lineEl}.children].map((child) => Math.round(child.getBoundingClientRect().width)).join(",")`)) === columnsBefore,
+  );
+  await page.eval(`${lineEl}.click(); true`);
+  await sleep(500);
+  await page.key(".");
+  await sleep(300);
+  check("and . lists none of its actions", !(await page.eval(`!!document.querySelector('[data-cow-more-action^="${BADGE_PLUGIN}/"]')`)));
+  await page.key("Escape");
+  await shot("plugins-gone");
+}
+
+async function waitUntil(predicate, label, timeout = 15_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 // ---- Outside Main, and bringing a thread under Main ------------------------
@@ -3269,7 +3464,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -3293,6 +3488,7 @@ async function main() {
     else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
     else if (flag("only-outside")) await outsideChecks(page, ids, shot, chooseMain);
     else if (flag("only-automations")) await automationChecks(page, ids, shot, chooseMain);
+    else if (flag("only-plugins")) await pluginChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
@@ -5497,7 +5693,9 @@ async function main() {
   return finish(page);
 
   async function finish(page) {
-  check("no console errors", page.consoleErrors.length === 0, page.consoleErrors.join(" | "));
+  // The test plugin's badge that always throws is meant to: bb logs it, and only it.
+  const consoleErrors = page.consoleErrors.filter((entry) => !EXPECTED_ERRORS.some((pattern) => pattern.test(entry)));
+  check("no console errors", consoleErrors.length === 0, consoleErrors.join(" | "));
   // bb polls services of its own that may be down; only cow's requests count.
   const failedRequests = page.networkErrors.filter((entry) => entry.includes(`/plugins/${PLUGIN}`));
   check("no failed requests to cow", failedRequests.length === 0, failedRequests.join(" | "));
@@ -5508,6 +5706,7 @@ async function main() {
 
   // -- put things back --
   await removeAutomations();
+  await removeBadgePlugin();
   await restoreSettings();
   await restoreReading();
   await restoreCaps();
@@ -5571,6 +5770,7 @@ main().catch(async (error) => {
   await ownKey().catch(() => undefined);
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
   await removeAutomations().catch((cause) => console.error("could not delete the automations this run made", cause));
+  await removeBadgePlugin().catch((cause) => console.error("could not remove the test plugin cow-check-badge", cause));
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
   await restoreCaps().catch((cause) => console.error("could not put back what the capability checks made", cause));

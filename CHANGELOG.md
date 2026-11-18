@@ -4,6 +4,33 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.6
+
+Another plugin can know things about a thread that cow does not: its pull
+request, whether its checks are green, what to do about it. bb shows those
+on a thread's row in its own sidebar and in the thread's menu; on cow's page
+they were a click away, inside each thread.
+
+- **Other plugins' badges at the end of a line.** Every badge another plugin
+  registers for a thread's row in bb (bb's own pull-request status is one)
+  shows at the end of the thread's line, after what is next: in the tree,
+  Parked, To settle, Kept and an automation's runs. The line stays one line:
+  badges take what room is left and are cut off with an ellipsis, and never
+  push cow's columns. With no such plugin installed the page looks as it
+  did. A badge never changes a line's state, section or place in the queue,
+  a badge that fails takes only itself out, and none show on Outside Main
+  lines or on an archived thread's line.
+- **`.` lists other plugins' actions for the selected line**, each with its
+  label, detail, the plugin that offers it, and a digit or letter to run it;
+  `f` hints the rows. Picking one runs it in that plugin's own code, under
+  its authority: cow signs, sends and records nothing for it. A dimmed
+  action is turned off by its plugin and cannot be picked; one with choices
+  shows them next. The message line says when the plugin has finished. Esc
+  closes the list. The verb bar shows `. more` only on a line that has
+  something to list.
+- These rest on parts of bb's plugin interface that bb marks experimental:
+  see "Limits, and what cow rests on" in the README.
+
 ## 0.2.5
 
 Each run of a bb automation is a new thread with no parent, so cow never

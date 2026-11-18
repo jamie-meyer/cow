@@ -42,7 +42,9 @@ export type Command =
   | { kind: "help" }
   | { kind: "choose-main" }
   /** Bring the selected thread from Outside Main under Main. */
-  | { kind: "bring" };
+  | { kind: "bring" }
+  /** The actions other plugins offer for the selected thread. */
+  | { kind: "more" };
 
 /** The key map as the legend shows it: grouped by what the person is doing. */
 export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
@@ -103,6 +105,12 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     title: "Reading a file",
     keys: [
       { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
+    ],
+  },
+  {
+    title: "Other plugins",
+    keys: [
+      { keys: ".", does: "list what other plugins offer for the line's thread, such as a pull request's checks or a restack: a digit or letter runs one, in that plugin's own code and under its authority, not cow's; one with choices shows them next, and Esc goes back. A dimmed one is turned off by its plugin. Esc closes the list. The verb bar shows . more only when there is something to list" },
     ],
   },
   {
@@ -190,6 +198,8 @@ export class KeyReader {
         return { kind: "project" };
       case "A":
         return { kind: "bring" };
+      case ".":
+        return { kind: "more" };
       case "w":
         return { kind: "wait" };
       case ";":
@@ -336,6 +346,9 @@ export interface HintTarget {
   top: number;
 }
 
+/** What in another plugin's badge takes a hint: a link, and nothing else. */
+const BADGE_LINK = "a[href], [role=link]";
+
 /** Anything a click or a caret can use, by element type and by role. */
 const CLICKABLE = [
   "a[href]",
@@ -408,7 +421,8 @@ function reachable(element: HTMLElement, rect: DOMRect): boolean {
  */
 export function collectHintTargets(page: HTMLElement): HintTarget[] {
   // A sheet open over the page covers it: only what is in the sheet can be used.
-  const root = page.querySelector<HTMLElement>("[data-cow-reader]") ?? page.querySelector<HTMLElement>("[data-cow-sheet]") ?? page;
+  // So does the menu of what other plugins offer, while it is open under its line.
+  const root = page.querySelector<HTMLElement>("[data-cow-reader]") ?? page.querySelector<HTMLElement>("[data-cow-sheet]") ?? page.querySelector<HTMLElement>("[data-cow-more]") ?? page;
   const popups = hostPopups();
   const lines: HintTarget[] = [];
   const own: HintTarget[] = [];
@@ -435,7 +449,11 @@ export function collectHintTargets(page: HTMLElement): HintTarget[] {
   }
   for (const scope of popups.length > 0 ? popups : [root]) {
     for (const element of scope.querySelectorAll<HTMLElement>(CLICKABLE)) {
-      if (element.closest("[data-cow-hint]") !== null || isOff(element)) continue;
+      // Inside one of cow's own targets it is that target. A badge another plugin draws on a line is
+      // not a control: only a link in one is a target of its own.
+      const inBadge = element.closest("[data-cow-badges]") !== null;
+      if (inBadge ? !element.matches(BADGE_LINK) : element.closest("[data-cow-hint]") !== null) continue;
+      if (isOff(element)) continue;
       const rect = element.getBoundingClientRect();
       if (reachable(element, rect)) add(others, element, rect);
     }

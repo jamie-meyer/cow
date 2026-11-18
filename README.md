@@ -47,7 +47,7 @@ committed to this repository, and there is no release asset to download.
 Check that it is there:
 
 ```sh
-bb plugin list        # cow@0.2.5  running
+bb plugin list        # cow@0.2.6  running
 bb cow help
 ```
 
@@ -64,7 +64,7 @@ Other ways bb can install it, and when to prefer them:
 | Command | Follows | Use it when |
 | --- | --- | --- |
 | `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.5` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
+| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.6` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
 
@@ -301,6 +301,16 @@ says why, and what to press instead. `?` shows this map on the page.
 | Key | Does |
 | --- | --- |
 | in the reader | a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back |
+
+**Other plugins**
+
+Other plugins can put a short badge at the end of a thread's line, and offer
+actions for a thread, through bb. They draw and run these, not cow: see
+[Other plugins on a line](docs/reference.md#other-plugins-on-a-line).
+
+| Key | Does |
+| --- | --- |
+| `.` | list what other plugins offer for the line's thread, such as a pull request's checks or a restack: a digit or letter runs one, in that plugin's own code and under its authority, not cow's; one with choices shows them next, and Esc goes back. A dimmed one is turned off by its plugin. Esc closes the list. The verb bar shows . more only when there is something to list |
 
 **The page itself**
 
@@ -616,6 +626,10 @@ uses one that is not listed.
 | `experimental_openFilePreview` (page) | the reader's o: the same file in bb's own panel |
 | `experimental_useAppPanel` (page) | closing a file tab bb opened on cow's page, to show the file in the reader |
 | `experimental_usePanelTabs` (page) | seeing that file tab open |
+| `experimental_useSidebarThreads` (page) | bb's own copy of each thread, which other plugins' badges and actions are drawn for |
+| `experimental_ThreadRowMetadata` (page) | other plugins' badges at the end of a thread's line, drawn by them |
+| `experimental_useThreadActions` (page) | the actions other plugins offer for the selected thread, listed by . and run by them |
+| `experimental_usePluginId` (page) | leaving cow's own registrations, if any, out of that list |
 
 **Another plugin's methods.** The Automations section reads bb's bundled
 automations plugin through `automations_overview` and `automations_runs`,
@@ -730,6 +744,11 @@ browser, with two more. Both set cow's checker model while they run and put
 it back, and both refuse to run against the installed cow unless given
 `--plugin cow --reset-the-installed-cow`. The head of each script says exactly
 what it touches.
+
+Other plugins' badges and actions are checked by `npm run e2e --
+--only-plugins`, with a throwaway plugin in `scripts/cow-check-badge` that
+the run installs as `cow-check-badge` and removes when it finishes or fails.
+It shows something only on "cow test" threads.
 
 Screenshots taken while developing can show your own threads. The three in
 `docs/img` were made from invented fixture threads and checked by eye; do not

@@ -30,6 +30,10 @@ export const EXPERIMENTAL_SURFACES: readonly { name: string; from: "backend" | "
   { name: "experimental_openFilePreview", from: "page", for: "the reader's o: the same file in bb's own panel" },
   { name: "experimental_useAppPanel", from: "page", for: "closing a file tab bb opened on cow's page, to show the file in the reader" },
   { name: "experimental_usePanelTabs", from: "page", for: "seeing that file tab open" },
+  { name: "experimental_useSidebarThreads", from: "page", for: "bb's own copy of each thread, which other plugins' badges and actions are drawn for" },
+  { name: "experimental_ThreadRowMetadata", from: "page", for: "other plugins' badges at the end of a thread's line, drawn by them" },
+  { name: "experimental_useThreadActions", from: "page", for: "the actions other plugins offer for the selected thread, listed by . and run by them" },
+  { name: "experimental_usePluginId", from: "page", for: "leaving cow's own registrations, if any, out of that list" },
 ];
 
 type Outside = "older" | "newer";
