@@ -15,8 +15,8 @@
 // - bb's own notices carry a `systemMessageKind`: "child-completed" and the
 //   like when a thread under it reports, "ownership-assigned" (or
 //   "ownership-batch") when a thread is moved under it, "ownership-removed"
-//   when one is moved away. A notice is never the person speaking, whatever
-//   its `initiator` says.
+//   when one is moved away; an ordinary message carries "unlabeled". A
+//   notice is never the person speaking, whatever its `initiator` says.
 
 /** Where a turn ended: its `turn/completed` event. */
 export interface TurnEnd {
@@ -48,7 +48,8 @@ const record = (value: unknown): Record<string, unknown> | null =>
 /** Who sent the prompt a `client/turn/requested` event records. */
 export function starterOf(data: Record<string, unknown>): Starter {
   if (data.source === "spawn") return "spawn";
-  if (typeof data.systemMessageKind === "string") return "system";
+  // bb labels every prompt: "unlabeled" for an ordinary message, a kind of its own for a notice.
+  if (typeof data.systemMessageKind === "string" && data.systemMessageKind !== "unlabeled") return "system";
   if (data.initiator === "user") return "person";
   return data.initiator === "agent" ? "agent" : "system";
 }

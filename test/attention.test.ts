@@ -36,6 +36,10 @@ test("who sent a prompt: the first prompt is never the person, whatever bb recor
   assert.equal(starterOf({ source: "tell", initiator: "user" }), "person");
   assert.equal(starterOf({ source: "tell", initiator: "agent", senderThreadId: "thr_a" }), "agent");
   assert.equal(starterOf({ source: "tell", initiator: "system", systemMessageKind: "child-completed" }), "system");
+  // bb labels an ordinary message "unlabeled": that is not a notice.
+  assert.equal(starterOf({ source: "tell", initiator: "user", systemMessageKind: "unlabeled" }), "person");
+  assert.equal(starterOf({ source: "tell", initiator: "agent", systemMessageKind: "unlabeled" }), "agent");
+  assert.equal(starterOf({ source: "tell", initiator: "user", systemMessageKind: "ownership-assigned" }), "system");
   assert.equal(starterOf({}), "system");
 });
 
