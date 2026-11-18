@@ -33,7 +33,7 @@ test("a parked thread leaves the tree for the shelf, and its descendants go with
   assert.equal(overview.counts.parked, 1);
   // The question and the failure under it are set aside too.
   assert.deepEqual(ids(overview.queue), []);
-  assert.deepEqual(cursorOrder(overview), ["b", "a", "c"]);
+  assert.deepEqual(cursorOrder(overview), ["b", "a", "section:settle", "c"]);
 });
 
 test("archived descendants are not counted on a parked line", () => {
@@ -71,7 +71,7 @@ test("a finished parent does not stay in the tree for a parked child", () => {
     { kid: parkNow("later", { kind: "none" }, NOW) },
   );
   assert.deepEqual(ids(overview.lines), []);
-  assert.deepEqual(ids(overview.done), ["p"]);
+  assert.deepEqual(ids(overview.settle), ["p"]);
   assert.deepEqual(ids(overview.parked), ["kid"]);
 });
 

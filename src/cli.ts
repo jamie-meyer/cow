@@ -216,10 +216,10 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
     commands: {
       ...planCommands(actions),
       status: cliCommand({
-        summary: "The overview: every thread under Main with its state, the queue, and the parked shelf",
+        summary: "The overview: every thread under Main with its state, the queue, the parked shelf, what is to settle, and what is kept",
         description:
           "One line per thread: state, time in state, what it is doing or waiting on. At most 80 open threads, " +
-          "30 parked, 20 done and 20 queue entries are listed; the rest are counted.",
+          "30 parked, 40 to settle, 30 kept, 20 archived and 20 queue entries are listed; the rest are counted.",
         options: {
           main: {
             type: "string",
@@ -233,7 +233,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           // The asks themselves, and what each brief came to, are added to the overview.
           const attended = attention ? await attend(attention, plain, ctx.projectId ?? null) : null;
           const raisedOrPlain = attended ?? plain;
-          const ids = [raisedOrPlain.main, ...raisedOrPlain.threads, ...raisedOrPlain.parked, ...raisedOrPlain.done].map((line) => line.id);
+          const ids = [raisedOrPlain.main, ...raisedOrPlain.threads, ...raisedOrPlain.parked, ...raisedOrPlain.settle, ...raisedOrPlain.kept, ...raisedOrPlain.archived].map((line) => line.id);
           const report = capabilityNames ? withCapabilities(raisedOrPlain, await capabilityNames(ids)) : raisedOrPlain;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }
@@ -244,7 +244,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
         summary: "Archive a done, idle or failed thread, recording why",
         description:
           "Archives the thread in bb, and the threads under it with it. Refused while it is not done, idle or failed, " +
-          "or while threads under it are still open. The reason shows on cow's page under Done.",
+          "or while threads under it are still open. The reason shows on cow's page under Archived for two days.",
         positionals: [thread],
         options: {
           reason: { type: "string", aliases: ["why"], description: `Why it is archived, up to ${MAX_REASON} characters` },

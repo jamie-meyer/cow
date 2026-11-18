@@ -33,8 +33,10 @@ const report = (overrides: Partial<StatusReport> = {}): StatusReport => ({
   queue: [],
   threads: [line("child"), line("grandchild", { depth: 1 })],
   parked: [],
-  done: [],
-  omitted: { threads: 0, parked: 0, done: 0, queue: 0, olderDone: 0 },
+  settle: [],
+  kept: [],
+  archived: [],
+  omitted: { threads: 0, parked: 0, settle: 0, kept: 0, archived: 0, queue: 0 },
   truncated: false,
   ...overrides,
 });

@@ -9,6 +9,7 @@ import type { Signer } from "./signing/page.ts";
 import {
   type ArchiveNote,
   type Dismissal,
+  type KeepNote,
   NOTES_CHANGED,
   type NextNote,
   type ParkRecord,
@@ -38,6 +39,10 @@ export interface Parks {
   waits: ReadonlyMap<string, WaitNote>;
   /** Say a thread waits on someone other than the person, or with null that it no longer does. */
   setWait: (threadId: string, wait: WaitNote | null) => Promise<void>;
+  /** Thread id to the person's note that they keep it. */
+  keeps: ReadonlyMap<string, KeepNote>;
+  /** Keep a thread on the Kept shelf, or with null take it off. */
+  setKeep: (threadId: string, keep: KeepNote | null) => Promise<void>;
   error: string | null;
   reload: () => void;
   /** Record the reply the person has seen, or forget it with null. */
@@ -65,6 +70,7 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
   const [seen, setSeenMap] = useState<ReadonlyMap<string, Seen>>(new Map());
   const [projects, setProjects] = useState<ReadonlyMap<string, ProjectMark>>(new Map());
   const [waits, setWaits] = useState<ReadonlyMap<string, WaitNote>>(new Map());
+  const [keeps, setKeeps] = useState<ReadonlyMap<string, KeepNote>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const ids = useRef(threadIds);
   ids.current = threadIds;
@@ -76,8 +82,9 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     if (wanted === null) return;
     const seq = ++request.current;
     rpc.call("notes_list", { threadIds: [...wanted] }).then(
-      ({ parks, archives: archived, dismissals: dismissed, nexts: next, todos: todo, seen: saw, projects: marked, waits: waiting }) => {
+      ({ parks, archives: archived, dismissals: dismissed, nexts: next, todos: todo, seen: saw, projects: marked, waits: waiting, keeps: keeping }) => {
         if (seq !== request.current) return;
+        setKeeps(new Map(Object.entries(keeping)));
         setWaits(new Map(Object.entries(waiting)));
         setProjects(new Map(Object.entries(marked)));
         setNexts(new Map(Object.entries(next)));
@@ -191,6 +198,30 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     [rpc, reload],
   );
 
+  const setKeep = useCallback(
+    async (threadId: string, keep: KeepNote | null) => {
+      await rpc.call("keep_set", { threadId, keep });
+      request.current += 1;
+      setKeeps((current) => {
+        const next = new Map(current);
+        if (keep === null) next.delete(threadId);
+        else next.set(threadId, keep);
+        return next;
+      });
+      // A thread is on one shelf at a time: keeping takes it off Parked.
+      if (keep !== null) {
+        setNotes((current) => {
+          if (!current?.has(threadId)) return current;
+          const next = new Map(current);
+          next.delete(threadId);
+          return next;
+        });
+      }
+      reload();
+    },
+    [rpc, reload],
+  );
+
   const changeTodo = useCallback(
     async (threadId: string, itemId: string, change: "remove" | "up" | "down") => {
       await rpc.call("todo_change", { threadId, itemId, change });
@@ -207,5 +238,5 @@ export function useParks(threadIds: readonly string[] | null, signer: Signer): P
     [rpc, reload],
   );
 
-  return { notes, archives, dismissals, nexts, todos, seen, projects, setProject, waits, setWait, error, reload, set, setArchive, setDismissal, setSeen, changeTodo, archive };
+  return { notes, archives, dismissals, nexts, todos, seen, projects, setProject, waits, setWait, keeps, setKeep, error, reload, set, setArchive, setDismissal, setSeen, changeTodo, archive };
 }

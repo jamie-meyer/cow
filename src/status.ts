@@ -4,10 +4,10 @@
 import { dueText } from "./park.ts";
 import { type LineState, STATE_LABEL, waitingSince } from "./state.ts";
 import { formatAge } from "./text.ts";
-import { type Line, type Overview, ROLLUP_ORDER } from "./tree.ts";
+import { type Line, type Overview, ROLLUP_ORDER, leftBehind, unread } from "./tree.ts";
 
 /** How many lines of each section are given; the rest are counted. */
-export const STATUS_LIMITS = { threads: 80, parked: 30, done: 20, queue: 20, text: 140 } as const;
+export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, queue: 20, text: 140 } as const;
 
 export interface StatusLine {
   id: string;
@@ -36,12 +36,15 @@ export interface StatusLine {
   queue: number | null;
   /** The names of the capabilities that apply to it; absent when none was looked up. */
   capabilities?: string[];
+  /** For a line to settle: whether a reply in it has not been seen, and what archiving it would leave behind. */
+  unread?: boolean;
+  leftBehind?: string[];
 }
 
 /** The same report with each line saying which capabilities its thread holds. */
 export function withCapabilities<T extends StatusReport>(report: T, held: ReadonlyMap<string, readonly string[]>): T {
   const named = <L extends StatusLine>(line: L): L => ({ ...line, capabilities: [...(held.get(line.id) ?? [])] });
-  return { ...report, main: named(report.main), queue: report.queue.map(named), threads: report.threads.map(named), parked: report.parked.map(named), done: report.done.map(named) };
+  return { ...report, main: named(report.main), queue: report.queue.map(named), threads: report.threads.map(named), parked: report.parked.map(named), settle: report.settle.map(named), kept: report.kept.map(named), archived: report.archived.map(named) };
 }
 
 export interface StatusReport {
@@ -50,9 +53,14 @@ export interface StatusReport {
   queue: (StatusLine & { waiting: string })[];
   threads: StatusLine[];
   parked: StatusLine[];
-  done: StatusLine[];
+  /** Finished and not archived, each needing the user's decision: unread first, then oldest first. */
+  settle: StatusLine[];
+  /** Kept around on purpose by the user, newest kept first. They ask for nothing. */
+  kept: StatusLine[];
+  /** Archived in the last 2 days, with their reasons. */
+  archived: StatusLine[];
   /** Lines left out to keep the answer bounded, by section. */
-  omitted: { threads: number; parked: number; done: number; queue: number; olderDone: number };
+  omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; queue: number };
   /** True when bb has more threads than cow reads. */
   truncated: boolean;
 }
@@ -95,6 +103,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
   }
   const lines = (from: readonly Line[], limit: number) =>
     from.slice(0, limit).map((line) => toStatusLine(line, now, todos.get(line.thread.id)));
+  const omitted = (from: readonly Line[], limit: number) => Math.max(0, from.length - limit);
   return {
     main: { ...toStatusLine(main, now, todos.get(main.thread.id)), project: true },
     queue: overview.queue.slice(0, STATUS_LIMITS.queue).map((line) => {
@@ -107,13 +116,23 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
     }),
     threads: lines(overview.lines, STATUS_LIMITS.threads),
     parked: lines(overview.parked, STATUS_LIMITS.parked),
-    done: lines(overview.done, STATUS_LIMITS.done),
+    settle: overview.settle.slice(0, STATUS_LIMITS.settle).map((line) => ({
+      ...toStatusLine(line, now),
+      // How long since it finished, whatever under it finished last.
+      inStateMs: Math.max(0, now - line.finishedAt),
+      inState: formatAge(Math.max(0, now - line.finishedAt)),
+      unread: unread(line),
+      leftBehind: leftBehind(line),
+    })),
+    kept: lines(overview.kept, STATUS_LIMITS.kept),
+    archived: lines(overview.archived, STATUS_LIMITS.archived),
     omitted: {
-      threads: Math.max(0, overview.lines.length - STATUS_LIMITS.threads),
-      parked: Math.max(0, overview.parked.length - STATUS_LIMITS.parked),
-      done: Math.max(0, overview.done.length - STATUS_LIMITS.done),
-      queue: Math.max(0, overview.queue.length - STATUS_LIMITS.queue),
-      olderDone: overview.olderDone,
+      threads: omitted(overview.lines, STATUS_LIMITS.threads),
+      parked: omitted(overview.parked, STATUS_LIMITS.parked),
+      settle: omitted(overview.settle, STATUS_LIMITS.settle),
+      kept: omitted(overview.kept, STATUS_LIMITS.kept),
+      archived: omitted(overview.archived, STATUS_LIMITS.archived),
+      queue: omitted(overview.queue, STATUS_LIMITS.queue),
     },
     truncated,
   };
@@ -131,8 +150,10 @@ function row(line: StatusLine, indent: boolean): string[] {
   const under = line.under
     ? `  [under it: ${Object.entries(line.under).map(([state, count]) => `${count} ${state}`).join(", ")}]`
     : "";
+  const unreadMark = line.unread ? " [unread]" : "";
+  const behind = line.leftBehind && line.leftBehind.length > 0 ? `  [archiving leaves: ${line.leftBehind.join(", ")}]` : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}  ${line.doing}${nextOf(line)}${under}${holds(line)}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${holds(line)}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }
@@ -159,13 +180,15 @@ export function statusText(report: StatusReport): string {
   out.push(...more(omitted.threads), "", `Parked (${report.parked.length + omitted.parked})`);
   if (report.parked.length === 0) out.push("    nothing");
   for (const line of report.parked) out.push(...row(line, false));
-  out.push(
-    ...more(omitted.parked),
-    "",
-    `Done in the last 2 days (${report.done.length + omitted.done}${omitted.olderDone > 0 ? `; ${omitted.olderDone} older, not listed` : ""})`,
-  );
-  for (const line of report.done) out.push(...row(line, false));
-  out.push(...more(omitted.done));
+  out.push(...more(omitted.parked), "", `To settle: finished, not archived, each for the user to decide (${report.settle.length + omitted.settle}; unread first, then oldest first)`);
+  if (report.settle.length === 0) out.push("    nothing");
+  for (const line of report.settle) out.push(...row(line, false));
+  out.push(...more(omitted.settle), "", `Kept: around on purpose, asking for nothing (${report.kept.length + omitted.kept})`);
+  if (report.kept.length === 0) out.push("    nothing");
+  for (const line of report.kept) out.push(...row(line, false));
+  out.push(...more(omitted.kept), "", `Archived in the last 2 days (${report.archived.length + omitted.archived})`);
+  for (const line of report.archived) out.push(...row(line, false));
+  out.push(...more(omitted.archived));
   if (report.truncated) out.push("", "bb has more threads than cow reads; some may be missing.");
   return `${out.join("\n")}\n`;
 }

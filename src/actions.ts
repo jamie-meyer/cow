@@ -14,6 +14,8 @@ import {
   type ArchiveNote,
   DISMISS_KEY,
   type Dismissal,
+  KEEP_KEY,
+  type KeepNote,
   NEXT_KEY,
   NOTES_CHANGED,
   type NextNote,
@@ -28,6 +30,7 @@ import {
   type WaitNote,
   archiveNoteSchema,
   dismissalSchema,
+  keepNoteSchema,
   nextNoteSchema,
   parkRecordSchema,
   projectMarkSchema,
@@ -73,6 +76,8 @@ export interface Notes {
   projects: Record<string, ProjectMark>;
   /** The threads that said they wait on someone other than the person. */
   waits: Record<string, WaitNote>;
+  /** The threads the person keeps on the Kept shelf. */
+  keeps: Record<string, KeepNote>;
 }
 
 /** A change to a thread's list of work not started. */
@@ -99,6 +104,8 @@ export interface Actions {
   setProject(threadId: string, project: ProjectMark | null): Promise<void>;
   /** Say a thread waits on someone other than the person, or with null that it no longer does. */
   setWait(threadId: string, wait: WaitNote | null): Promise<void>;
+  /** Keep a thread on the Kept shelf, or with null take it off. Keeping it takes it off the Parked shelf. */
+  setKeep(threadId: string, keep: KeepNote | null): Promise<void>;
   /** The same as the CLI sets it: `callerId` may set it only on itself and what is under it. */
   waitChecked(args: { callerId: string | null; threadId: string; wait: { on: string; for: string | null; remind: string } | null }): Promise<{ title: string; wait: WaitNote | null }>;
   /** The mark as the CLI sets it: `callerId` may mark only itself and what is under it. */
@@ -135,7 +142,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
-    const found: Notes = { parks: {}, archives: {}, dismissals: {}, nexts: {}, todos: {}, seen: {}, projects: {}, waits: {} };
+    const found: Notes = { parks: {}, archives: {}, dismissals: {}, nexts: {}, todos: {}, seen: {}, projects: {}, waits: {}, keeps: {} };
     for (let offset = 0; offset < threadIds.length; offset += METADATA_PAGE) {
       const page = await bb.sdk.threads.experimental_listPluginMetadata({
         threadIds: threadIds.slice(offset, offset + METADATA_PAGE),
@@ -153,6 +160,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         if (project.success) found.projects[threadId] = project.data;
         const wait = waitNoteSchema.safeParse(metadata[WAIT_KEY]);
         if (wait.success) found.waits[threadId] = wait.data;
+        const keep = keepNoteSchema.safeParse(metadata[KEEP_KEY]);
+        if (keep.success) found.keeps[threadId] = keep.data;
         const todo = todoListSchema.safeParse(metadata[TODO_KEY]);
         if (todo.success && todo.data.length > 0) found.todos[threadId] = todo.data;
       }
@@ -169,14 +178,16 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     return found;
   };
 
-  const setNote = async (threadId: string, key: string, value: ParkRecord | ArchiveNote | Dismissal | NextNote | ProjectMark | TodoItem[] | WaitNote | null, alsoRemove: readonly string[] = []) => {
+  const setNote = async (threadId: string, key: string, value: ParkRecord | ArchiveNote | Dismissal | NextNote | ProjectMark | TodoItem[] | WaitNote | KeepNote | null, alsoRemove: readonly string[] = []) => {
     await bb.sdk.threads.updatePluginMetadata(
       value === null ? { threadId, remove: [key, ...alsoRemove] } : { threadId, set: { [key]: value }, ...(alsoRemove.length > 0 ? { remove: [...alsoRemove] } : {}) },
     );
     bb.realtime.publish(NOTES_CHANGED, {});
   };
-  // Parking a thread ends its wait on someone else: the person has set it aside.
-  const setPark = (threadId: string, park: ParkRecord | null) => setNote(threadId, PARK_KEY, park, park === null ? [] : [WAIT_KEY]);
+  // Parking a thread ends its wait on someone else: the person has set it
+  // aside. A thread is on one shelf at a time, so parking takes it off Kept.
+  const setPark = (threadId: string, park: ParkRecord | null) => setNote(threadId, PARK_KEY, park, park === null ? [] : [WAIT_KEY, KEEP_KEY]);
+  const setKeep = (threadId: string, keep: KeepNote | null) => setNote(threadId, KEEP_KEY, keep, keep === null ? [] : [PARK_KEY]);
   const setWait = (threadId: string, wait: WaitNote | null) => setNote(threadId, WAIT_KEY, wait);
   const setArchiveNote = (threadId: string, note: ArchiveNote | null) => setNote(threadId, ARCHIVE_KEY, note);
   const setDismissal = (threadId: string, dismissal: Dismissal | null) => setNote(threadId, DISMISS_KEY, dismissal);
@@ -188,7 +199,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     await bb.storage.kv.delete(SEEN_PREFIX + threadId);
     // bb drops a deleted thread's metadata with it; where it has not, cow's keys are taken off.
     await bb.sdk.threads
-      .updatePluginMetadata({ threadId, remove: [PARK_KEY, ARCHIVE_KEY, DISMISS_KEY, NEXT_KEY, TODO_KEY, PROJECT_KEY, WAIT_KEY] })
+      .updatePluginMetadata({ threadId, remove: [PARK_KEY, ARCHIVE_KEY, DISMISS_KEY, NEXT_KEY, TODO_KEY, PROJECT_KEY, WAIT_KEY, KEEP_KEY] })
       .catch(() => undefined);
     bb.realtime.publish(NOTES_CHANGED, {});
   };
@@ -257,8 +268,10 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     // nothing to stop, which is not a reason to keep it.
     if (dropped) await bb.sdk.threads.stop({ threadId }).catch(() => undefined);
     await bb.sdk.threads.archive({ threadId });
-    // An archived thread waits on nobody; unarchived, it starts without the note.
-    if ((await notes([threadId])).waits[threadId]) await setWait(threadId, null);
+    // An archived thread waits on nobody and is kept by nobody; unarchived, it starts without either note.
+    const after = await notes([threadId]);
+    if (after.waits[threadId]) await setWait(threadId, null);
+    if (after.keeps[threadId]) await setKeep(threadId, null);
   };
 
   /** Activity for these threads, a few at a time. A thread whose read fails is derived without it. */
@@ -284,7 +297,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     const now = Date.now();
     const root = threads.find((thread) => thread.id === rootId);
     if (!root) throw new CowError("thread_not_found", `there is no thread ${rootId}`, "Run `bb thread list` to see thread ids.");
-    const under = descendantIds(threads, rootId, now - LIMITS.doneListedMs);
+    const under = descendantIds(threads, rootId, now - LIMITS.archivedListedMs);
     const noted = await notes([rootId, ...under]);
     // The root is Main when the overview is asked for; a thread named to a verb is read as it would be on a page.
     const projects = projectIds(threads, Object.keys(noted.projects), null);
@@ -306,6 +319,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         { head: projects.has(thread.id), project: projects.has(thread.id) || isRoot(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
         { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null, delivered: delivered.get(thread.id), outside: outside.get(thread.id) },
         noted.waits[thread.id],
+        // The page's heading is never kept, as it is never parked.
+        isRoot(thread.id) ? null : noted.keeps[thread.id],
       );
     const plans = {
       note: (id: string) => noted.nexts[id]?.text ?? null,
@@ -339,6 +354,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     archive,
     setProject,
     setWait,
+    setKeep,
     forget,
     sweep,
 

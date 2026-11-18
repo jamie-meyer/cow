@@ -86,7 +86,7 @@ if (has("plugins") && db.count("select count(*) from plugins where id = ?", id) 
 // Every table of bb 0.49 that keeps rows under a plugin's id. Removing the plugin empties the last two already.
 const TABLES = [
   ["plugin_kv", "cow's own storage: Mains, seen replies, asks, briefs, capabilities, the log, enrolled keys"],
-  ["thread_plugin_metadata", "cow's notes on threads: parked, archived why, dismissed refusals, next, not started, project, waiting on"],
+  ["thread_plugin_metadata", "cow's notes on threads: parked, archived why, dismissed refusals, next, not started, project, waiting on, kept"],
   ["plugin_settings", "settings"],
   ["plugin_schedules", "schedules"],
 ].filter(([table]) => has(table));

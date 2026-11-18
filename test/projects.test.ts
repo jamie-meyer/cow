@@ -83,7 +83,7 @@ test("an idle project keeps its place in the tree and never goes to Done; a fini
     ["kid", "done", 1],
     ["marked", "idle", 0],
   ]);
-  assert.deepEqual(overview.done.map((line) => line.thread.id), ["worker"]);
+  assert.deepEqual(overview.settle.map((line) => line.thread.id), ["worker"]);
   assert.equal(overview.main?.derived.state, "idle");
   assert.deepEqual([overview.counts.idle, overview.counts.done], [2, 2]);
   assert.deepEqual(overview.queue, []);
@@ -98,10 +98,10 @@ test("an idle project keeps its place in the tree and never goes to Done; a fini
 test("without the mark a quiet thread with nothing under it is done, as before", () => {
   const { overview } = page([]);
   assert.deepEqual(overview.rows.map((row) => row.id), ["head", "kid"]);
-  assert.deepEqual(overview.done.map((line) => line.thread.id).sort(), ["marked", "worker"]);
+  assert.deepEqual(overview.settle.map((line) => line.thread.id).sort(), ["marked", "worker"]);
 });
 
-test("a group whose members finished long ago still shows its idle head, with them counted", () => {
+test("a group whose members finished long ago still shows its idle head; they go to To settle", () => {
   const { overview } = page([], [
     thread({ id: "main", createdAt: 1 }),
     thread({ id: "head", parentThreadId: "main", createdAt: 2, latestAttentionAt: NOW - 9 * DAY }),
@@ -109,12 +109,11 @@ test("a group whose members finished long ago still shows its idle head, with th
   ]);
   assert.deepEqual(overview.rows.map((row) => row.id), ["head"]);
   const head = overview.lines[0]!;
-  assert.deepEqual([head.derived.state, head.olderUnder, head.members], ["idle", 1, 0]);
-  assert.equal(overview.olderDone, 0);
-  assert.deepEqual(overview.done, []);
+  assert.deepEqual([head.derived.state, head.rollup?.done, head.members], ["idle", 1, 0]);
+  assert.deepEqual(overview.settle.map((line) => line.thread.id), ["old"]);
 });
 
-test("archiving a project still takes it out of the tree and lists it under Done", () => {
+test("archiving a project still takes it out of the tree and lists it under Archived", () => {
   const { overview } = page(["marked"], [
     thread({ id: "main", createdAt: 1 }),
     thread({ id: "marked", parentThreadId: "main", createdAt: 2, archivedAt: NOW - HOUR }),
@@ -122,7 +121,7 @@ test("archiving a project still takes it out of the tree and lists it under Done
     thread({ id: "kid", parentThreadId: "head", createdAt: 4, archivedAt: NOW - HOUR }),
   ]);
   assert.deepEqual(overview.rows, []);
-  assert.deepEqual(overview.done.map((line) => [line.thread.id, line.derived.state]).sort(), [["head", "done"], ["marked", "done"]]);
+  assert.deepEqual(overview.archived.map((line) => [line.thread.id, line.derived.state]).sort(), [["head", "done"], ["marked", "done"]]);
 });
 
 test("an idle project can be archived and parked; it cannot be answered or stopped", () => {

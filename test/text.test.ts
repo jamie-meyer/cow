@@ -5,6 +5,9 @@ import { describeItem, firstLine, formatAge } from "../src/text.ts";
 test("firstLine skips blank and rule lines and strips markdown", () => {
   assert.equal(firstLine("\n\n---\n## **Done**: `x` works\nmore"), "Done: x works");
   assert.equal(firstLine("- first bullet"), "first bullet");
+  // Underscores inside a word are part of it; at its edges they are emphasis.
+  assert.equal(firstLine("asked thr_x about snake_case_name"), "asked thr_x about snake_case_name");
+  assert.equal(firstLine("_quiet_ and __loud__ words"), "quiet and loud words");
   assert.equal(firstLine(""), "");
   assert.equal(firstLine(null), "");
   assert.equal(firstLine("x".repeat(400)).length, 160);

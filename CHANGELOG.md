@@ -4,6 +4,50 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.3
+
+Finished threads used to pile up: once read, a worker moved to Done and,
+after two days, was only counted. Replies nobody had read sat in the queue
+for weeks. This release gives each finished thread a place to be settled,
+and a quiet shelf for the ones you mean to keep.
+
+- **Done is now To settle.** Every finished thread that is not archived is
+  listed there, however long ago it finished: nothing is hidden by age, and
+  "N older, not listed" is gone. Each one waits for one decision of yours:
+  `e` archives it with a reason, `p` parks it, `z` keeps it, `Enter` and `i`
+  carry on with it. Lines with a reply you have not seen come first, marked
+  unread, then the oldest. A line's age turns amber after 3 days and red
+  after 7, and the heading's count takes the colour of its oldest line, but
+  age never puts anything in your queue. Each line says what archiving it
+  would leave behind (a reply you have not seen, an open ask, a brief not
+  read). The section folds with `h` and `l` on its heading, and the window
+  remembers. What you archive is listed under **Archived** for 2 days.
+  A finished member of a group stays in its group for 2 days, then moves to
+  To settle instead of being only counted.
+- **A job's report no longer enters your queue.** A reply at the end of a
+  turn you did not start (a worker's final report, a turn another agent
+  started) goes to To settle, marked unread. A reply to a message of yours
+  still waits for you in the queue, as do Main's, a project's, asks,
+  questions, permission requests, refusals, failures and disputed briefs.
+  cow tells your turns from others' by bb's record of who sent each prompt.
+  A reply you have not read no longer turns "stuck" after a week: the
+  thread is at rest.
+- **Keep: a quiet shelf.** `z` on a line that is not running keeps it, with
+  a few words or none. It goes to the **Kept** section, folded by default,
+  never coloured, never in the queue, with no reminder of any kind: for a
+  thread you are thinking in, or an idea you may come back to in months.
+  Only what truly needs you shows through, as on a parked line: its open
+  ask. It comes off the shelf by itself when it starts a turn, as when you
+  type to it; `z` takes it off too, and `u` takes back either. `/` finds kept
+  lines while the section is folded, and `bb cow status` lists them under
+  their own heading. There is no command for agents to keep a thread.
+- **Thread ids keep their underscores.** A line that quoted `thr_x` showed
+  `thrx`; emphasis is still stripped.
+
+`bb cow status --json` now has `settle`, `kept` and `archived` in place of
+`done`, and its `omitted` counts follow. After updating, reload any cow page
+that was open. The new note is one more key in cow's notes on a thread.
+
 ## 0.2.2
 
 Three things from using cow every day.

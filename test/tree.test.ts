@@ -39,7 +39,7 @@ test("a line keeps its place when its state changes", () => {
   assert.deepEqual(ids(build(after).lines), ids(build(before).lines));
 });
 
-test("finished threads move to Done, newest first; older ones are only counted", () => {
+test("archived threads are listed under Archived for two days, newest first, then leave the page", () => {
   const overview = build([
     thread({ id: "main" }),
     thread({ id: "open", parentThreadId: "main", status: "active" }),
@@ -49,8 +49,8 @@ test("finished threads move to Done, newest first; older ones are only counted",
     thread({ id: "last-month", parentThreadId: "main", archivedAt: NOW - 30 * DAY }),
   ]);
   assert.deepEqual(ids(overview.lines), ["open"]);
-  assert.deepEqual(ids(overview.done), ["just-now", "yesterday"]);
-  assert.equal(overview.olderDone, 2);
+  assert.deepEqual(ids(overview.archived), ["just-now", "yesterday"]);
+  assert.deepEqual(overview.settle, []);
   assert.deepEqual(cursorOrder(overview), ["open", "just-now", "yesterday"]);
   assert.equal(overview.counts.done, 2);
   assert.equal(overview.counts.running, 1);
@@ -64,8 +64,7 @@ test("a finished thread stays in the tree while work under it is open", () => {
     thread({ id: "done-child", parentThreadId: "parent", archivedAt: NOW - HOUR, createdAt: 4 }),
   ]);
   assert.deepEqual(ids(overview.lines), ["parent", "child"]);
-  assert.deepEqual(ids(overview.done), ["done-child"]);
-  assert.equal(overview.olderDone, 0);
+  assert.deepEqual(ids(overview.archived), ["done-child"]);
 });
 
 test("the queue holds questions, failures and Main's unread reply, oldest first", () => {
@@ -81,19 +80,19 @@ test("the queue holds questions, failures and Main's unread reply, oldest first"
   const numbers = Object.fromEntries(overview.lines.map((l) => [l.thread.id, l.queueNumber]));
   assert.deepEqual(numbers, { newer: 4, running: null, failed: 2, ancient: 1 });
   assert.equal(overview.main?.queueNumber, 3);
-  assert.deepEqual(ids(overview.done), ["finished"]);
+  assert.deepEqual(ids(overview.settle), ["finished"]);
   assert.equal(overview.counts.stuck, 1);
   assert.equal(overview.counts.wants, 1);
   assert.equal(overview.counts.failed, 1);
 });
 
-test("a finished, never-opened child goes to Done and stays out of the queue", () => {
+test("a finished, never-opened child goes to To settle and stays out of the queue", () => {
   const overview = build([
     thread({ id: "main" }),
     thread({ id: "child", parentThreadId: "main", lastReadAt: null, latestAttentionAt: NOW - HOUR }),
   ]);
   assert.deepEqual(ids(overview.lines), []);
-  assert.deepEqual(ids(overview.done), ["child"]);
+  assert.deepEqual(ids(overview.settle), ["child"]);
   assert.deepEqual(overview.queue, []);
 });
 

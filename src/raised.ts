@@ -34,9 +34,11 @@ export function withRaised(report: StatusReport, openAsks: readonly Ask[], brief
     queue: report.queue.map(marked),
     threads: report.threads.map(marked),
     parked: report.parked.map(marked),
-    done: report.done.map(marked),
+    settle: report.settle.map(marked),
+    kept: report.kept.map(marked),
+    archived: report.archived.map(marked),
   };
-  const listed = new Set([out.main, ...out.threads, ...out.parked, ...out.done].map((line) => line.id));
+  const listed = new Set([out.main, ...out.threads, ...out.parked, ...out.settle, ...out.kept, ...out.archived].map((line) => line.id));
   return {
     ...out,
     asks: openAsks.filter((ask) => listed.has(ask.threadId)).sort((a, b) => a.createdAt - b.createdAt),

@@ -114,3 +114,19 @@ export const seenSchema = z.object({
   at: z.number(),
 });
 export type Seen = z.infer<typeof seenSchema>;
+
+/**
+ * cow's note that the person keeps a thread around on purpose, asking for
+ * nothing: it is on the Kept shelf, never in the queue for anything but what
+ * truly needs them, and with no reminder. It holds until the thread starts a
+ * new turn. Set only from the page.
+ */
+export const KEEP_KEY = "keep";
+export const MAX_KEEP_WORDS = 120;
+export const keepNoteSchema = z.object({
+  /** A few words of the person's, shown on its line; null when none were typed. */
+  words: z.string().min(1).max(MAX_KEEP_WORDS).nullable(),
+  /** When it was kept. */
+  at: z.number(),
+});
+export type KeepNote = z.infer<typeof keepNoteSchema>;

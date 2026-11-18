@@ -4,7 +4,7 @@
 import { isBusy } from "./state.ts";
 import type { Line } from "./tree.ts";
 
-export type Verb = "answer" | "park" | "resume" | "stop" | "archive" | "brief";
+export type Verb = "answer" | "park" | "resume" | "stop" | "archive" | "brief" | "keep";
 
 export const VERB_KEYS: Record<Verb, string> = {
   answer: "a",
@@ -13,6 +13,7 @@ export const VERB_KEYS: Record<Verb, string> = {
   stop: "x",
   archive: "e",
   brief: "b",
+  keep: "z",
 };
 
 /**
@@ -37,6 +38,12 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       return thread.hasPendingInteraction || derived.blocked ? null : "it has not asked anything";
     case "brief":
       return derived.brief ? null : "it has submitted no brief";
+    case "keep":
+      if (isMain) return "Main cannot be kept";
+      if (archived) return "it is archived";
+      // A kept line comes off the shelf by itself when a turn starts, so a running one is not kept.
+      if (derived.state !== "kept" && isBusy(thread)) return "its turn is running";
+      return null;
     case "park":
       if (isMain) return "Main cannot be parked";
       if (archived) return "it is archived";
@@ -57,8 +64,10 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       if (derived.briefWaits) return null;
       if (derived.asks) return "it has an open ask: answer it, or have it withdrawn";
       // An idle project is at rest too: archiving it is the person saying it is finished.
-      // Waiting on someone else is at rest too: archiving it ends the wait.
-      return derived.state === "done" || derived.state === "idle" || derived.state === "failed" || derived.state === "waiting" ? null : "only done, idle, waiting or failed lines can be archived";
+      // Waiting on someone else is at rest too: archiving it ends the wait. So is a kept line.
+      return derived.state === "done" || derived.state === "idle" || derived.state === "failed" || derived.state === "waiting" || derived.state === "kept"
+        ? null
+        : "only done, idle, waiting, kept or failed lines can be archived";
   }
 }
 
@@ -70,6 +79,8 @@ const INSTEAD: Record<string, { page: string; cli: string }> = {
   "it has not asked anything": { page: "I says something to it", cli: "" },
   "it has submitted no brief": { page: "its agent submits one with bb cow brief submit", cli: "" },
   "Main cannot be parked": { page: "M chooses another Main", cli: "Park the threads under it instead." },
+  "Main cannot be kept": { page: "M chooses another Main", cli: "" },
+  "its turn is running": { page: "a line is kept once its turn has ended", cli: "" },
   "it is already parked": { page: "r resumes it", cli: "`bb cow resume <thread>` takes it off the shelf; parking again is for work that has come back." },
   "it is not parked": { page: "p parks it", cli: "`bb cow park <thread> --reason <text>` parks it." },
   "it is parked: resume it, or wait until it comes back": { page: "r resumes it", cli: "" },
@@ -78,7 +89,7 @@ const INSTEAD: Record<string, { page: string; cli: string }> = {
   "it is already archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
   "threads under it are still open": { page: "archive or park those first", cli: "Archive or park those first: `bb cow status` lists them." },
   "it has an open ask: answer it, or have it withdrawn": { page: "a answers it", cli: "The user answers it on cow's page, or its thread runs `bb cow ask withdraw <id>` or `bb cow ask close <id> --answered <text>`." },
-  "only done, idle, waiting or failed lines can be archived": { page: "x stops a running turn, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
+  "only done, idle, waiting, kept or failed lines can be archived": { page: "x stops a running turn, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
 };
 
 /** What to do instead of a refused verb, in the page's keys; empty when the reason already says. */
@@ -95,5 +106,6 @@ export function verbLabel(verb: Verb, line: Line | null): string {
   const returned = line?.derived.park?.due != null;
   if (verb === "park") return returned ? "keep parked" : "park";
   if (verb === "stop") return returned ? "drop" : "stop";
+  if (verb === "keep") return line?.derived.state === "kept" ? "unkeep" : "keep";
   return verb;
 }

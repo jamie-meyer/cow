@@ -13,8 +13,10 @@ const EMPTY_REPORT: StatusReport = {
   queue: [],
   threads: [],
   parked: [],
-  done: [],
-  omitted: { threads: 0, parked: 0, done: 0, queue: 0, olderDone: 0 },
+  settle: [],
+  kept: [],
+  archived: [],
+  omitted: { threads: 0, parked: 0, settle: 0, kept: 0, archived: 0, queue: 0 },
   truncated: false,
 };
 
@@ -180,8 +182,8 @@ test("status gives one line per thread, the queue, and the shelf", () => {
   ]);
   assert.deepEqual(report.queue.map((line) => [line.id, line.doing, line.waiting]), [["a1", "Which colour?", "5m"]]);
   assert.deepEqual(report.parked.map((line) => [line.id, line.doing, line.inState]), [["c", "waiting on a review", "15d"]]);
-  assert.deepEqual(report.done.map((line) => line.id), ["b"]);
-  assert.equal(report.omitted.olderDone, 1);
+  // Nothing finished is hidden by age: oldest first, with how long since it finished.
+  assert.deepEqual(report.settle.map((line) => [line.id, line.inState]), [["old", "9d"], ["b", "2h"]]);
 
   const text = statusText(report);
   assert.match(text, /^Main: main \(main\) · /);
@@ -189,7 +191,9 @@ test("status gives one line per thread, the queue, and the shelf", () => {
   assert.match(text, /running\s+1h  build the thing \(a\) \[project\]  \$ npm test → finishes its turn/);
   assert.match(text, / 1  wants\s+5m    a1 \(a1\)  Which colour\?/);
   assert.match(text, /Parked \(1\)\n    parked\s+15d  c \(c\)  waiting on a review/);
-  assert.match(text, /Done in the last 2 days \(1; 1 older, not listed\)/);
+  assert.match(text, /To settle: finished, not archived, each for the user to decide \(2; unread first, then oldest first\)\n    done      9d  old \(old\)  finished\n    done      2h  b \(b\)  all done/);
+  assert.match(text, /Kept: around on purpose, asking for nothing \(0\)\n    nothing/);
+  assert.doesNotMatch(text, /older, not listed/);
 });
 
 test("status is bounded: long lists are cut and counted, long text is shortened", () => {

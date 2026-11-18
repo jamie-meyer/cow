@@ -8,7 +8,9 @@ export function firstLine(text: string | null | undefined): string {
   for (const raw of text.split("\n")) {
     const line = raw
       .replace(/^\s*(#{1,6}|[-*+>]|\d+[.)])\s+/, "")
-      .replace(/[*_`]{1,3}/g, "")
+      .replace(/[*`]{1,3}/g, "")
+      // Underscores mark emphasis only at a word's edge: thr_x and snake_case keep theirs.
+      .replace(/(?<![\p{L}\p{N}])_{1,3}|_{1,3}(?![\p{L}\p{N}])/gu, "")
       .replace(/\s+/g, " ")
       .trim();
     if (line && !/^[-=|:\s]+$/.test(line)) {

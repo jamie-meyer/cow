@@ -6,7 +6,8 @@ import { type Replies, unreadReply } from "./attention.ts";
 import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
-import type { ParkRecord, WaitNote } from "./shared.ts";
+import { keepHolds } from "./keep.ts";
+import type { KeepNote, ParkRecord, WaitNote } from "./shared.ts";
 import { firstLine, formatAge } from "./text.ts";
 import { waitDue, waitDueText, waitHolds, waitNext, waitText } from "./waiting.ts";
 
@@ -24,10 +25,18 @@ export const LIMITS = {
    * with no event it is taken to be at rest all the same.
    */
   settlingMs: MINUTE,
-  /** A question or unread reply waiting on the user this long reads as stuck. */
+  /**
+   * A question, permission request or ask waiting on the user this long
+   * reads as stuck. A reply never does: it is at rest, and reading it is
+   * the person's to do when they choose.
+   */
   waitingOnUserMs: 7 * DAY,
-  /** Done lines are listed for this long, then only counted. */
-  doneListedMs: 2 * DAY,
+  /** An archived line is listed for this long, with its reason, then leaves the page. */
+  archivedListedMs: 2 * DAY,
+  /** A line to settle reads warm once it has waited this long since it finished... */
+  settleWarmMs: 3 * DAY,
+  /** ...and red after this long. Age never puts it in the queue. */
+  settleOldMs: 7 * DAY,
   /** Parked work with no pick-up date asks this often whether it is still wanted. */
   parkCheckMs: 28 * DAY,
 } as const;
@@ -44,6 +53,8 @@ export type LineState =
   | "waiting"
   | "stuck"
   | "parked"
+  /** Kept by the person with z: around on purpose, asking for nothing. */
+  | "kept"
   | "failed"
   /** A project with nothing to say: not running, nothing waiting, no reply unseen. */
   | "idle"
@@ -56,6 +67,7 @@ export const STATE_LABEL: Record<LineState, string> = {
   waiting: "waiting",
   stuck: "stuck",
   parked: "parked",
+  kept: "kept",
   failed: "failed",
   idle: "idle",
   done: "done",
@@ -171,6 +183,14 @@ export interface Derived {
   outside?: readonly OutsideFlag[];
   /** Set when the line reads waiting on someone else: the note, and whether its reminder has arrived. */
   wait?: { note: WaitNote; due: boolean };
+  /** Set when the person keeps it on the Kept shelf. */
+  keep?: { note: KeepNote };
+  /**
+   * Set on a done line whose newest reply the person has not seen: where
+   * that reply is in the event log, which is what "seen" records. It does
+   * not put the line in the queue; the line is listed first to settle.
+   */
+  unseen?: { seq: number };
 }
 
 const BUSY = new Set(["active", "starting", "stopping", "pending"]);
@@ -214,6 +234,11 @@ export function isSettling(thread: ThreadFacts, activity: Activity | undefined, 
 /** Whether a state is one of rest: nothing runs and nothing waits. */
 export function atRest(state: LineState): boolean {
   return state === "done" || state === "idle";
+}
+
+/** Whether a state is one of a line set aside by the person, off the tree: parked or kept. */
+export function setAside(state: LineState): boolean {
+  return state === "parked" || state === "kept";
 }
 
 /**
@@ -260,13 +285,17 @@ export function derive(
   raised?: Raised | null,
   /** Its note that it waits on someone other than the person, if any. */
   wait?: WaitNote | null,
+  /** The person's note that they keep it around, if any. */
+  keep?: KeepNote | null,
 ): Derived {
   const asks = thread.archivedAt === null ? (raised?.asks ?? []) : [];
   const spokeAt = activity?.replies?.personSpokeAt ?? null;
   const messaged = asks.filter((ask) => messagedSince(ask, spokeAt, raised?.delivered)).map((ask) => ask.id);
   const outside = thread.archivedAt === null ? (raised?.outside ?? []) : [];
   const holding = wait && waitHolds(wait, activity?.startedAt) ? wait : null;
-  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged, outside, holding);
+  // Kept until it starts a new turn; a turn in progress is one.
+  const kept = keep && keepHolds(keep, activity?.startedAt) && !isBusy(thread) ? keep : null;
+  const derived = deriveLine(thread, activity, now, park, archivedWhy, dismissedThroughSeq, attention, asks, raised?.brief ?? null, messaged, outside, holding, kept);
   return {
     ...derived,
     ...(outside.length > 0 ? { outside } : {}),
@@ -290,6 +319,7 @@ function deriveLine(
   messaged: readonly string[],
   outside: readonly OutsideFlag[],
   wait: WaitNote | null,
+  keep: KeepNote | null,
 ): Derived {
   // The line shows its oldest ask: whether that one may be answered already is what it says.
   const firstMessaged = asks.length > 0 && messaged.includes(asks[0]!.id);
@@ -323,6 +353,21 @@ function deriveLine(
     };
   }
 
+  // Keeping is the person's choice too, and quieter: nothing reminds them
+  // of it. What truly needs them shows through, as on a parked line: its
+  // open ask.
+  if (keep) {
+    const asking = asks.length > 0;
+    return {
+      state: "kept",
+      since: keep.at,
+      doing: asking ? `${keep.words ?? "kept"} · ${asksText(asks, firstMessaged)}` : (keep.words ?? (said || "kept")),
+      next: asking ? "answer it: press a" : "",
+      waitingOnYou: asking,
+      keep: { note: keep },
+    };
+  }
+
   if (thread.status === "error" || (!isBusy(thread) && activity?.turn?.failed)) {
     return {
       state: "failed",
@@ -336,9 +381,10 @@ function deriveLine(
   const asked = thread.hasPendingInteraction;
   // Between bb saying a turn is over and its end being read, the line stays as it was.
   const busy = isBusy(thread) || isSettling(thread, activity, now);
-  // A thread with a parent: a worker that finished a turn its parent started
-  // reported to that parent and is done. One the person talks to replied to
-  // them, and waits until they have seen it.
+  // A thread with a parent: a worker whose newest turn the person did not
+  // start (its job's report, a turn an agent started) is done, to settle.
+  // One the person talks to replied to them, and waits until they have
+  // seen it; so does any thread whose newest turn the person started.
   const reply =
     !asked && attention && thread.parentThreadId !== null && !busy
       ? unreadReply(activity?.replies, attention.head, attention.seenSeq)
@@ -416,7 +462,8 @@ function deriveLine(
         ? `replied to you: ${said || "it finished its turn"}`
         : said || "finished";
     const mine = reply ? { reply: { seq: reply.seq } } : {};
-    if (now - since > LIMITS.waitingOnUserMs) {
+    // Only a question or a request reads stuck: a reply is at rest, and is read when the person chooses.
+    if (asked && now - since > LIMITS.waitingOnUserMs) {
       return {
         state: "stuck",
         since,
@@ -480,10 +527,24 @@ function deriveLine(
 
   // A project is never done: with nothing to say it is idle, in its place, for as long as it is quiet.
   if (attention?.project) return { state: "idle", since: settled, doing: said || "quiet", next: "", waitingOnYou: false };
-  return { state: "done", since: settled, doing: said || "finished", next: "", waitingOnYou: false };
+  // A finished thread whose newest reply the person has not seen is listed
+  // first to settle, marked unread; it waits on them for nothing.
+  const unseen = attention && thread.parentThreadId !== null ? unreadReply(activity?.replies, true, attention.seenSeq) : null;
+  return {
+    state: "done",
+    since: settled,
+    doing: said || "finished",
+    next: "",
+    waitingOnYou: false,
+    ...(unseen ? { unseen: { seq: unseen.seq } } : {}),
+  };
 }
 
-/** Whether a done line is recent enough to list rather than only count. */
-export function isRecentDone(derived: Derived, now: number): boolean {
-  return derived.state === "done" && now - derived.since <= LIMITS.doneListedMs;
+/** How a line to settle reads by how long it has waited since it finished: plain, warm, then red. */
+export type Heat = "plain" | "warm" | "old";
+
+export function settleHeat(finishedAt: number, now: number): Heat {
+  const age = now - finishedAt;
+  if (age >= LIMITS.settleOldMs) return "old";
+  return age >= LIMITS.settleWarmMs ? "warm" : "plain";
 }

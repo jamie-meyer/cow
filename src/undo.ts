@@ -1,13 +1,16 @@
 // What the page can take back: the last park, resume, archive, dismissal,
-// mark as seen, marking as a project, or saying it waits on someone else.
+// mark as seen, marking as a project, saying it waits on someone else, or
+// keeping it.
 // Stopping a turn, answering a question and sending a message reach the
 // agent, so they are never recorded.
 
-import type { Dismissal, ParkRecord, ProjectMark, Seen, WaitNote } from "./shared.ts";
+import type { Dismissal, KeepNote, ParkRecord, ProjectMark, Seen, WaitNote } from "./shared.ts";
 
 export type UndoEntry =
-  /** Parked, or kept parked with a new pick-up; `before` is the note it replaced. */
-  | { kind: "park"; threadId: string; title: string; before: ParkRecord | null }
+  /** Parked, or kept parked with a new pick-up; `before` is the note it replaced, and `kept` the keep note parking took off. */
+  | { kind: "park"; threadId: string; title: string; before: ParkRecord | null; kept?: KeepNote | null }
+  /** Kept, or taken off the Kept shelf; `before` is the keep note it had, and `parked` the park note keeping took off. */
+  | { kind: "keep"; threadId: string; title: string; before: KeepNote | null; parked: ParkRecord | null }
   | { kind: "resume"; threadId: string; title: string; record: ParkRecord }
   /** Dismissed its refused permissions; `before` is the dismissal it replaced. */
   | { kind: "dismiss"; threadId: string; title: string; before: Dismissal | null }
@@ -47,6 +50,10 @@ export function undoText(entry: UndoEntry): string {
         : `undo keeping ${name} parked: it asks again`;
     case "resume":
       return `undo resuming ${name}: it goes back on the shelf`;
+    case "keep":
+      return entry.before === null
+        ? `undo keeping ${name}: it reads as it did before${entry.parked ? ", parked" : ""}`
+        : `undo taking ${name} off Kept: it is kept again`;
     case "seen":
       return `undo marking ${name} as seen: its reply waits on you again`;
     case "project":
@@ -66,7 +73,8 @@ export function undoText(entry: UndoEntry): string {
 
 /** The few words the verb bar shows beside `u`. */
 export function undoShort(entry: UndoEntry): string {
-  if (entry.kind === "park") return entry.before === null ? "undo park" : "undo keep";
+  if (entry.kind === "park") return entry.before === null ? "undo park" : "undo keep parked";
+  if (entry.kind === "keep") return entry.before === null ? "undo keep" : "undo unkeep";
   if (entry.kind === "resume") return "undo resume";
   if (entry.kind === "dismiss") return "undo dismiss";
   if (entry.kind === "seen") return "undo seen";

@@ -24,7 +24,7 @@ test("the keys that were there keep their meaning", () => {
   assert.deepEqual(read("f"), { kind: "hints" });
   assert.deepEqual(read("x"), { kind: "verb", verb: "stop" });
   assert.deepEqual(read("3"), { kind: "ask-number", number: 3 });
-  assert.equal(read("z"), null);
+  assert.deepEqual(read("z"), { kind: "verb", verb: "keep" });
   const reader = new KeyReader();
   assert.equal(reader.read("g", false, 5000), null);
   assert.deepEqual(reader.read("g", false, 5100), { kind: "top" });

@@ -33,7 +33,7 @@ const build = (threads: readonly ThreadFacts[], { parks = {}, notes = {}, todos 
   });
 const rowIds = (overview: Overview, folded?: ReadonlySet<string>) => visibleRows(overview, folded).map((row) => row.id);
 const line = (overview: Overview, id: string) => {
-  const found = [...overview.lines, ...overview.parked, ...overview.done].find((other) => other.thread.id === id);
+  const found = [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived].find((other) => other.thread.id === id);
   assert.ok(found, `no line ${id}`);
   return found;
 };
@@ -66,40 +66,40 @@ test("a thread with threads under it heads a group, and groups nest", () => {
 
 test("a head's rollup counts everything under it by state, at every depth", () => {
   const overview = build(three());
-  assert.deepEqual(line(overview, "proj").rollup, { wants: 1, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 0, failed: 1, idle: 0, done: 1 });
-  assert.deepEqual(line(overview, "w2").rollup, { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 1, idle: 0, done: 0 });
+  assert.deepEqual(line(overview, "proj").rollup, { wants: 1, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 0, kept: 0, failed: 1, idle: 0, done: 1 });
+  assert.deepEqual(line(overview, "w2").rollup, { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, kept: 0, failed: 1, idle: 0, done: 0 });
   assert.equal(line(overview, "w1").rollup, null);
   assert.equal(overview.main?.rollup, null);
 });
 
-test("a finished member stays in its open group; a finished line under Main goes to Done", () => {
+test("a finished member stays in its open group; a finished line under Main goes to To settle", () => {
   const overview = build(three());
   assert.ok(overview.lines.some((l) => l.thread.id === "w3"));
-  assert.deepEqual(overview.done.map((l) => l.thread.id), ["old"]);
+  assert.deepEqual(overview.settle.map((l) => l.thread.id), ["old"]);
   // The head is finished itself, and still stays for its open members.
   assert.equal(line(overview, "proj").derived.state, "done");
   assert.equal(line(overview, "proj").openUnder, 3);
 });
 
-test("a member that finished more than two days ago is counted on its head, not listed", () => {
+test("a member that finished more than two days ago leaves its group for To settle, still counted on its head", () => {
   const threads = three().map((t) => (t.id === "w3" ? { ...t, latestAttentionAt: NOW - 5 * DAY } : t));
   const overview = build(threads);
   assert.deepEqual(rowIds(overview), ["proj", "w1", "w2", "w2a", "solo"]);
-  assert.equal(line(overview, "proj").olderUnder, 1);
   assert.equal(line(overview, "proj").rollup?.done, 1);
-  assert.equal(overview.olderDone, 0);
+  assert.ok(overview.settle.some((l) => l.thread.id === "w3"));
   assert.ok(overview.unarchived.includes("w3"));
 });
 
-test("an archived member leaves its group for Done, with its reason's line", () => {
+test("an archived member leaves its group for Archived, with its reason's line", () => {
   const threads = three().map((t) => (t.id === "w3" ? { ...t, archivedAt: NOW - HOUR } : t));
   const overview = build(threads);
   assert.deepEqual(rowIds(overview), ["proj", "w1", "w2", "w2a", "solo"]);
-  assert.deepEqual(overview.done.map((l) => l.thread.id).sort(), ["old", "w3"]);
+  assert.deepEqual(overview.archived.map((l) => l.thread.id), ["w3"]);
+  assert.deepEqual(overview.settle.map((l) => l.thread.id), ["old"]);
   assert.equal(line(overview, "proj").rollup?.done, 0);
 });
 
-test("a group that is finished whole is one line under Done, counting what is under it", () => {
+test("a group that is finished whole is one line to settle, counting what is under it, however old", () => {
   const threads = [
     thread({ id: "main", createdAt: 1 }),
     thread({ id: "proj", parentThreadId: "main", latestAttentionAt: NOW - 5 * DAY, createdAt: 2 }),
@@ -110,9 +110,8 @@ test("a group that is finished whole is one line under Done, counting what is un
   ];
   const overview = build(threads);
   assert.deepEqual(overview.rows, []);
-  // Listed for as long as anything in it finished recently.
-  assert.deepEqual(overview.done.map((l) => [l.thread.id, l.under]), [["proj", 2]]);
-  assert.equal(overview.olderDone, 1);
+  // Nothing is hidden by age: oldest first, as long ago as the newest thing in each finished.
+  assert.deepEqual(overview.settle.map((l) => [l.thread.id, l.under, l.finishedAt]), [["stale", 1, NOW - 3 * DAY], ["proj", 2, NOW - HOUR]]);
   assert.deepEqual(overview.unarchived.sort(), ["proj", "stale", "stale-kid", "w1", "w2"]);
 });
 
@@ -129,7 +128,8 @@ test("a note of what is next, or work not started, keeps a finished line in the 
     todos: { listed: [todo("a")], archived: [todo("z")] },
   });
   assert.deepEqual(rowIds(overview), ["noted", "listed", todoRowId("listed", "a")]);
-  assert.deepEqual(overview.done.map((l) => l.thread.id).sort(), ["archived", "plain"]);
+  assert.deepEqual(overview.settle.map((l) => l.thread.id), ["plain"]);
+  assert.deepEqual(overview.archived.map((l) => l.thread.id), ["archived"]);
   assert.equal(line(overview, "noted").note, "start the second half on Monday");
   assert.equal(line(overview, "archived").note, null);
   // Work not started makes its thread a group.
@@ -151,7 +151,7 @@ test("what a thread has not started is listed in its group after its members, in
   // They are rows, not threads: no state is counted for them and nothing is read for them.
   assert.equal(overview.lines.length, 6);
   assert.ok(!overview.unarchived.some((id) => id.startsWith("todo:")));
-  assert.deepEqual(cursorOrder(overview).slice(-2), ["todo:main:m", "old"]);
+  assert.deepEqual(cursorOrder(overview).slice(-3), ["todo:main:m", "section:settle", "old"]);
 });
 
 test("folding hides a group's members from the page and from the cursor, nested groups too", () => {
@@ -159,7 +159,7 @@ test("folding hides a group's members from the page and from the cursor, nested 
   assert.deepEqual(rowIds(overview, new Set(["proj"])), ["proj", "solo"]);
   assert.deepEqual(rowIds(overview, new Set(["w2"])), ["proj", "w1", "w2", "w3", "todo:proj:a", "solo"]);
   assert.deepEqual(rowIds(overview, new Set(["w2", "proj"])), ["proj", "solo"]);
-  assert.deepEqual(cursorOrder(overview, new Set(["proj"])), ["proj", "solo", "old"]);
+  assert.deepEqual(cursorOrder(overview, new Set(["proj"])), ["proj", "solo", "section:settle", "old"]);
   // A fold recorded on a line that heads nothing hides nothing.
   assert.deepEqual(rowIds(overview, new Set(["w1", "solo"])), rowIds(overview));
 });
@@ -218,7 +218,7 @@ test("parking a head takes its members to the shelf and counts them; parking a m
   assert.deepEqual(rowIds(member), ["proj", "w1", "w3", "solo"]);
   assert.deepEqual(member.parked.map((l) => [l.thread.id, l.under]), [["w2", 1]]);
   // The head counts the parked member once, and nothing under it.
-  assert.deepEqual(line(member, "proj").rollup, { wants: 0, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 1, failed: 0, idle: 0, done: 1 });
+  assert.deepEqual(line(member, "proj").rollup, { wants: 0, blocked: 0, running: 1, waiting: 0, stuck: 0, parked: 1, kept: 0, failed: 0, idle: 0, done: 1 });
 });
 
 test("when a row leaves, the cursor skips what leaves with it and what is folded away", () => {
@@ -268,12 +268,12 @@ test("the next move is the thread's own note, except where only the user can act
 test("a reply waiting on the user still shows the thread's own note of what is next", () => {
   const t = thread({ id: "proj", parentThreadId: "main" });
   const derived = derive(t, { lastEventAt: null, turn: null, latestStep: "", output: "Done.", ask: null, refusals: [], replies: { last: { seq: 9, at: NOW - HOUR }, toPerson: null, personSpokeSeq: null } }, NOW, null, null, null, { head: true, seenSeq: null });
-  const base = build([thread({ id: "main" }), t]).done[0]!;
+  const base = build([thread({ id: "main" }), t]).settle[0]!;
   assert.deepEqual(nextMove({ ...base, derived, note: "next: the second half" }), { text: "next: the second half", own: true });
   assert.deepEqual(nextMove({ ...base, derived, note: null }), { text: "read it: Enter, or Space once seen", own: false });
 });
 
-test("a thread archived out of a group keeps its own line under Done when the group finishes too", () => {
+test("a thread archived out of a group keeps its own line under Archived when the group finishes too", () => {
   const threads = [
     thread({ id: "main", createdAt: 1 }),
     thread({ id: "proj", parentThreadId: "main", createdAt: 2 }),
@@ -285,6 +285,7 @@ test("a thread archived out of a group keeps its own line under Done when the gr
   const overview = build(threads);
   assert.deepEqual(overview.rows, []);
   // The group as one line counting what is still unarchived under it; the archived thread apart, with what went with it.
-  assert.deepEqual(overview.done.map((l) => [l.thread.id, l.under]).sort(), [["gone", 0], ["proj", 1]]);
-  assert.equal(overview.olderDone, 1);
+  assert.deepEqual(overview.settle.map((l) => [l.thread.id, l.under]), [["proj", 1]]);
+  // Archived nine days ago, long-gone has left the page.
+  assert.deepEqual(overview.archived.map((l) => [l.thread.id, l.under]), [["gone", 0]]);
 });

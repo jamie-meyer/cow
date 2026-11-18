@@ -88,7 +88,7 @@ const briefText = (record: BriefRecord): string =>
 /** The overview with asks and briefs on it. */
 export async function attend(attention: Attention, report: StatusReport, projectId: string | null) {
   const open = await attention.asks.list();
-  const ids = [report.main, ...report.threads, ...report.parked, ...report.done].map((line) => line.id);
+  const ids = [report.main, ...report.threads, ...report.parked, ...report.settle, ...report.kept, ...report.archived].map((line) => line.id);
   return withRaised(report, open, await attention.briefs.marks(ids), projectId);
 }
 

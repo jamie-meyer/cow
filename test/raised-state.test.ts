@@ -166,7 +166,7 @@ test("asking threads and waiting briefs are in the queue, the parked one include
   assert.deepEqual(overview.queue.map((line) => line.thread.id), ["shelved", "briefer", "asker"]);
   // The asker and the briefer stay in the tree; the clean one is finished.
   assert.deepEqual(overview.lines.map((line) => line.thread.id), ["asker", "briefer"]);
-  assert.deepEqual(overview.done.map((line) => line.thread.id), ["clean"]);
+  assert.deepEqual(overview.settle.map((line) => line.thread.id), ["clean"]);
 });
 
 test("a answers an ask wherever its thread is; b needs a brief; an open ask holds off archiving", () => {
@@ -174,7 +174,7 @@ test("a answers an ask wherever its thread is; b needs a brief; an open ask hold
   const park = { at: NOW - DAY, reason: "later", pickUp: { kind: "none" as const }, checkedAt: NOW - DAY };
   const lineWith = (r: Raised, parked = false) => {
     const overview = buildOverview(threads, "main", (t) => derive(t, activity(), NOW, parked && t.id === "t" ? park : null, null, null, null, t.id === "t" ? r : null), NOW);
-    const line = [...overview.lines, ...overview.parked, ...overview.done].find((entry) => entry.thread.id === "t");
+    const line = [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived].find((entry) => entry.thread.id === "t");
     assert.ok(line);
     return line;
   };

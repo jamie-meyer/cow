@@ -31,7 +31,8 @@ import {
 import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
 import { BLOCKED_OPTIONS, type Refusal, chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
-import type { ParkRecord, WaitNote } from "./shared.ts";
+import { keepNote } from "./keep.ts";
+import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type WaitNote } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
@@ -56,6 +57,8 @@ type Modal =
   | { kind: "wait-remind"; threadId: string; on: string; needed: string | null; keep: boolean; value: string; error: string }
   /** Its reminder came: keep waiting, or it is back with the person. */
   | { kind: "wait-due"; threadId: string; note: WaitNote }
+  /** Keeping it: a few words of the person's, or none. */
+  | { kind: "keep-words"; threadId: string; value: string; error: string }
   | ({ kind: "answer" } & AnswerState)
   | ({ kind: "ask" } & AskState)
   | ({ kind: "blocked" } & BlockedState);
@@ -84,11 +87,13 @@ export interface VerbHost {
   /** The unarchived threads under a thread, which bb archives along with it. */
   under: (id: string) => string[];
   setCursor: (id: string | null) => void;
+  /** Put the cursor on a line that is about to move, and unfold what holds it once it has: undo's cursor. */
+  follow: (id: string) => void;
   say: (message: string) => void;
   openChat: (id: string) => void;
   focusOverview: () => void;
   /** Keep a line the person marked seen in its place on this page; `false` lets it go where its state puts it. */
-  keep: (id: string, kept: boolean) => void;
+  stay: (id: string, stays: boolean) => void;
 }
 
 export interface Verbs {
@@ -146,7 +151,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // A text prompt holds the keyboard for as long as it is open.
   const promptKey =
-    modal?.kind === "park-reason" || modal?.kind === "park-pickup" || modal?.kind === "archive-reason" || modal?.kind === "wait-on" || modal?.kind === "wait-remind"
+    modal?.kind === "park-reason" || modal?.kind === "park-pickup" || modal?.kind === "archive-reason" || modal?.kind === "wait-on" || modal?.kind === "wait-remind" || modal?.kind === "keep-words"
       ? modal.kind
       : null;
   useEffect(() => {
@@ -210,13 +215,15 @@ export function useVerbs(host: VerbHost): Verbs {
   const park = async (line: Line, record: ParkRecord, stopFirst: boolean) => {
     const id = line.thread.id;
     const before = line.derived.park?.record ?? null;
+    // Parking a kept line takes it off Kept: undo puts it back.
+    const kept = line.derived.keep?.note ?? null;
     // Kept parked, the line stays on the shelf; newly parked, it leaves the tree.
     const next = before === null ? afterLeaving(id) : id;
     try {
       if (stopFirst) await sdk.threads.stop({ threadId: id });
       await parks.set(id, record);
-      host.keep(id, false);
-      remember({ kind: "park", threadId: id, title: line.thread.title, before });
+      host.stay(id, false);
+      remember({ kind: "park", threadId: id, title: line.thread.title, before, kept });
       setCursor(next);
       close(before === null ? "parked: it is on the shelf" : "kept parked");
     } catch (cause) {
@@ -270,7 +277,7 @@ export function useVerbs(host: VerbHost): Verbs {
     try {
       // The backend records the reason, stops a dropped thread, and archives it.
       await parks.archive(id, reason, dropped, clockNow());
-      host.keep(id, false);
+      host.stay(id, false);
       remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under, reason });
       setCursor(next);
       close(`${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`);
@@ -281,8 +288,14 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const takeBack = async (entry: UndoEntry) => {
     try {
-      if (entry.kind === "park") await parks.set(entry.threadId, entry.before);
-      else if (entry.kind === "resume") await parks.set(entry.threadId, entry.record);
+      if (entry.kind === "park") {
+        await parks.set(entry.threadId, entry.before);
+        if (entry.kept) await parks.setKeep(entry.threadId, entry.kept);
+      } else if (entry.kind === "keep") {
+        await parks.setKeep(entry.threadId, entry.before);
+        // Keeping took it off Parked; taking the keep back puts it there again.
+        if (entry.before === null && entry.parked) await parks.set(entry.threadId, entry.parked);
+      } else if (entry.kind === "resume") await parks.set(entry.threadId, entry.record);
       else if (entry.kind === "dismiss") await parks.setDismissal(entry.threadId, entry.before);
       else if (entry.kind === "seen") await parks.setSeen(entry.threadId, entry.before);
       else if (entry.kind === "project") await parks.setProject(entry.threadId, entry.before);
@@ -291,7 +304,8 @@ export function useVerbs(host: VerbHost): Verbs {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
       setUndo((entries) => entries.filter((other) => other !== entry));
-      setCursor(entry.threadId);
+      // Where the line was is not where it goes: what to unfold is decided once it is there.
+      host.follow(entry.threadId);
       close("undone");
     } catch (cause) {
       close(`not undone: ${errorText(cause)}`);
@@ -299,7 +313,8 @@ export function useVerbs(host: VerbHost): Verbs {
   };
 
   const markSeen = (line: Line, asked: boolean) => {
-    const reply = line.derived.reply;
+    // A reply waiting on the person, or the unseen reply of a line to settle.
+    const reply = line.derived.reply ?? line.derived.unseen;
     const id = line.thread.id;
     if (!reply) {
       if (asked) say(line.derived.waitingOnYou ? "it waits on more than a reply: Space only marks a reply as seen" : "it has no reply waiting on you");
@@ -308,8 +323,9 @@ export function useVerbs(host: VerbHost): Verbs {
     const before = parks.seen.get(id) ?? null;
     parks.setSeen(id, { seq: reply.seq, at: clockNow() }).then(
       () => {
-        // Seen, it stays where it is on this page, whatever its state now says.
-        host.keep(id, true);
+        // Seen, a line that waited on the person stays where it is on this
+        // page, whatever its state now says. One already to settle is in its place.
+        if (line.derived.reply) host.stay(id, true);
         if (!asked) return;
         remember({ kind: "seen", threadId: id, title: line.thread.title, before });
         say("marked as seen: u takes it back");
@@ -357,6 +373,7 @@ export function useVerbs(host: VerbHost): Verbs {
     const id = line.thread.id;
     if (line.thread.archivedAt !== null) return say("it is archived, so it waits on nobody");
     if (line.derived.state === "parked") return say("it is parked: r resumes it first");
+    if (line.derived.state === "kept") return say("it is kept, and reminds you of nothing: z takes it off Kept first");
     say("");
     const wait = line.derived.wait;
     if (wait) {
@@ -370,6 +387,23 @@ export function useVerbs(host: VerbHost): Verbs {
       });
     }
     setModal({ kind: "wait-on", threadId: id, value: "", error: "" });
+  };
+
+  /** Keep it with this note, or with null take it off Kept. Either way it leaves its place. */
+  const keep = (line: Line, note: KeepNote | null) => {
+    const id = line.thread.id;
+    const before = line.derived.keep?.note ?? null;
+    const parked = note !== null ? (line.derived.park?.record ?? null) : null;
+    const next = afterLeaving(id);
+    parks.setKeep(id, note).then(
+      () => {
+        host.stay(id, false);
+        remember({ kind: "keep", threadId: id, title: line.thread.title, before, parked });
+        setCursor(next);
+        close(note === null ? "off Kept: it reads as any other line · u takes it back" : "kept: it asks for nothing, and comes off Kept when it starts a turn · u takes it back");
+      },
+      (cause: unknown) => close(`${note === null ? "still kept" : "not kept"}: ${errorText(cause)}`),
+    );
   };
 
   const removeTodo = (row: TodoRow) => {
@@ -637,6 +671,10 @@ export function useVerbs(host: VerbHost): Verbs {
         );
       case "resume":
         return void resume(line);
+      case "keep":
+        // On a kept line z takes it off the shelf at once: u takes that back.
+        if (line.derived.state === "kept") return keep(line, null);
+        return setModal({ kind: "keep-words", threadId, value: "", error: "" });
       case "stop":
         return setModal(
           returned
@@ -664,7 +702,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen, project mark or wait can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen, project mark, wait or keep can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -937,6 +975,39 @@ export function useVerbs(host: VerbHost): Verbs {
           onChange={(value) => setModal({ ...modal, value, error: "" })}
           onSubmit={submitWait}
           onCancel={() => close(modal.kind === "wait-remind" && modal.keep ? "still waiting; it stays in your queue" : "not changed")}
+        />
+      ),
+      card: null,
+    };
+  }
+  if (modal.kind === "keep-words") {
+    const submitKeep = () => {
+      if (target === null) return;
+      const checked = keepNote(modal.value, clockNow());
+      if (!checked.ok) return setModal({ ...modal, error: checked.error });
+      keep(target, checked.note);
+    };
+    return {
+      mode: "KEEP",
+      ...common,
+      onKey: () => promptRef.current?.focus(),
+      footer: (
+        <TextPrompt
+          mode="KEEP"
+          name="keep-words"
+          label={
+            <>
+              keep · <b>{title}</b> · a few words, if you like:
+            </>
+          }
+          placeholder={`nothing is needed; under ${MAX_KEEP_WORDS} characters`}
+          value={modal.value}
+          error={modal.error}
+          go="keep it, with no reminder; u takes it back"
+          inputRef={promptRef}
+          onChange={(value) => setModal({ ...modal, value, error: "" })}
+          onSubmit={submitKeep}
+          onCancel={() => close("not kept")}
         />
       ),
       card: null,

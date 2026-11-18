@@ -1,15 +1,16 @@
-// The overview's shape: Main's descendants as nested groups, the parked ones
-// on their shelf, the finished ones apart, and the queue of what is waiting
-// on the user.
+// The overview's shape: Main's descendants as nested groups, the parked and
+// kept ones on their shelves, the finished ones to settle, and the queue of
+// what is waiting on the user.
 //
 // Any thread with threads under it is a group: its line is the head, and the
 // lines under it are its members. Where a finished line goes:
-// - a member that finished stays in its group for as long as the group is
-//   open, listed for the usual two days and counted after that;
+// - a member that finished stays in its group, dimmed, for two days, then
+//   goes to To settle like any other;
 // - a line directly under Main that is finished, with everything under it
-//   finished too, goes to Done as one line, however many threads it holds;
+//   finished too, goes to To settle as one line, however many threads it
+//   holds. Nothing there is hidden by age: each one needs a decision;
 // - an archived line always leaves its place: the user put it away. It is
-//   listed under Done with its reason.
+//   listed under Archived with its reason for two days.
 // A line with a note of what is next, or with work listed as not started,
 // is not finished, whatever its last turn says.
 //
@@ -18,7 +19,7 @@
 // nothing to say it is idle, and keeps its place.
 
 import type { TodoItem } from "./shared.ts";
-import { type Derived, LIMITS, type LineState, type ThreadFacts, atRest, waitingSince } from "./state.ts";
+import { type Derived, type Heat, LIMITS, type LineState, type ThreadFacts, atRest, setAside, settleHeat, waitingSince } from "./state.ts";
 
 export type Rollup = Record<LineState, number>;
 
@@ -31,22 +32,24 @@ export interface Line {
   parentId: string | null;
   /** 1-based place in the queue, or null when it is not waiting on the user. */
   queueNumber: number | null;
-  /** For a parked or finished line outside the tree: how many threads went with it. */
+  /** For a parked, kept or finished line outside the tree: how many threads went with it. */
   under: number;
+  /** When the newest thing in it finished: for a line to settle, how long it has waited. */
+  finishedAt: number;
   /** For a line in the tree: how many lines under it are not finished. */
   openUnder: number;
   /** For a line in the tree: how many rows are listed under it. Any makes it a group head. */
   members: number;
   /** Every unarchived thread under it, by state, listed or not. Null when there are none. */
   rollup: Rollup | null;
-  /** Finished threads under it that are too old to list. */
-  olderUnder: number;
+  /** For a line to settle: threads under it whose newest reply the person has not seen. */
+  unseenUnder: number;
   /** The thread's own words on what happens next, if it left any. */
   note: string | null;
   /** It is a project: "marked" by the person or an agent, or a "head" with threads under it. Null for any other line. */
   project: "marked" | "head" | null;
-  /** The person marked it seen on this page, and it is kept in its place instead of moving to Done. */
-  kept?: true;
+  /** The person marked it seen on this page, and it stays in its place instead of moving to To settle. */
+  stays?: true;
 }
 
 /** Work a thread has listed as not started yet: a row in its group. */
@@ -72,10 +75,10 @@ export interface Plans {
   marked?(threadId: string): boolean;
   /**
    * Whether the person marked it seen on this page: a line that would leave
-   * for Done stays where it was until the page is loaded again. The page's
-   * own rule; what is stored, and `bb cow status`, know nothing of it.
+   * for To settle stays where it was until the page is loaded again. The
+   * page's own rule; what is stored, and `bb cow status`, know nothing of it.
    */
-  kept?(threadId: string): boolean;
+  stays?(threadId: string): boolean;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -90,12 +93,18 @@ export interface Overview {
   lines: Line[];
   /** Parked by the user, longest parked first. Their descendants are only counted. */
   parked: Line[];
-  /** Finished within the listing window, newest first: lines under Main with everything under them, and archived ones. */
-  done: Line[];
-  /** Every thread under Main that is not archived, listed or not, except under a parked one. */
+  /**
+   * Finished and not archived, each needing a decision: lines under Main
+   * with everything under them, and members finished long ago. Those with
+   * a reply the person has not seen first, then oldest first. None hidden.
+   */
+  settle: Line[];
+  /** Kept by the person with z, newest kept first. Their descendants are only counted. */
+  kept: Line[];
+  /** Archived in the last two days, newest first, with their reasons. */
+  archived: Line[];
+  /** Every thread under Main that is not archived, listed or not, except under a parked or kept one. */
   unarchived: string[];
-  /** Finished longer ago: counted, not listed. */
-  olderDone: number;
   /** Main and the lines that are waiting on the user, oldest first. */
   queue: Line[];
   /** How many listed lines are in each state. */
@@ -103,11 +112,11 @@ export interface Overview {
 }
 
 function emptyCounts(): Record<LineState, number> {
-  return { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, failed: 0, idle: 0, done: 0 };
+  return { wants: 0, blocked: 0, running: 0, waiting: 0, stuck: 0, parked: 0, kept: 0, failed: 0, idle: 0, done: 0 };
 }
 
 /** The states a rollup shows, in the order it shows them. */
-export const ROLLUP_ORDER: readonly LineState[] = ["wants", "blocked", "stuck", "failed", "running", "waiting", "parked", "idle", "done"];
+export const ROLLUP_ORDER: readonly LineState[] = ["wants", "blocked", "stuck", "failed", "running", "waiting", "parked", "kept", "idle", "done"];
 
 function childrenOf(threads: readonly ThreadFacts[]): Map<string, ThreadFacts[]> {
   const children = new Map<string, ThreadFacts[]>();
@@ -167,9 +176,10 @@ export function buildOverview(
     rows: [],
     lines: [],
     parked: [],
-    done: [],
+    settle: [],
+    kept: [],
+    archived: [],
     unarchived: [],
-    olderDone: 0,
     queue: [],
     counts: emptyCounts(),
   };
@@ -187,33 +197,36 @@ export function buildOverview(
     /** When the newest thing in it finished. */
     latest: number;
     rollup: Rollup;
-    /** Open only because the person marked it seen here: see `Plans.kept`. */
-    kept?: true;
+    /** Open only because the person marked it seen here: see `Plans.stays`. */
+    stays?: true;
+    /** Itself and the threads under it whose newest reply the person has not seen. */
+    unseen: number;
   }
   const seen = new Set<string>([mainId]);
   const read = (thread: ThreadFacts): Node => {
     seen.add(thread.id);
     const derived = deriveThread(thread);
-    const node: Node = { thread, derived, kids: [], under: 0, open: false, latest: derived.since, rollup: emptyCounts() };
+    const node: Node = { thread, derived, kids: [], under: 0, open: false, latest: derived.since, rollup: emptyCounts(), unseen: derived.unseen ? 1 : 0 };
     const archived = thread.archivedAt !== null;
-    const parked = derived.state === "parked";
+    const parked = setAside(derived.state);
     const planned = !archived && !parked && (plans.note(thread.id) !== null || plans.todos(thread.id).length > 0);
     node.open = !parked && (derived.state !== "done" || planned);
-    if (!node.open && !archived && !parked && plans.kept?.(thread.id)) {
+    if (!node.open && !archived && !parked && plans.stays?.(thread.id)) {
       node.open = true;
-      node.kept = true;
+      node.stays = true;
     }
     for (const child of children.get(thread.id) ?? []) {
       if (seen.has(child.id)) continue;
       const kid = read(child);
       node.kids.push(kid);
       node.under += (child.archivedAt === null ? 1 : 0) + kid.under;
-      // What is under a parked thread is set aside with it, and says nothing here.
+      // What is under a parked or kept thread is set aside with it, and says nothing here.
       if (parked) continue;
       if (kid.open) node.open = true;
       node.latest = Math.max(node.latest, kid.latest);
+      if (!setAside(kid.derived.state)) node.unseen += kid.unseen;
       if (child.archivedAt === null) node.rollup[kid.derived.state] += 1;
-      if (kid.derived.state !== "parked") {
+      if (!setAside(kid.derived.state)) {
         for (const state of ROLLUP_ORDER) node.rollup[state] += kid.rollup[state];
       }
     }
@@ -227,41 +240,52 @@ export function buildOverview(
     parentId,
     queueNumber: null,
     under: 0,
+    finishedAt: node.latest,
     openUnder: 0,
     members: 0,
-    rollup: node.under > 0 && node.derived.state !== "parked" ? node.rollup : null,
-    olderUnder: 0,
+    rollup: node.under > 0 && !setAside(node.derived.state) ? node.rollup : null,
+    unseenUnder: 0,
     note: node.thread.archivedAt === null ? plans.note(node.thread.id) : null,
     project: plans.marked?.(node.thread.id) ? "marked" : node.kids.length > 0 ? "head" : null,
-    ...(node.kept ? { kept: true as const } : {}),
+    ...(node.stays ? { stays: true as const } : {}),
   });
-  const recent = (node: Node): boolean => now - node.latest <= LIMITS.doneListedMs;
+  /** A finished member stays in its open group this long; an archived line is listed this long. */
+  const recent = (node: Node): boolean => now - node.latest <= LIMITS.archivedListedMs;
   const noteUnarchived = (node: Node) => {
     if (node.thread.archivedAt === null) overview.unarchived.push(node.thread.id);
   };
   /**
    * A finished subtree leaves the tree whole. What still has a place of its
-   * own inside it: a parked thread, on the shelf; and a thread the user
-   * archived out of a group that was not archived, under Done with its reason.
+   * own inside it: a parked or kept thread, on its shelf; and a thread the
+   * user archived out of a group that was not archived, under Archived with
+   * its reason.
    */
   const putAway = (node: Node): void => {
     noteUnarchived(node);
     for (const kid of node.kids) {
-      if (kid.derived.state === "parked") shelve(kid);
-      else if (kid.thread.archivedAt !== null && node.thread.archivedAt === null) fileDone(kid);
+      if (setAside(kid.derived.state)) shelve(kid);
+      else if (kid.thread.archivedAt !== null && node.thread.archivedAt === null) file(kid);
       else putAway(kid);
     }
   };
-  /** One line under Done for the whole of a finished subtree, or only a count when it is old. */
-  const fileDone = (node: Node): void => {
+  /**
+   * One line for the whole of a finished subtree: to settle when it is not
+   * archived, however old; under Archived for two days when it is.
+   */
+  const file = (node: Node): void => {
     putAway(node);
-    if (recent(node)) overview.done.push({ ...lineFor(node, 0, null), under: node.under });
-    else overview.olderDone += 1;
+    if (node.thread.archivedAt === null) {
+      overview.settle.push({ ...lineFor(node, 0, null), under: node.under, unseenUnder: node.unseen - (node.derived.unseen ? 1 : 0) });
+    } else if (recent(node)) {
+      overview.archived.push({ ...lineFor(node, 0, null), under: node.under });
+    }
   };
-  /** Everything under a parked thread is set aside with it. */
+  /** Everything under a parked or kept thread is set aside with it. */
   const shelve = (node: Node): void => {
     noteUnarchived(node);
-    overview.parked.push({ ...lineFor(node, 0, null), under: node.under });
+    const line = { ...lineFor(node, 0, null), under: node.under };
+    if (node.derived.state === "kept") overview.kept.push(line);
+    else overview.parked.push(line);
   };
   /** Appends the todo rows of `ownerId` at `depth`; returns how many. */
   const todoRows = (ownerId: string, depth: number): number => {
@@ -277,15 +301,10 @@ export function buildOverview(
    */
   const place = (node: Node, depth: number, within: Line | null): void => {
     const { thread, derived } = node;
-    if (derived.state === "parked") return shelve(node);
-    if (!node.open && (within === null || thread.archivedAt !== null)) {
-      return fileDone(node);
-    }
-    if (!node.open && !recent(node)) {
-      // A member that finished long ago is counted on its group, not listed.
-      putAway(node);
-      if (within) within.olderUnder += 1 + node.under;
-      return;
+    if (setAside(derived.state)) return shelve(node);
+    // Directly under Main, archived, or a member that finished long ago: it leaves the tree.
+    if (!node.open && (within === null || thread.archivedAt !== null || !recent(node))) {
+      return file(node);
     }
     noteUnarchived(node);
     const line = lineFor(node, depth, within?.thread.id ?? null);
@@ -312,13 +331,16 @@ export function buildOverview(
     node.kids.forEach(stamp);
   };
   stamp(main);
-  overview.done.sort(
+  overview.archived.sort(
     (a, b) => (latest.get(b.thread.id) ?? 0) - (latest.get(a.thread.id) ?? 0) || a.thread.id.localeCompare(b.thread.id),
   );
+  overview.settle.sort(settleOrder);
   overview.parked.sort((a, b) => a.derived.since - b.derived.since || a.thread.id.localeCompare(b.thread.id));
+  overview.kept.sort((a, b) => b.derived.since - a.derived.since || a.thread.id.localeCompare(b.thread.id));
   // Main has no line of its own, but its unread reply or question is still
-  // the user's to deal with, so it takes a place in the queue.
-  overview.queue = [mainLine, ...overview.lines, ...overview.parked]
+  // the user's to deal with, so it takes a place in the queue. A kept line
+  // is there only for what truly needs the person: its open ask.
+  overview.queue = [mainLine, ...overview.lines, ...overview.parked, ...overview.kept]
     .filter((line) => line.derived.waitingOnYou)
     .sort(
       (a, b) =>
@@ -350,7 +372,7 @@ export function lineOf(
   return {
     ...under.main,
     openUnder: under.lines.filter((line) => !atRest(line.derived.state)).length,
-    under: under.main.derived.state === "parked" ? under.unarchived.length : 0,
+    under: setAside(under.main.derived.state) ? under.unarchived.length : 0,
   };
 }
 
@@ -387,9 +409,73 @@ export function descendantIds(
   return ids.sort();
 }
 
-/** Every thread line on the page, top to bottom: the tree, the shelf, then Done. */
+/** Whether a line to settle has something unseen: its own reply, or one under it. */
+export const unread = (line: Line): boolean => line.derived.unseen !== undefined || line.unseenUnder > 0;
+
+/** The order of To settle: what has a reply unseen first, then oldest first. */
+export function settleOrder(a: Line, b: Line): number {
+  return Number(unread(b)) - Number(unread(a)) || a.finishedAt - b.finishedAt || a.thread.id.localeCompare(b.thread.id);
+}
+
+/** The heading of To settle takes the colour of its oldest line, folded or not; plain when it is empty. */
+export function settleHeadingHeat(settle: readonly Line[], now: number): Heat {
+  if (settle.length === 0) return "plain";
+  return settleHeat(Math.min(...settle.map((line) => line.finishedAt)), now);
+}
+
+/**
+ * What archiving a line to settle would leave behind, from what cow already
+ * knows: a reply not seen, here or under it; its own words on what is next
+ * or work not started; an open ask; a brief not read. Empty when nothing.
+ */
+export function leftBehind(line: Line, todos = 0): string[] {
+  const { derived } = line;
+  const out: string[] = [];
+  if (derived.unseen) out.push("a reply you have not seen");
+  if (line.unseenUnder > 0) out.push(`${line.unseenUnder} unseen ${line.unseenUnder === 1 ? "reply" : "replies"} under it`);
+  if (line.note !== null) out.push("a next note");
+  if (todos > 0) out.push(`${todos} not started`);
+  if (derived.asks && derived.asks.length > 0) out.push(derived.asks.length === 1 ? "an open ask" : `${derived.asks.length} open asks`);
+  if (derived.brief && !derived.brief.read) out.push("a brief not read");
+  return out;
+}
+
+/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, then Archived. */
 export function listed(overview: Overview): Line[] {
-  return [...overview.lines, ...overview.parked, ...overview.done];
+  return [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived];
+}
+
+/** The two sections that fold, as the cursor names their headings. */
+export const SETTLE_SECTION = "section:settle";
+export const KEPT_SECTION = "section:kept";
+export type Section = typeof SETTLE_SECTION | typeof KEPT_SECTION;
+export const isSection = (id: string | null): id is Section => id === SETTLE_SECTION || id === KEPT_SECTION;
+
+/**
+ * Whether a section is folded. To settle starts open and Kept starts
+ * folded, so the fold state records the one that is not as it starts:
+ * To settle's id when it is folded, Kept's when it is open.
+ */
+export function sectionFolded(folded: ReadonlySet<string>, section: Section): boolean {
+  return section === KEPT_SECTION ? !folded.has(section) : folded.has(section);
+}
+
+function withSection(folded: ReadonlySet<string>, section: Section, fold: boolean): ReadonlySet<string> {
+  if (sectionFolded(folded, section) === fold) return folded;
+  const next = new Set(folded);
+  if (next.has(section)) next.delete(section);
+  else next.add(section);
+  return next;
+}
+
+/** The lines of a section. */
+const sectionLines = (overview: Overview, section: Section): Line[] => (section === SETTLE_SECTION ? overview.settle : overview.kept);
+
+/** The section the line `id` is listed in, if it is one that folds. */
+export function sectionOf(overview: Overview, id: string): Section | null {
+  if (overview.settle.some((line) => line.thread.id === id)) return SETTLE_SECTION;
+  if (overview.kept.some((line) => line.thread.id === id)) return KEPT_SECTION;
+  return null;
 }
 
 /** The tree's rows with the members of folded groups left out. */
@@ -405,12 +491,24 @@ export function visibleRows(overview: Overview, folded: ReadonlySet<string> = ne
   return rows;
 }
 
-/** The ids the cursor can rest on, top to bottom; a folded group's members are skipped. */
-export function cursorOrder(overview: Overview, folded?: ReadonlySet<string>): string[] {
+/**
+ * The ids the cursor can rest on, top to bottom; a folded group's members
+ * are skipped, and so are the lines of a folded section, whose heading is a
+ * stop of its own.
+ */
+export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = new Set()): string[] {
+  // An empty section's heading is no stop: there is nothing to fold.
+  const section = (id: Section) => {
+    const lines = sectionLines(overview, id);
+    if (lines.length === 0) return [];
+    return [id, ...(sectionFolded(folded, id) ? [] : lines.map((line) => line.thread.id))];
+  };
   return [
     ...visibleRows(overview, folded).map((row) => row.id),
     ...overview.parked.map((line) => line.thread.id),
-    ...overview.done.map((line) => line.thread.id),
+    ...section(SETTLE_SECTION),
+    ...section(KEPT_SECTION),
+    ...overview.archived.map((line) => line.thread.id),
   ];
 }
 
@@ -430,8 +528,10 @@ export function groupsAround(overview: Overview, id: string): string[] {
   return heads;
 }
 
-/** The fold state after making the row `id` visible: every group around it unfolded. */
+/** The fold state after making the row `id` visible: every group around it unfolded, or its section. */
 export function unfoldAround(overview: Overview, folded: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const section = sectionOf(overview, id);
+  if (section !== null) return withSection(folded, section, false);
   const around = groupsAround(overview, id).filter((head) => folded.has(head));
   if (around.length === 0) return folded;
   const next = new Set(folded);
@@ -453,6 +553,16 @@ export type FoldMove =
  * steps onto its first member.
  */
 export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: string | null, key: "h" | "l"): FoldMove {
+  // A section's heading folds like a group's head, and h on one of its lines goes to it.
+  if (isSection(id)) {
+    const isFolded = sectionFolded(folded, id);
+    if (key === "h") return isFolded ? { kind: "none" } : { kind: "fold", folded: withSection(folded, id, true) };
+    if (isFolded) return { kind: "fold", folded: withSection(folded, id, false) };
+    const first = sectionLines(overview, id)[0];
+    return first ? { kind: "cursor", id: first.thread.id } : { kind: "none" };
+  }
+  const section = id === null ? null : sectionOf(overview, id);
+  if (section !== null) return key === "h" ? { kind: "cursor", id: section } : { kind: "none" };
   const at = id === null ? -1 : overview.rows.findIndex((row) => row.id === id);
   const row = overview.rows[at];
   if (!row) return { kind: "none" };
@@ -474,7 +584,7 @@ export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: st
 
 /** The fold state without threads that are no longer on the page, so it cannot grow for ever. */
 export function keepFolds(overview: Overview, folded: ReadonlySet<string>): ReadonlySet<string> {
-  const known = new Set(overview.unarchived);
+  const known = new Set([...overview.unarchived, SETTLE_SECTION, KEPT_SECTION]);
   const kept = [...folded].filter((id) => known.has(id));
   return kept.length === folded.size ? folded : new Set(kept);
 }
@@ -506,7 +616,8 @@ export function afterLeaving(overview: Overview, id: string, folded?: ReadonlySe
   const order = cursorOrder(overview, folded);
   const at = order.indexOf(id);
   if (at < 0) return null;
-  const leaving = new Set([id]);
+  // It lands on a line: a section's heading is passed over.
+  const leaving = new Set<string>([id, SETTLE_SECTION, KEPT_SECTION]);
   const inTree = overview.rows.findIndex((row) => row.id === id);
   if (inTree >= 0) {
     const depth = overview.rows[inTree]!.depth;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LIMITS, derive, isRecentDone } from "../src/state.ts";
+import { LIMITS, derive, settleHeat } from "../src/state.ts";
 import { DAY, HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
 
 test("a thread with a turn in progress is running since the turn started", () => {
@@ -185,11 +185,13 @@ test("an ask ignored for longer than the limit is stuck but still waits on you",
   assert.equal(d.waitingOnYou, true);
 });
 
-test("done lines are listed for two days", () => {
-  const recent = derive(thread({ id: "a", archivedAt: NOW - DAY }), undefined, NOW);
-  const old = derive(thread({ id: "b", archivedAt: NOW - 3 * DAY }), undefined, NOW);
-  assert.equal(isRecentDone(recent, NOW), true);
-  assert.equal(isRecentDone(old, NOW), false);
+test("a line to settle reads plain, then warm after 3 days, then red after 7", () => {
+  assert.equal(settleHeat(NOW - HOUR, NOW), "plain");
+  assert.equal(settleHeat(NOW - 3 * DAY + MINUTE, NOW), "plain");
+  assert.equal(settleHeat(NOW - LIMITS.settleWarmMs, NOW), "warm");
+  assert.equal(settleHeat(NOW - 6 * DAY, NOW), "warm");
+  assert.equal(settleHeat(NOW - LIMITS.settleOldMs, NOW), "old");
+  assert.equal(settleHeat(NOW - 40 * DAY, NOW), "old");
 });
 
 test("a permission request says what it is and how to decide it", () => {

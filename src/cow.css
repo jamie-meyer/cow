@@ -1803,14 +1803,75 @@
 }
 
 /* A line marked seen here stays in its place, dimmed, until the page is loaded again. */
-.cow-ln.cow-kept {
+.cow-ln.cow-stays {
   opacity: 0.62;
 }
-.cow-ln.cow-kept.cow-cur {
+.cow-ln.cow-stays.cow-cur {
   opacity: 0.8;
 }
-.cow-keptmark {
+.cow-staysmark {
   color: var(--cow-faint);
+}
+
+/* Kept: around on purpose, asking for nothing. Never coloured. */
+.cow-s-kept,
+.cow-ln.cow-d-kept .cow-nm,
+.cow-ln.cow-d-kept .cow-wh {
+  color: var(--cow-faint);
+}
+
+/* The headings of the sections that fold: a cursor stop, like a group's head. */
+.cow-secfold {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 22px;
+  cursor: default;
+}
+.cow-secfold .cow-fold {
+  width: 10px;
+  height: 10px;
+  display: inline-flex;
+}
+.cow-secfold .cow-fold svg {
+  width: 9px;
+  height: 9px;
+}
+.cow-seccount {
+  font: 700 10.5px var(--cow-mono);
+  letter-spacing: 0;
+  color: var(--cow-muted);
+  margin-left: 6px;
+}
+
+/* To settle: shame, not nagging. The age reads plain, then warm, then red; it never enters the queue. */
+.cow-ag.cow-heat-warm,
+.cow-seccount.cow-heat-warm {
+  color: var(--cow-needs);
+}
+.cow-ag.cow-heat-old,
+.cow-seccount.cow-heat-old {
+  color: var(--cow-fail);
+}
+.cow-ag.cow-heat-old b,
+.cow-ag.cow-heat-warm b {
+  font-weight: 700;
+}
+.cow-ln.cow-unread .cow-title {
+  color: var(--cow-ink);
+}
+.cow-unreadmark {
+  color: var(--cow-unread);
+}
+.cow-behind {
+  color: var(--cow-faint);
+  font-size: inherit;
+}
+/* A long section stays smooth to scroll: rows off screen are not laid out until they come near. */
+.cow-ln[data-cow-settle],
+.cow-ln[data-cow-kept] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--cow-rh);
 }
 /* Waiting on someone else: what it waits on reads plainly, not as something to act on. */
 .cow-ln.cow-d-waiting .cow-wh {

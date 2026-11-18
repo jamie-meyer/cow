@@ -61,6 +61,8 @@
 //                       be a checkout of cow, whose files the fixture links to
 //   --only-waiting      only waiting on someone else, links to threads in the
 //                       chat, and seen lines staying in place: four fixtures
+//   --only-settle       only To settle, which replies enter the queue, and
+//                       keeping a thread: three fixtures
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -217,6 +219,8 @@ Never run anything else, and never ask again by yourself.`;
 const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader", "cmain", "chead", "ckid"];
 /** The fixtures of the waiting, thread link and seen checks: a Main of their own with two threads under it, and a thread under no Main. */
 const WAITING = ["wmain", "wkid", "wlink", "wother"];
+/** The fixtures of the To settle and Kept checks: a Main of their own, and two workers under it. */
+const SETTLING = ["smain", "sjob", "schat"];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
 From then on, when you receive a message of the form "links A B C", where A, B and C are thread ids, reply with exactly these three lines, putting each id in its place:
 - first: @thread:A
@@ -236,7 +240,7 @@ const RAISED = ["amain", "asker", "briefer"];
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -268,6 +272,9 @@ async function fixtures() {
   await make("wkid", { prompt: QUIET, parent: ids.wmain });
   await make("wlink", { prompt: LINKER, parent: ids.wmain });
   await make("wother", { prompt: QUIET });
+  await make("smain", { prompt: QUIET });
+  await make("sjob", { prompt: QUIET, parent: ids.smain });
+  await make("schat", { prompt: QUIET, parent: ids.smain });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -278,6 +285,7 @@ async function reset(ids) {
     const [thread] = await api(`/threads?threadIds=${id}&limit=1`);
     if (thread.archivedAt) await bb("thread", "unarchive", id);
     await rpc("park_set", { threadId: id, park: null });
+    await rpc("keep_set", { threadId: id, keep: null });
     await rpc("archive_note_set", { threadId: id, note: null });
     await signer.must("dismissal_set", { threadId: id, dismissal: null });
     await signer.must("seen_set", { threadId: id, seen: null });
@@ -285,7 +293,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1453,6 +1461,172 @@ async function prepareWaiting(ids) {
   }
 }
 
+async function prepareSettle(ids) {
+  for (const name of SETTLING) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  // The chat starts read; the job's report starts unread.
+  const end = (await api(`/threads/${ids.schat}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+  if (end !== undefined) await signer.must("seen_set", { threadId: ids.schat, seen: { seq: end, at: Date.now() } });
+  await signer.must("seen_set", { threadId: ids.sjob, seen: null });
+}
+
+/** To settle, which replies enter the queue, and keeping a thread. */
+async function settleChecks(page, ids, shot, chooseMain) {
+  await prepareSettle(ids);
+  // Folds belong to the window: this one starts as a new window does, Kept folded and To settle open.
+  await page.eval(`sessionStorage.removeItem("cow:folds"); true`);
+  await chooseMain(page, ids.smain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const stateOf = (id) => `(${lineEl(id)}?.dataset.cowState ?? null)`;
+  const settled = (id) => `(${lineEl(id)}?.dataset.cowSettle === "")`;
+  const unreadOf = (id) => `(${lineEl(id)}?.dataset.cowUnread === "")`;
+  const inQueue = (id) => `!!document.querySelector('[data-cow-queue="${id}"]')`;
+  const heading = (id) => `document.querySelector('[data-cow-section="${id}"]')`;
+  const countOf = (id) => `Number(${heading(id)}?.querySelector("[data-cow-section-count]")?.dataset.cowSectionCount ?? -1)`;
+  const keeps = async (id) => (await rpc("notes_list", { threadIds: [id] })).keeps[id] ?? null;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+  };
+  const selectHeading = async (id) => {
+    await page.eval(`${heading(id)}.click(); true`);
+    await sleep(200);
+  };
+  const offset = async (ms) =>
+    page.eval(`${ms === 0 ? `sessionStorage.removeItem("cow:test-clock-offset-ms")` : `sessionStorage.setItem("cow:test-clock-offset-ms", "${ms}")`};
+      window.dispatchEvent(new Event("cow:test-clock")); true`);
+  const DAY = 86_400_000;
+  const { sjob, schat } = ids;
+
+  // -- a job's report is to settle, not in the queue --
+  await page.waitFor(`${settled(sjob)} && ${settled(schat)}`, { label: "both lines to settle" });
+  check("a worker's report on its first turn is under To settle, not in the queue", (await page.eval(stateOf(sjob))) === "done" && !(await page.eval(inQueue(sjob))));
+  check("its reply not seen, it is marked unread and listed before a read one", (await page.eval(unreadOf(sjob))) && !(await page.eval(unreadOf(schat))) && (await page.eval(`${lineEl(sjob)}.compareDocumentPosition(${lineEl(schat)}) === Node.DOCUMENT_POSITION_FOLLOWING`)));
+  check("the line says what archiving it would leave behind", (await page.eval(`${lineEl(sjob)}?.querySelector("[data-cow-behind]")?.dataset.cowBehind ?? ""`)) === "a reply you have not seen");
+  check("the heading counts them", (await page.eval(countOf("section:settle"))) === 2);
+  check("no line to settle has the stuck or wants state", !(await page.eval(`[...document.querySelectorAll(".cow-main [data-cow-settle]")].some((el) => el.dataset.cowState !== "done")`)));
+  await shot("settle");
+
+  // -- the age: plain, warm, then red; never in the queue --
+  const heat = (id) => `(${lineEl(id)}?.querySelector("[data-cow-heat]")?.dataset.cowHeat ?? null)`;
+  const headHeat = `(${heading("section:settle")}?.querySelector("[data-cow-section-count]")?.dataset.cowHeat ?? null)`;
+  check("a line that finished minutes ago reads plain", (await page.eval(heat(sjob))) === "plain" && (await page.eval(headHeat)) === "plain");
+  await offset(4 * DAY);
+  await page.waitFor(`${heat(sjob)} === "warm"`, { label: "warm" });
+  check("after 3 days its age, and the heading's count, read warm", (await page.eval(headHeat)) === "warm");
+  await offset(8 * DAY);
+  await page.waitFor(`${heat(sjob)} === "old"`, { label: "red" });
+  check("after 7 days they read red, and nothing entered the queue", (await page.eval(headHeat)) === "old" && !(await page.eval(inQueue(sjob))) && !(await page.eval(inQueue(schat))));
+  await shot("settle-old");
+  await offset(0);
+
+  // -- a turn another agent started ends out of the queue; one the person started enters it --
+  await tellAs(ids.smain, schat, "again");
+  await sleep(3000);
+  await waitForThread(schat, (t) => t.status === "idle", "its report");
+  await page.waitFor(`${settled(schat)} && ${unreadOf(schat)}`, { label: "an agent's turn ended", timeout: 30_000 });
+  check("a turn another thread started ends to settle, unread, not in the queue", !(await page.eval(inQueue(schat))));
+  await tellAs(null, schat, "hello");
+  await sleep(3000);
+  await waitForThread(schat, (t) => t.status === "idle", "its reply");
+  await page.waitFor(`${stateOf(schat)} === "wants" && ${inQueue(schat)}`, { label: "the person's reply in the queue", timeout: 30_000 });
+  check("a turn the person started ends in the queue, as before", (await page.eval(`document.querySelector('[data-cow-queue="${schat}"]')?.textContent ?? ""`)).includes("replied to you"));
+  await select(schat);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(schat)} === "done" && !${inQueue(schat)}`, { label: "seen" });
+  check("Space marks it seen: out of the queue, staying where it is until reload", await page.eval(`${lineEl(schat)}?.dataset.cowStays === ""`));
+
+  // -- the section folds, and the window remembers --
+  await selectHeading("section:settle");
+  await page.key("h");
+  await page.waitFor(`${heading("section:settle")}?.dataset.cowSectionFolded === ""`, { label: "folded" });
+  check("h on the heading folds To settle: its lines are gone, its count stays", !(await page.eval(`!!${lineEl(sjob)}`)) && (await page.eval(countOf("section:settle"))) >= 1);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!${heading("section:settle")}`, { label: "the page reloaded" });
+  check("the fold outlives a reload", (await page.eval(`${heading("section:settle")}?.dataset.cowSectionFolded === ""`)) && !(await page.eval(`!!${lineEl(sjob)}`)));
+  check("after the reload the seen line is to settle, read", !(await page.eval(`!!${lineEl(schat)}`)) || (await page.eval(`!${unreadOf(schat)}`)));
+  await selectHeading("section:settle");
+  await page.key("l");
+  await page.waitFor(`!!${lineEl(sjob)}`, { label: "unfolded" });
+  check("l unfolds it", (await page.eval(settled(sjob))) && (await page.eval(settled(schat))) && !(await page.eval(unreadOf(schat))));
+
+  // -- keep: z, with a few words --
+  await select(sjob);
+  await page.key("z");
+  await page.waitFor(`${mode} === "keep"`, { label: "the keep prompt" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "keep-words"`, { label: "the keep prompt: focused" });
+  await page.type("an idea to come back to");
+  await page.key("Enter");
+  await page.waitFor(`!${lineEl(sjob)} && ${countOf("section:kept")} === 1`, { label: "kept" });
+  const note = await keeps(sjob);
+  check("z keeps it with the words typed: it leaves To settle for Kept, folded by default, showing only its count", note?.words === "an idea to come back to" && (await page.eval(`${heading("section:kept")}?.dataset.cowSectionFolded === ""`)), JSON.stringify(note));
+  check("a kept line is not in the queue, and Kept's count is never coloured", !(await page.eval(inQueue(sjob))) && (await page.eval(`${heading("section:kept")}?.querySelector("[data-cow-section-count]")?.dataset.cowHeat === undefined`)));
+  const status = (await cow("status", "--main", ids.smain)).stdout;
+  check("bb cow status lists it under Kept", /Kept: around on purpose, asking for nothing \(1\)\n\s+kept\s+\S+\s+cow test \(thr_\w+\)\s+an idea to come back to/.test(status), status.split("\n").filter((l) => /Kept|kept/.test(l)).join(" / "));
+  await page.key("/");
+  await page.waitFor(`${mode} === "filter"`, { label: "the filter" });
+  await page.type("come back");
+  await page.waitFor(`!!${lineEl(sjob)}`, { label: "the kept line found" });
+  check("/ finds a kept line while its section is folded", (await page.eval(`${lineEl(sjob)}?.dataset.cowKept === ""`)));
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal" && !${lineEl(sjob)}`, { label: "the filter closed" });
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${settled(sjob)}`, { label: "keep undone" });
+  check("u takes the keep back: it is to settle again", (await keeps(sjob)) === null);
+
+  // -- unkeep with z, keep again without words, and open the section --
+  await select(sjob);
+  await page.key("z");
+  await page.waitFor(`${mode} === "keep"`, { label: "the keep prompt again" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "keep-words"`, { label: "the keep prompt again: focused" });
+  await page.key("Enter");
+  await page.waitFor(`!${lineEl(sjob)}`, { label: "kept without words" });
+  check("nothing need be typed to keep it", (await keeps(sjob))?.words === null);
+  await selectHeading("section:kept");
+  await page.key("l");
+  await page.waitFor(`${stateOf(sjob)} === "kept"`, { label: "Kept open" });
+  check("l on Kept's heading opens it: the line, marked kept, with how long it has been kept", await page.eval(`!!${lineEl(sjob)}?.querySelector("svg.cow-s-kept")`));
+  await shot("kept");
+  await select(sjob);
+  await page.key("z");
+  await page.waitFor(`${settled(sjob)}`, { label: "off Kept" });
+  check("z on a kept line takes it off Kept", (await keeps(sjob)) === null);
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${stateOf(sjob)} === "kept"`, { label: "kept again" });
+  check("u takes that back too", (await keeps(sjob)) !== null);
+
+  // -- a new turn takes it off by itself --
+  await tellAs(null, sjob, "hello");
+  await sleep(3000);
+  await waitForThread(sjob, (t) => t.status === "idle", "its reply");
+  await page.waitFor(`${stateOf(sjob)} === "wants" && ${inQueue(sjob)}`, { label: "off the shelf by itself", timeout: 30_000 });
+  check("typing to a kept thread takes it off the shelf: it reads as any other line", (await page.eval(countOf("section:kept"))) === 0);
+
+  // -- archiving a kept line clears its note --
+  await select(sjob);
+  await page.key(" ");
+  await page.waitFor(`${stateOf(sjob)} === "done"`, { label: "seen" });
+  await page.key("z");
+  await page.waitFor(`${mode} === "keep"`, { label: "keep before archiving" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "keep-words"`, { label: "keep before archiving: focused" });
+  await page.key("Enter");
+  await page.waitFor(`${stateOf(sjob)} === "kept"`, { label: "kept, the section open" });
+  await select(sjob);
+  await page.key("e");
+  await page.waitFor(`${mode} === "archive"`, { label: "the archive prompt" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the archive prompt: focused" });
+  await page.type("thought through");
+  await page.key("Enter");
+  await page.waitFor(`(${lineEl(sjob)}?.querySelector("[data-cow-archive-reason]")?.textContent ?? "").includes("thought through")`, { label: "under Archived" });
+  check("e archives a kept line; it is listed under Archived with its reason, and its keep note is gone", (await keeps(sjob)) === null && (await page.eval(`!!document.querySelector("[data-cow-archived]")`)));
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${settled(sjob)}`, { label: "unarchived" });
+  check("u unarchives it, and it is to settle, not kept", (await keeps(sjob)) === null);
+}
+
 async function waitingChecks(page, ids, shot, chooseMain) {
   await prepareWaiting(ids);
   await chooseMain(page, ids.wmain);
@@ -1562,7 +1736,7 @@ async function waitingChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`${stateOf(kid)} === "done"`, { label: "seen" });
   check(
     "Space: the line is done and out of the queue, but stays in the tree, kept and dimmed, with the cursor on it",
-    (await page.eval(inTree(kid))) && (await page.eval(`${lineEl(kid)}?.dataset.cowKept === ""`)) && (await page.eval(isCursor(kid))) && !(await page.eval(inQueue(kid))),
+    (await page.eval(inTree(kid))) && (await page.eval(`${lineEl(kid)}?.dataset.cowStays === ""`)) && (await page.eval(isCursor(kid))) && !(await page.eval(inQueue(kid))),
   );
   await shot("seen-stays");
   await page.key("u");
@@ -1573,7 +1747,7 @@ async function waitingChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`${stateOf(kid)} === "done"`, { label: "seen again" });
   await page.goto(`${BB}/plugins/${PLUGIN}/main`);
   await page.waitFor(`${screen} === "overview" && !!document.querySelector('[data-cow-line="${kid}"]')`, { label: "the page reloaded" });
-  check("after a reload it is where its state puts it: under Done", !(await page.eval(inTree(kid))));
+  check("after a reload it is where its state puts it: under To settle", !(await page.eval(inTree(kid))) && (await page.eval(`${lineEl(kid)}?.dataset.cowSettle === ""`)));
 
   // -- a link to a thread in the chat --
   await select(ids.wlink);
@@ -2727,7 +2901,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -2748,6 +2922,7 @@ async function main() {
     };
     if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
     else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
+    else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
@@ -4986,6 +5161,7 @@ async function main() {
   if (!flag("keep")) {
     for (const id of Object.values(ids)) {
       await rpc("park_set", { threadId: id, park: null });
+      await rpc("keep_set", { threadId: id, keep: null });
       await rpc("archive_note_set", { threadId: id, note: null });
       await cow("project", id, "--clear");
       await cow("wait", id, "--clear");

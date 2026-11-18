@@ -60,11 +60,13 @@ import {
 } from "./keys.ts";
 import {
   type Derived,
+  type Heat,
   LIMITS,
   type LineState,
   STATE_LABEL,
   type ThreadFacts,
   derive,
+  settleHeat,
   waitingSince,
 } from "./state.ts";
 import { formatAge } from "./text.ts";
@@ -77,12 +79,21 @@ import {
   buildOverview,
   cursorOrder,
   descendantIds,
+  KEPT_SECTION,
+  SETTLE_SECTION,
+  type Section,
   foldMove,
+  isSection,
   keepFolds,
+  leftBehind,
   listed,
   nextMove,
   projectIds,
+  sectionFolded,
+  sectionOf,
+  settleHeadingHeat,
   unfoldAround,
+  unread,
   visibleRows,
   waitingInside,
 } from "./tree.ts";
@@ -132,6 +143,8 @@ const GLYPH_PATH: Record<LineState, ReactNode> = {
   ),
   stuck: <path d="M6 .6 11.4 6 6 11.4.6 6z" fill="currentColor" />,
   parked: <path d="M2.9 1.8h2.2v8.4H2.9zM6.9 1.8h2.2v8.4H6.9z" fill="currentColor" />,
+  // A house, ⌂: kept at home on purpose, to come back to when you choose.
+  kept: <path d="M1.8 6.2 6 2l4.2 4.2v4.2H1.8z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
   failed: (
     <path d="M2.4 2.4l7.2 7.2M9.6 2.4 2.4 9.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
   ),
@@ -185,6 +198,11 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
     long: "Chosen by you with p: a reason and a pick-up. It waits on the shelf with everything under it, and comes back to the queue when its date arrives, or every 4 weeks without one.",
   },
   {
+    state: "kept",
+    short: "kept by you, with z",
+    long: "Chosen by you with z, with a few words or none: a thread you want around without it asking for anything. It is on the Kept shelf, folded by default, never in the queue and never coloured, and nothing reminds you of it. Only what truly needs you shows through, as on a parked line: its open ask. It comes off the shelf by itself when it starts a turn, as when you type to it; z on it takes it off too.",
+  },
+  {
     state: "failed",
     short: "its last turn failed",
     long: "Its last turn ended in an error. Open it to retry, or archive it with e. Listed in the queue.",
@@ -196,8 +214,8 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
   },
   {
     state: "done",
-    short: "ended in the last 2 days",
-    long: "Finished and reported to the thread that started it, or archived, in the last 2 days. A finished member stays in its group, dimmed. Older ones are counted, not listed. A project is never done unless you archive it.",
+    short: "finished, to settle",
+    long: "Finished: its newest turn was not one you started, so its reply went to the thread that started it. It waits under To settle for one decision of yours: archive it (e), park it (p), keep it (z), or carry on with it (Enter, then i). Lines with a reply you have not seen come first, marked unread, then the oldest. Its age turns warm after 3 days and red after 7; that never puts it in the queue. A finished member stays in its group, dimmed, for 2 days first. An archived line is listed under Archived for 2 days. A project is never done unless you archive it.",
   },
 ];
 
@@ -220,13 +238,21 @@ function Pips({ count }: { count: number }) {
   );
 }
 
-/** Time in state: heavier the longer it has been, one square per full week. */
-function Age({ derived, now }: { derived: Derived; now: number }) {
-  const ms = Math.max(0, now - derived.since);
-  const calm = derived.state === "done" || derived.state === "idle";
+/**
+ * Time in state: heavier the longer it has been, one square per full week.
+ * A line to settle shows how long since it finished instead, plain, warm or
+ * red by `heat`.
+ */
+function Age({ derived, now, finishedAt, heat }: { derived: Derived; now: number; finishedAt?: number; heat?: Heat }) {
+  const ms = Math.max(0, now - (finishedAt ?? derived.since));
+  const calm = derived.state === "done" || derived.state === "idle" || derived.state === "kept";
   const weight = calm || ms < HOUR ? 0 : ms < DAY ? 1 : ms < WEEK ? 2 : 3;
   return (
-    <span className={`cow-ag cow-a${weight} cow-s-${derived.state}`} title="time in this state">
+    <span
+      className={`cow-ag cow-a${weight} cow-s-${derived.state}${heat ? ` cow-heat-${heat}` : ""}`}
+      data-cow-heat={heat}
+      title={heat ? "time since it finished" : derived.state === "kept" ? "how long it has been kept" : "time in this state"}
+    >
       <Pips count={calm ? 0 : Math.floor(ms / WEEK)} />
       <b>{formatAge(ms)}</b>
     </span>
@@ -345,7 +371,7 @@ function Rails({ depth }: { depth: number }) {
 }
 
 /** Everything under a group head, by state: the same marks as the lines. */
-function RollupMarks({ rollup, older }: { rollup: Rollup; older: number }) {
+function RollupMarks({ rollup }: { rollup: Rollup }) {
   const shown = ROLLUP_ORDER.filter((state) => rollup[state] > 0);
   if (shown.length === 0) return null;
   const words = shown.map((state) => `${rollup[state]} ${STATE_LABEL[state]}`).join(", ");
@@ -353,7 +379,7 @@ function RollupMarks({ rollup, older }: { rollup: Rollup; older: number }) {
     <span
       className="cow-roll"
       data-cow-rollup={shown.map((state) => `${state}:${rollup[state]}`).join(" ")}
-      title={`under it: ${words}${older > 0 ? ` (${older} finished more than 2 days ago, not listed)` : ""}`}
+      title={`under it: ${words}`}
     >
       {shown.map((state) => (
         <span key={state} className={`cow-s-${state}`}>
@@ -380,8 +406,11 @@ function LineRow({
   onSelect,
   onOpen,
   onFold,
+  settle = false,
 }: {
   line: Line;
+  /** It is listed under To settle: its age is how long since it finished, warm then red, and it says what archiving it leaves behind. */
+  settle?: boolean;
   /** What capabilities add to the line; null when there is nothing to add. */
   caps: LineCaps | null;
   now: number;
@@ -414,7 +443,10 @@ function LineRow({
   if (flash) classes.push("cow-flash");
   if (open) classes.push("cow-open");
   if (context) classes.push("cow-context");
-  if (line.kept) classes.push("cow-kept");
+  if (line.stays) classes.push("cow-stays");
+  const isUnread = settle && unread(line);
+  if (isUnread) classes.push("cow-unread");
+  const behind = settle ? leftBehind(line) : [];
   if (fold !== null) classes.push("cow-grouphead");
   if (line.project && thread.archivedAt === null) classes.push("cow-project");
   if (!flat && (fold !== null || line.depth > 0)) classes.push("cow-ingroup");
@@ -440,7 +472,10 @@ function LineRow({
       data-cow-outside={derived.outside?.length}
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
-      data-cow-kept={line.kept ? "" : undefined}
+      data-cow-stays={line.stays ? "" : undefined}
+      data-cow-settle={settle ? "" : undefined}
+      data-cow-unread={isUnread ? "" : undefined}
+      data-cow-kept={derived.keep ? "" : undefined}
       data-cow-wait={derived.wait ? (derived.wait.due ? "due" : "") : undefined}
       data-cow-returned={returned || undefined}
       data-cow-hint=""
@@ -453,7 +488,7 @@ function LineRow({
       <span className="cow-gl">
         <Glyph state={derived.state} />
       </span>
-      <Age derived={derived} now={now} />
+      {settle ? <Age derived={derived} now={now} finishedAt={line.finishedAt} heat={settleHeat(line.finishedAt, now)} /> : <Age derived={derived} now={now} />}
       <span className="cow-nm">
         {flat ? null : <Rails depth={line.depth} />}
         {fold === null ? (
@@ -486,10 +521,16 @@ function LineRow({
           {thread.title}
           {flat && parentTitle ? <small> · {parentTitle}</small> : null}
           {open ? <small className="cow-openmark"> · chat open</small> : null}
-          {line.kept ? (
-            <small className="cow-keptmark" title="marked seen here: it moves to where its state puts it when the page is loaded again">
+          {line.stays ? (
+            <small className="cow-staysmark" title="marked seen here: it moves to where its state puts it when the page is loaded again">
               {" "}
               · seen, stays here until reload
+            </small>
+          ) : null}
+          {isUnread ? (
+            <small className="cow-unreadmark" title="a reply you have not seen: Enter reads it, Space marks it seen">
+              {" "}
+              · unread
             </small>
           ) : null}
           {fold === "folded" ? (
@@ -507,7 +548,7 @@ function LineRow({
         </span>
         {caps ? <CapMark caps={caps} now={now} /> : null}
         {derived.brief ? <BriefMarks mark={derived.brief} /> : null}
-        {!flat && line.rollup ? <RollupMarks rollup={line.rollup} older={line.olderUnder} /> : null}
+        {!flat && line.rollup ? <RollupMarks rollup={line.rollup} /> : null}
       </span>
       <span className="cow-wh">
         {allowed ? (
@@ -535,9 +576,75 @@ function LineRow({
           </b>
         ) : null}
         {derived.archivedWhy && derived.doing === "archived" ? null : derived.doing}
+        {behind.length > 0 ? (
+          <small className="cow-behind" data-cow-behind={behind.join(" · ")} title="what archiving it would leave behind">
+            {" · archiving leaves "}
+            {behind.join(", ")}
+          </small>
+        ) : null}
         {next.text ? <span className="cow-nx2"> → {nextNode}</span> : null}
       </span>
       <span className="cow-nx">{nextNode}</span>
+    </div>
+  );
+}
+
+/**
+ * The heading of a section that folds, To settle or Kept: a cursor stop of
+ * its own, where h and l fold and unfold it. Folded, it still shows its count.
+ */
+function SectionHead({
+  id,
+  title,
+  count,
+  words,
+  folded,
+  heat,
+  current,
+  onSelect,
+  onFold,
+}: {
+  id: Section;
+  title: string;
+  count: number;
+  words: string;
+  folded: boolean;
+  /** To settle's count takes the colour of its oldest line; Kept's is never coloured. */
+  heat: Heat | null;
+  current: boolean;
+  onSelect: (id: string) => void;
+  onFold: (id: string) => void;
+}) {
+  return (
+    <div
+      className={["cow-sec", "cow-secfold", current ? "cow-cur" : ""].join(" ").trim()}
+      data-cow-section={id}
+      data-cow-section-folded={folded ? "" : undefined}
+      data-cow-hint=""
+      aria-current={current || undefined}
+      aria-expanded={!folded}
+      onClick={() => onSelect(id)}
+    >
+      <i
+        className="cow-fold cow-foldable"
+        title={folded ? "unfold: l" : "fold: h"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onFold(id);
+        }}
+      >
+        <svg viewBox="0 0 10 10" aria-hidden="true">
+          <path d={folded ? "M3 1.5 7.2 5 3 8.5z" : "M1.5 3 5 7.2 8.5 3z"} fill="currentColor" />
+        </svg>
+      </i>
+      {title}
+      <b className={heat ? `cow-seccount cow-heat-${heat}` : "cow-seccount"} data-cow-section-count={count} data-cow-heat={heat ?? undefined}>
+        {count}
+      </b>
+      <span>
+        {words}
+        {folded && count > 0 ? " · folded: l opens it" : ""}
+      </span>
     </div>
   );
 }
@@ -650,7 +757,9 @@ function Help({ onClose }: { onClose: () => void }) {
           </p>
           <p>
             <b>The queue</b> at the side holds only what waits on you, oldest first. <b>Parked</b> is work you set aside; it comes
-            back by itself. <b>Done</b> is what ended in the last 2 days. Select a line, then press a verb: the bar at the bottom
+            back by itself. <b>To settle</b> is what finished and is not archived: each waits for one decision of yours, archive,
+            park, keep or carry on, and none is hidden by age. <b>Kept</b> is what you keep around on purpose; it asks for
+            nothing. <b>Archived</b> is what was archived in the last 2 days. Select a line, then press a verb: the bar at the bottom
             shows which apply, and a greyed-out one says why when pressed.
           </p>
           <p>
@@ -1160,10 +1269,10 @@ function OverviewScreen({
   signer,
   threads,
   onChooseMain,
-  keep,
+  stay,
 }: {
   /** Keep a line the person marked seen in its place on this page, or let it go. */
-  keep: (id: string, kept: boolean) => void;
+  stay: (id: string, stays: boolean) => void;
   overview: Overview;
   main: Line;
   now: number;
@@ -1200,7 +1309,12 @@ function OverviewScreen({
   );
   const hit = useMemo(() => (found ? new Set(found.matches) : null), [found]);
   const parkedShown = hit ? overview.parked.filter((line) => hit.has(line.thread.id)) : overview.parked;
-  const doneShown = hit ? overview.done.filter((line) => hit.has(line.thread.id)) : overview.done;
+  // While filtering, a folded section shows what matches in it.
+  const settleFolded = !hit && sectionFolded(folded, SETTLE_SECTION);
+  const keptFolded = !hit && sectionFolded(folded, KEPT_SECTION);
+  const settleShown = hit ? overview.settle.filter((line) => hit.has(line.thread.id)) : settleFolded ? [] : overview.settle;
+  const keptShown = hit ? overview.kept.filter((line) => hit.has(line.thread.id)) : keptFolded ? [] : overview.kept;
+  const archivedShown = hit ? overview.archived.filter((line) => hit.has(line.thread.id)) : overview.archived;
   // The heading is the first stop: Main is a line like any other to the cursor.
   const order = useMemo(
     () => (found ? found.matches : [main.thread.id, ...cursorOrder(overview, folded)]),
@@ -1224,6 +1338,21 @@ function OverviewScreen({
     },
     [overview],
   );
+  // Undo's cursor: the line it brings back is followed to its new place,
+  // and whatever folds it away there is unfolded once the page shows it.
+  const following = useRef<string | null>(null);
+  const follow = useCallback((id: string) => {
+    following.current = id;
+    setCursorRaw(id);
+  }, []);
+  useEffect(() => {
+    const id = following.current;
+    if (id === null) return;
+    const placed = sectionOf(overview, id) !== null || overview.rows.some((row) => row.id === id) || listed(overview).some((line) => line.thread.id === id);
+    if (!placed) return;
+    following.current = null;
+    setFolded((current) => unfoldAround(overview, current, id));
+  }, [overview]);
   // A page starts on its first line, below the heading.
   const lastIndex = useRef(1);
   const cursorIndex = cursor === null ? -1 : order.indexOf(cursor);
@@ -1475,10 +1604,11 @@ function OverviewScreen({
     folded,
     under: (id) => descendantIds(threads, id),
     setCursor,
+    follow,
     say: setMessage,
     openChat,
     focusOverview,
-    keep,
+    stay,
   });
 
   const sheet = useBriefSheet({
@@ -1590,7 +1720,7 @@ function OverviewScreen({
   // A reply showing in the pane has been seen. Each is marked once, so that
   // undoing a mark made with Space is not undone again by the open pane.
   const paneLine = pane === null ? null : ([main, ...listed(overview)].find((line) => line.thread.id === pane) ?? null);
-  const paneReply = paneLine?.derived.reply?.seq ?? null;
+  const paneReply = paneLine?.derived.reply?.seq ?? paneLine?.derived.unseen?.seq ?? null;
   const autoSeen = useRef(new Set<string>());
   // Marking is signed, so it waits for this page's key to be read; a page that
   // is not enrolled tries once, and says why the reply still waits.
@@ -1607,6 +1737,7 @@ function OverviewScreen({
 
   const toggleFold = (id: string) =>
     setFolded((current) => {
+      // A section's fold is recorded against how it starts: see `sectionFolded`.
       const next = new Set(current);
       if (!next.delete(id)) next.add(id);
       return next;
@@ -1820,7 +1951,7 @@ function OverviewScreen({
   // A page that asks for its key to be enrolled waits on the person too, on a page that can approve it.
   const keyRequests = signer.status === "enrolled" ? (signer.keys?.requests ?? []).filter((request) => request.status === "pending") : [];
   const waiting = overview.queue.length + capNotices.length + keyRequests.length;
-  const row = (line: Line, flat: boolean) => {
+  const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
     return (
@@ -1829,6 +1960,7 @@ function OverviewScreen({
         line={line}
         now={now}
         flat={flat}
+        settle={settle}
         fold={fold}
         waitingInside={fold === "folded" ? waitingInside(overview, line.thread.id) : 0}
         open={line.thread.id === pane}
@@ -1954,9 +2086,6 @@ function OverviewScreen({
                 </p>
                 <p>
                   Press <kbd>i</kbd> to say something to Main, or <kbd>m</kbd> to open its chat.
-                  {overview.olderDone > 0
-                    ? ` ${overview.olderDone} finished more than 2 days ago and ${overview.olderDone === 1 ? "is" : "are"} not listed.`
-                    : ""}
                 </p>
               </Notice>
             ) : (
@@ -1989,14 +2118,41 @@ function OverviewScreen({
                 ) : (
                   parkedShown.map((line) => row(line, true))
                 )}
-                <div className="cow-sec">
-                  Done
-                  <span>
-                    {overview.done.length} finished or archived in the last 2 days, with everything under them
-                    {overview.olderDone > 0 ? ` · ${overview.olderDone} older, not listed` : ""}
-                  </span>
-                </div>
-                {doneShown.map((line) => row(line, true))}
+                <SectionHead
+                  id={SETTLE_SECTION}
+                  title="To settle"
+                  count={overview.settle.length}
+                  words={
+                    overview.settle.length === 0
+                      ? "nothing finished waits for a decision"
+                      : `finished, not archived: archive, park, keep or carry on with each · ${overview.settle.filter(unread).length} unread · oldest ${formatAge(Math.max(0, now - Math.min(...overview.settle.map((line) => line.finishedAt))))}`
+                  }
+                  folded={settleFolded}
+                  heat={settleHeadingHeat(overview.settle, now)}
+                  current={selected === SETTLE_SECTION}
+                  onSelect={setCursor}
+                  onFold={toggleFold}
+                />
+                {settleShown.map((line) => row(line, true, true))}
+                <SectionHead
+                  id={KEPT_SECTION}
+                  title="Kept"
+                  count={overview.kept.length}
+                  words={overview.kept.length === 0 ? "nothing kept: z on a line keeps it around, asking for nothing" : "around on purpose, asking for nothing, newest kept first"}
+                  folded={keptFolded}
+                  heat={null}
+                  current={selected === KEPT_SECTION}
+                  onSelect={setCursor}
+                  onFold={toggleFold}
+                />
+                {keptShown.map((line) => row(line, true))}
+                {overview.archived.length > 0 ? (
+                  <div className="cow-sec" data-cow-archived="">
+                    Archived
+                    <span>{overview.archived.length} in the last 2 days, with their reasons · u takes back an archive made here</span>
+                  </div>
+                ) : null}
+                {archivedShown.map((line) => row(line, true))}
               </>
             )}
             {truncated ? (
@@ -2191,12 +2347,17 @@ function OverviewScreen({
           ) : (
             <>
               <span className={hint ? "cow-mode cow-m-hint" : "cow-mode"}>{hint ? "HINT" : "NORMAL"}</span>
-              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? ""}</span>
+              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : "")}</span>
               <span className="cow-sep">▸</span>
               <span className="cow-verbs">
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
                 <Verb keys="I" label="say to it" off={selected === null} onRun={() => startSay(selected)} />
-                {selectedTodo ? (
+                {isSection(selected) ? (
+                  <>
+                    <Verb keys="h" label="fold" name="section-fold" off={sectionFolded(folded, selected)} onRun={() => run({ kind: "fold", key: "h" })} />
+                    <Verb keys="l" label="unfold" name="section-unfold" off={!sectionFolded(folded, selected)} onRun={() => run({ kind: "fold", key: "l" })} />
+                  </>
+                ) : selectedTodo ? (
                   <>
                     <Verb keys="x" label="remove" name="todo-remove" onRun={() => verbs.removeTodo(selectedTodo)} />
                     <Verb keys="K" label="up" off={selectedTodo.number === 1} onRun={() => verbs.moveTodo(selectedTodo, -1)} />
@@ -2205,10 +2366,11 @@ function OverviewScreen({
                 ) : (
                   (["answer", "brief", "park", "resume", "stop", "archive"] as const).map(verbButton)
                 )}
-                {selectedLine?.derived.reply ? (
+                {selectedLine && !selectedTodo && selectedLine !== main ? verbButton("keep") : null}
+                {selectedLine?.derived.reply || selectedLine?.derived.unseen ? (
                   <Verb keys="␣" label="seen" name="seen" onRun={() => verbs.markSeen(selectedLine, true)} />
                 ) : null}
-                {selectedLine && !selectedTodo && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" ? (
+                {selectedLine && !selectedTodo && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
                   <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
                 ) : null}
               </span>
@@ -2282,7 +2444,7 @@ export function CowPage() {
         ? null
         : // A note may be on any open thread, or on one archived recently enough to be listed.
           // Main's own are its note of what is next and what it has not started.
-          [mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.doneListedMs)],
+          [mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs)],
     [snapshot.threads, snapshot.status, mainId, now],
   );
   const parks = useParks(underMain, signer);
@@ -2292,9 +2454,9 @@ export function CowPage() {
 
   const projects = useMemo(() => projectIds(snapshot.threads, parks.projects.keys(), mainId), [snapshot.threads, parks.projects, mainId]);
   // Lines the person marked seen here stay in their place until the page is loaded again.
-  const [kept, setKept] = useState<ReadonlySet<string>>(new Set());
-  const keep = useCallback((id: string, on: boolean) => {
-    setKept((current) => {
+  const [staying, setStaying] = useState<ReadonlySet<string>>(new Set());
+  const stay = useCallback((id: string, on: boolean) => {
+    setStaying((current) => {
       if (current.has(id) === on) return current;
       const next = new Set(current);
       if (on) next.add(id);
@@ -2321,16 +2483,17 @@ export function CowPage() {
                 { head: projects.has(thread.id), project: projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
                 { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id), outside: caps.outside.get(thread.id) },
                 parks.waits.get(thread.id),
+                thread.id === mainId ? null : parks.keeps.get(thread.id),
               ),
             now,
             {
               note: (id) => parks.nexts.get(id)?.text ?? null,
               todos: (id) => parks.todos.get(id) ?? [],
               marked: (id) => parks.projects.has(id),
-              kept: (id) => kept.has(id),
+              stays: (id) => staying.has(id),
             },
           ),
-    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, kept, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
   );
 
   useEffect(() => {
@@ -2426,7 +2589,7 @@ export function CowPage() {
       signer={signer}
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
-      keep={keep}
+      stay={stay}
     />
   );
 }

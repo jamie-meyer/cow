@@ -64,12 +64,12 @@ test("an open ask of a parked thread stays in the queue; an ask of a thread unde
   assert.equal(under.parked[0]!.under, 1);
 });
 
-test("an archived thread is under Done with the reason given, for two days; what waited on it no longer waits", () => {
+test("an archived thread is under Archived with the reason given, for two days; what waited on it no longer waits", () => {
   const archived = family({ worker: { archivedAt: NOW - HOUR }, kid: { archivedAt: NOW - HOUR } });
   const overview = build(archived, { reasons: { worker: "superseded" }, acts: { worker: failed }, asks: { worker: [ask("worker")] } });
-  assert.deepEqual(ids(overview.done), ["worker"]);
-  assert.equal(overview.done[0]!.derived.archivedWhy, "superseded");
+  assert.deepEqual(ids(overview.archived), ["worker"]);
+  assert.equal(overview.archived[0]!.derived.archivedWhy, "superseded");
   assert.deepEqual(ids(overview.queue), []);
   const older = build(family({ worker: { archivedAt: NOW - 3 * DAY }, kid: { archivedAt: NOW - 3 * DAY } }), { reasons: { worker: "superseded" } });
-  assert.deepEqual([ids(older.done), older.olderDone], [[], 1]);
+  assert.deepEqual([ids(older.archived), ids(older.settle)], [[], []]);
 });

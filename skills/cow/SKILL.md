@@ -153,7 +153,12 @@ and says why; with `--json` the error is `{"ok": false, "error": {...}}`.
 
 One line per thread under Main: place in the user's queue (if any), state,
 time in that state, title and id, what it is doing or waiting on, and what
-moves it next. Then the Parked shelf and what finished in the last 2 days.
+moves it next. Then the Parked shelf; To settle, every finished thread
+that is not archived, waiting for the user's decision (unread first, then
+oldest first, with what archiving each would leave behind); Kept, threads
+the user keeps around on purpose; and what was archived in the last 2 days.
+Kept threads are the user's choice, made on the page: leave them be, and do
+not archive or park one unless the user asks.
 
 - Main defaults to the one last chosen on cow's page for the project you are
   in. Pass `--main <thread>` (your own id is in `$BB_THREAD_ID`) when that is
@@ -165,12 +170,14 @@ moves it next. Then the Parked shelf and what finished in the last 2 days.
   contradicted" or "brief: the check failed".
 - States: `wants` (it asked the user something, or it finished with a reply
   addressed to the user that they have not seen: a thread with threads
-  under it, or one the user messaged), `blocked` (bb refused it
+  under it, or one whose newest turn the user started), `blocked` (bb refused it
   a command or file change without asking; only the user can unblock it,
-  from cow's page), `running`, `stuck`, `parked`, `failed`, `idle` (a
-  project with nothing to say; its line ends `[project]`), `done`.
-- Output is bounded: at most 80 open threads, 30 parked, 20 done and 20 queue
-  entries; the rest are counted.
+  from cow's page), `running`, `stuck`, `parked`, `kept`, `failed`, `idle` (a
+  project with nothing to say; its line ends `[project]`), `done` (finished:
+  to settle, or archived). A finished job's report is not in the queue; it
+  is to settle, marked `[unread]` until the user has seen it.
+- Output is bounded: at most 80 open threads, 30 parked, 40 to settle, 30
+  kept, 20 archived and 20 queue entries; the rest are counted.
 
 ### `bb cow archive <thread> [--reason <text>]`
 

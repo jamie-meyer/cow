@@ -14,6 +14,7 @@ import { cowCli } from "./src/cli.ts";
 import {
   archiveNoteSchema,
   dismissalSchema,
+  keepNoteSchema,
   nextNoteSchema,
   parkRecordSchema,
   projectMarkSchema,
@@ -53,7 +54,13 @@ export const rpcContract = defineRpcContract({
       seen: z.record(z.string(), seenSchema),
       projects: z.record(z.string(), projectMarkSchema),
       waits: z.record(z.string(), waitNoteSchema),
+      keeps: z.record(z.string(), keepNoteSchema),
     }),
+  },
+  /** Keep a thread on the Kept shelf, or with null take it off. The page's z; there is no command for it. */
+  keep_set: {
+    input: z.object({ threadId: id, keep: keepNoteSchema.nullable() }),
+    output: z.null(),
   },
   /** Say a thread waits on someone other than the person, or with null that it no longer does. */
   wait_set: {
@@ -159,6 +166,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wait_set: async ({ threadId, wait }) => {
       await actions.setWait(threadId, wait);
+      return null;
+    },
+    keep_set: async ({ threadId, keep }) => {
+      await actions.setKeep(threadId, keep);
       return null;
     },
     project_set: async ({ threadId, project }) => {

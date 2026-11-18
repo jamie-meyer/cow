@@ -100,12 +100,16 @@ export function findReplies(events: readonly unknown[]): Replies {
  *
  * - `head`: the thread has threads under it, so the person talks to it
  *   directly and every finished turn ends in a reply for them, whoever
- *   started it. A leaf's reply is theirs only when they started the turn.
+ *   started it. A leaf's reply is theirs only when they started the turn,
+ *   and only while that turn is its newest finished one.
  * - `seenSeq`: cow's own record of the turn the person last saw.
  * - A message the person sent after the reply means they read it.
  */
 export function unreadReply(replies: Replies | undefined, head: boolean, seenSeq: number | null | undefined): TurnEnd | null {
-  const reply = head ? replies?.last : replies?.toPerson;
+  // A leaf's reply is the person's only while it ends the newest finished
+  // turn: once another turn has ended after it (an agent's, a notice of
+  // bb's), the person is no longer in conversation with it.
+  const reply = head ? replies?.last : replies?.toPerson && replies.last?.seq === replies.toPerson.seq ? replies.toPerson : null;
   if (!reply) return null;
   if (seenSeq != null && seenSeq >= reply.seq) return null;
   if (replies?.personSpokeSeq != null && replies.personSpokeSeq > reply.seq) return null;

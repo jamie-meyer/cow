@@ -122,14 +122,14 @@ test("in the overview a waiting line keeps its place in the tree and is in the q
     buildOverview(threads, "main", (t) => derive(t, rested(), NOW, null, null, null, attention, null, t.id === "t" ? wait : null), NOW);
   const waiting = of(note());
   assert.deepEqual(waiting.lines.map((line) => line.thread.id), ["t"]);
-  assert.deepEqual(waiting.done.map((line) => line.thread.id), ["u"]);
+  assert.deepEqual(waiting.settle.map((line) => line.thread.id), ["u"]);
   assert.equal(waiting.queue.some((line) => line.thread.id === "t"), false);
   assert.equal(waiting.counts.waiting, 1);
   const due = of(note({ remindAt: NOW - HOUR }));
   assert.deepEqual(due.queue.map((line) => line.thread.id), ["t"]);
-  // Cleared, it goes where its state puts it: done three days ago, so only counted.
+  // Cleared, it goes where its state puts it: done three days ago, to settle.
   assert.deepEqual(of(null).lines, []);
-  assert.equal(of(null).olderDone, 1);
+  assert.deepEqual(of(null).settle.map((line) => line.thread.id), ["t", "u"]);
   // bb cow status says so.
   const text = statusText(statusReport(waiting, NOW, false));
   assert.match(text, /waiting\s+3d\s+t \(t\)\s+waiting on the reviewer · 3d/);
@@ -194,18 +194,18 @@ test("a line the person marked seen stays in its place, marked kept, until the p
       "main",
       (t) => derive(t, rested(), NOW),
       NOW,
-      { note: () => null, todos: () => [], kept: (id) => kept.has(id) },
+      { note: () => null, todos: () => [], stays: (id) => kept.has(id) },
     );
   const plain = of(new Set());
   assert.deepEqual(plain.lines.map((line) => line.thread.id), []);
   const kept = of(new Set(["t"]));
-  assert.deepEqual(kept.lines.map((line) => [line.thread.id, line.derived.state, line.kept]), [["t", "done", true]]);
-  assert.deepEqual(kept.done.map((line) => line.thread.id), ["g"]);
+  assert.deepEqual(kept.lines.map((line) => [line.thread.id, line.derived.state, line.stays]), [["t", "done", true]]);
+  assert.deepEqual(kept.settle.map((line) => line.thread.id), ["g"]);
   // The state, and so the queue and the counts, are the stored ones.
   assert.equal(kept.queue.length, 0);
   // A member kept inside a group that finished keeps the group in the tree with it.
   const member = of(new Set(["g1"]));
-  assert.deepEqual(member.lines.map((line) => [line.thread.id, line.kept ?? false]), [["g", false], ["g1", true]]);
-  // Archived, it goes to Done whatever the page kept.
+  assert.deepEqual(member.lines.map((line) => [line.thread.id, line.stays ?? false]), [["g", false], ["g1", true]]);
+  // Archived, it goes to Archived whatever the page kept.
   assert.deepEqual(of(new Set(["t"]), true).lines.map((line) => line.thread.id), []);
 });

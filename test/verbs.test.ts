@@ -19,7 +19,8 @@ const line = (facts: ThreadFacts, park?: ParkRecord, openUnder = 0): Line => ({
   openUnder,
   members: 0,
   rollup: null,
-  olderUnder: 0,
+  finishedAt: 0,
+  unseenUnder: 0,
   note: null, project: null,
 });
 const allowed = (target: Line | null, isMain = false) =>

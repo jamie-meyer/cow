@@ -106,11 +106,14 @@ test("junk among the events is ignored", () => {
   });
 });
 
-test("unread: a leaf counts only turns the person started; a head counts every turn", () => {
+test("unread: a leaf counts only a newest turn the person started; a head counts every turn", () => {
   const events = [...turn("person"), ...turn("agent")];
   const replies = findReplies(events);
-  assert.equal(unreadReply(replies, false, null)?.seq, events[2]!.seq);
+  // The person's turn is no longer the newest: another thread has spoken to it since.
+  assert.equal(unreadReply(replies, false, null), null);
   assert.equal(unreadReply(replies, true, null)?.seq, events[5]!.seq);
+  const theirs = [...turn("agent"), ...turn("person")];
+  assert.equal(unreadReply(findReplies(theirs), false, null)?.seq, theirs[5]!.seq);
   assert.equal(unreadReply(findReplies(turn("agent")), false, null), null);
   assert.equal(unreadReply(undefined, true, null), null);
 });
@@ -192,11 +195,11 @@ test("while its turn runs it is running, and a question outranks a reply", () =>
   assert.equal(asking.reply, undefined);
 });
 
-test("a reply nobody read for a week reads as stuck, and is still the person's", () => {
+test("a reply nobody read for a week is still the person's, and never reads as stuck: it is at rest", () => {
   seq = 0;
   const events = turn("person").map((event) => ({ ...event, createdAt: NOW - 8 * 24 * HOUR }));
   const d = state(child(), events, false);
-  assert.equal(d.state, "stuck");
+  assert.equal(d.state, "wants");
   assert.equal(d.waitingOnYou, true);
   assert.deepEqual(d.reply, { seq: events[2]!.seq });
 });

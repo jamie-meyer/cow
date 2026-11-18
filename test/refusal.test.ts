@@ -232,10 +232,10 @@ test("a blocked line can be answered, and archived once its turn has ended", () 
   const refusals = refused();
   const line = (status: string) => {
     const t = thread({ id: "t", parentThreadId: "main", status });
-    return { thread: t, derived: derive(t, activity({ refusals }), NOW), depth: 0, parentId: null, queueNumber: 1, under: 0, openUnder: 0, members: 0, rollup: null, olderUnder: 0, note: null, project: null };
+    return { thread: t, derived: derive(t, activity({ refusals }), NOW), depth: 0, parentId: null, queueNumber: 1, under: 0, openUnder: 0, members: 0, rollup: null, finishedAt: 0, unseenUnder: 0, note: null, project: null };
   };
   assert.equal(verbBlocked("answer", line("idle"), false), null);
   assert.equal(verbBlocked("archive", line("idle"), false), null);
-  assert.equal(verbBlocked("archive", line("active"), false), "only done, idle, waiting or failed lines can be archived");
+  assert.equal(verbBlocked("archive", line("active"), false), "only done, idle, waiting, kept or failed lines can be archived");
   assert.equal(verbBlocked("park", line("idle"), false), null);
 });
