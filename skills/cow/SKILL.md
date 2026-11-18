@@ -53,6 +53,13 @@ bb cow ask --question "Ship the migration tonight or wait for the review?" \
   stays in front of them, already answered.
 - `bb cow ask withdraw <id>` is for a question that no longer needs an
   answer; it is not for one that was answered.
+- **The user is shown both of these.** Withdrawing an ask, and closing one
+  as answered when the user has not sent your thread a message since you
+  asked, put a notice in their queue (with the question, and the answer you
+  say they gave) until they acknowledge it, and in the log. Closing after
+  they did write to you is the ordinary case and shows nothing extra. This
+  is not a reason to avoid either when it is right: an ask that no longer
+  needs an answer should be withdrawn, and one answered in chat closed.
   `bb cow asks --thread $BB_THREAD_ID` lists what you still have open.
 - `--thread <id>` asks for a thread under yours. You cannot ask for any other
   thread, and you cannot answer an ask: only the user does.
@@ -180,6 +187,11 @@ when the user asks.
   judgement calls the user has not read ("brief: 2 disputed"). A thread's
   line also says what its latest brief came to, such as "brief disputed: 1
   contradicted" or "brief: the check failed".
+- An ask of a thread under a parked or kept thread is under "Waiting on the
+  user" too, ending "under parked “…”" or "under kept “…”".
+- "Taken out of the user's queue by an agent, not yet acknowledged by the
+  user" lists, when there are any, the parks, withdrawals and closes of
+  threads under this Main that the user is being shown.
 - States: `wants` (it asked the user something, or it finished with a reply
   addressed to the user that they have not seen: one that ends its newest
   turn, which the user started), `blocked` (bb refused it
@@ -217,6 +229,16 @@ Something shaped like a date that is not a valid one is rejected, never
 guessed. Parking does not message the thread. A thread whose turn is running
 is refused unless you add `--stop`, which stops the turn first and cannot be
 undone. Main itself cannot be parked or archived.
+
+**Parking a thread that was waiting on the user is shown to them**: one
+with an open ask, one of bb's own questions or permission requests, a
+refused permission, a failure, a brief with disputes, or a reply addressed
+to them not yet seen. A notice in their queue names your thread, the one
+parked, your reason and when, until they acknowledge it; the log keeps it,
+and `bb cow status` lists it. Parking one that waited on nothing shows
+nothing extra. This is not a reason to avoid parking when it is right: give
+a reason the user will understand. An open ask of a thread under a parked
+or kept thread stays in the user's queue, saying what it is under.
 
 ### `bb cow resume <thread>`
 
@@ -268,7 +290,9 @@ bb cow caps                      # what your thread holds, and where each comes 
   user did not start), stop and say so in your reply. The user's page shows
   the refusal as covered, and they can ask you again in two keys.
 
-`bb cow caps log` prints the log, newest first.
+`bb cow caps log` prints the log, newest first. Despite its name it also
+holds what agents took out of the user's queue: the parks, withdrawals and
+closes described above.
 
 ## Marking a project
 

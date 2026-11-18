@@ -4,6 +4,36 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.8
+
+Agents may set things aside that were waiting on you. Until now some of that
+left no trace on the page.
+
+- **You are shown what an agent takes out of your queue.** When an agent
+  parks a thread that was waiting on you (an open ask, one of bb's own
+  questions or permission requests, a refused permission, a failure, a
+  brief with disputes, or a reply addressed to you), withdraws an ask, or
+  closes an ask as answered in chat when you have not written to that
+  thread since it asked, a notice appears at the top of your queue. It says
+  which thread did it, to what (and for an ask, its question), what it
+  claimed (the park's reason, or the answer it says you gave), and how long
+  ago. It stays until you acknowledge it: `C`, then on it `Enter` opens that
+  thread's chat and `Space` acknowledges. Each one is also in the log
+  (`Tab` in the sheet, `bb cow caps log`), and `bb cow status` lists the
+  ones you have not acknowledged. Parking a thread that waited on nothing,
+  closing an ask after you did write to the thread, and anything you do
+  yourself, show nothing new.
+- **An ask under a parked or kept thread is in your queue.** A thread under
+  a parked or kept thread is set aside with it, and its open ask used to be
+  set aside too: it showed only in `bb cow asks`. Now it is in the queue
+  like any ask, listed after the Parked shelf, and says which parked or kept
+  thread it is under. Answering it resumes nothing.
+- **An automation's run that bb refused a permission is in your queue.** A
+  run blocked on a permission it was never asked for showed as blocked on
+  its line in the Automations section, and nowhere else. It is now in the
+  queue like any blocked thread, and `a` grants, asks again as you, or
+  dismisses it.
+
 ## 0.2.7
 
 - **A project's reply to its own threads' reports no longer enters your

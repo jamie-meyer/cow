@@ -731,6 +731,20 @@ bb cow ask close <id> --answered <the answer you were given>
   and "(and 2 more)" when it has several. It is in the queue, on the page and
   in `bb cow status`, whatever else it is doing: still running, finished, or
   parked. Only an archived thread's asks are left out.
+- **Under a parked or kept thread.** A thread under a parked or kept thread
+  is set aside with it and not listed, except for an open ask: such a
+  thread is listed after the Parked shelf for its ask alone, and is in the
+  queue like any ask, its line and its entry saying "under parked “…”" (or
+  "under kept “…”"), as `bb cow status` does. `a` answers it as any ask;
+  answering it resumes nothing, and the thread above it stays where it is.
+  Before 0.2.8 such an ask was in `bb cow asks` only, and counted by
+  `bb cow status` as an ask on a thread it does not list.
+- **Withdrawing and closing are shown to you.** When an agent (a command
+  run in a thread) withdraws an ask, or closes one as answered in chat
+  while you have not sent that thread a message since it asked, cow puts a
+  trace in front of you: see "What an agent took out of your queue". A
+  close after you did write to the thread is the ordinary case and leaves
+  none. What you do, on the page or from a terminal, leaves none.
 - **Only you answer**, on the page. There is no `bb cow answer`: a command
   cannot tell your terminal from an agent's, because an agent can clear the
   variable that names its thread. The page's answer is a signed call, so
@@ -980,13 +994,18 @@ running, cow asks "stop it and park?" and stops the turn on `y`.
 A parked line leaves the tree for the **Parked** shelf, a section that is
 always on the page. Each line there shows the name, the reason, how long it
 has been parked (one square per full week) and its pick-up. Threads under a
-parked thread go with it and are counted on its line.
+parked thread go with it and are counted on its line, except one with an
+open ask, which is listed after the shelf for its ask (see "Asks").
 
 Parking takes what the line was waiting on you for out of the queue: a
-reply, a failure, a refusal, a brief. Its own open ask stays in the queue;
-an ask of a thread under it does not. An agent can park a thread too
+reply, a failure, a refusal, a brief. Its own open ask stays in the queue,
+and so does an ask of a thread under it. An agent can park a thread too
 (`bb cow park`), and parking is not signed, so the shelf is where to look
 for work an agent set aside: see "What is not signed, method by method".
+When an agent parks a thread that was waiting on you, a notice says so in
+your queue until you acknowledge it: see "What an agent took out of your
+queue". An agent is told this is no reason not to park when parking is
+right.
 
 Parked work comes back by itself, as an entry in the queue:
 
@@ -1161,7 +1180,7 @@ ask for one:
 
 ```sh
 bb cow caps [--thread <id>] [--all] [--json]     # what a thread holds, and where each comes from
-bb cow caps log [--limit <n>] [--json]           # the log, newest first
+bb cow caps log [--limit <n>] [--json]           # the log, newest first: capabilities, and what agents took out of the queue
 bb cow cap request --kind dir|command --rule <text> --why <text> [--thread <id>]
 ```
 
@@ -1271,7 +1290,7 @@ paths as written; the links are followed when the request comes.
 cow records and shows what happens, whoever did it:
 
 - **The log.** Every capability made, deleted or put back, every notice
-  acknowledged, every request allowed through a capability (when, on which
+  acknowledged, every trace of what an agent took out of your queue (below), every request allowed through a capability (when, on which
   thread, what, by which capability), every decision made through cow's page,
   every message sent and ask answered as you, every reply marked as seen,
   refusal dismissed and brief marked as read (and each of those taken back),
@@ -1296,6 +1315,34 @@ cow records and shows what happens, whoever did it:
   marked new in the sheet, on `c`, and on the line of every thread that holds
   it. A notice outlives its capability: one made and deleted before you saw
   it still waits.
+- **What an agent took out of your queue.** Three things an agent may do,
+  and is right to do when they are right, take something out of your queue.
+  Each is shown to you when a command run in a thread does it:
+  - `bb cow park` on a thread that was waiting on you at that moment: it
+    had an open ask, one of bb's own questions or permission requests, a
+    refused permission not dismissed, a failure, a brief with disputes or
+    judgement calls, or a reply addressed to you not yet seen. Parking a
+    thread that waited on nothing leaves no trace;
+  - `bb cow ask withdraw`;
+  - `bb cow ask close --answered` when you have not sent that thread a
+    message since the ask was raised (the same test as "you have messaged
+    this thread since it asked", so a message cow sent for you as the answer
+    to another ask is not counted).
+
+  Each is a notice at the top of the queue, with the other notices: which
+  thread did it (by its title), to what (the thread, and for an ask its
+  question), what it claimed (the park's reason, or the answer it says you
+  gave), and how long ago. It stays until you acknowledge it. `C` opens the
+  sheet, where these are listed first under "Taken out of your queue by an
+  agent"; on one, `Enter` opens that thread's chat and `Space` acknowledges
+  it, a signed call that is logged; `u` does not bring it back. Clicking
+  the notice in the queue, or its hint, opens the sheet on it. Each trace
+  is also an entry in the log (the capability log, which despite its name
+  holds these too), and `bb cow status` lists the ones not acknowledged
+  under "Taken out of the user's queue by an agent". Parking from the page,
+  and anything you do, leaves none; so does parking by calling cow's
+  interface directly instead of `bb cow park`: see "What is not signed,
+  method by method".
 - **Approvals cow did not make.** cow knows the requests it answered: the ones
   you decided on its page, and the ones a capability allowed. When a
   permission request it was watching is decided any other way, the thread's
@@ -1389,7 +1436,9 @@ because bb's command sandbox does not let a thread write there.
 
 Everything below is open to any local process, a sandboxed agent included,
 by `bb cow`, by `bb plugin rpc call` or by HTTP. Two things hold for all of
-it. Nothing here is written to the log, apart from `cap request`. And the
+it. Nothing here is written to the log, apart from `cap request` and the
+traces of "What an agent took out of your queue" (`park`, `ask withdraw`,
+`ask close`, run in a thread). And the
 CLI's rules about whose thread a command may touch go by the thread the
 caller names in `BB_THREAD_ID`, which bb sets for a thread and the thread
 can change or clear: a caller that names nobody is taken for you at a
@@ -1403,8 +1452,8 @@ agent and stop no other.
 | `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
-| `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, their open asks included. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask stays in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. Removing a note only puts a line back |
-| `keep_set` | writes or removes a thread's keep note, with none of the page's checks | the page's `z`; there is no command for it | **keeping takes a line out of your queue** as parking does, and with no date to bring it back. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does what threads under it waited on you for. Still visible: the line is in the Kept section with the words given and how long it has been kept, `bb cow status` lists it under Kept, its own open ask stays in the queue, and it comes off the shelf when the thread starts a new turn. Keeping also takes a park note off. Removing a note only puts a line back |
+| `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, except their open asks. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask, and those of threads under it, stay in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. This method leaves no trace in the queue or the log, unlike `bb cow park`. Removing a note only puts a line back |
+| `keep_set` | writes or removes a thread's keep note, with none of the page's checks | the page's `z`; there is no command for it | **keeping takes a line out of your queue** as parking does, and with no date to bring it back. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does what threads under it waited on you for, except their open asks. Still visible: the line is in the Kept section with the words given and how long it has been kept, `bb cow status` lists it under Kept, its own open ask stays in the queue, and it comes off the shelf when the thread starts a new turn. Keeping also takes a park note off. Removing a note only puts a line back |
 | bb's own `threads.update` (no method of cow's) | moves a thread under another, or out from under it | the page's `A`, which moves a thread from Outside Main under Main; an agent uses `bb thread update --parent-thread` | **moving a thread out from under Main takes it, and everything under it, out of your queue**, and off the tree. Still visible: a thread left with no parent is listed under Outside Main, on the page and in `bb cow status`, and one moved under such a thread is counted on its line there. Moving one under Main only adds to the page; bb starts a turn of Main's to tell it. cow cannot sign this: it is bb's |
 | `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Archived with its reason for two days. cow could not stop this by signing it: `bb thread archive` is bb's and does the same |
 | `archive_note_set` | sets or forgets the reason kept for an archived thread | the page, when an archive is undone or redone | the reason shown under Archived can be changed or removed. It archives nothing and moves nothing |
@@ -1425,15 +1474,15 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | --- | --- | --- |
 | `status`, `asks`, `brief show`, `caps`, `caps log`, `todo list`, `help` | read | nothing |
 | `ask` | raises an ask for the caller's thread or one under it | adds to your queue. It hides nothing |
-| `ask withdraw <id>` | takes an open ask out of your queue, unanswered | **the ask leaves your queue**, and nothing on the page says it was there; `bb cow asks --all` still lists it as withdrawn. Meant for the thread that asked and the threads above it; a caller that names nobody can withdraw any ask |
-| `ask close <id> --answered <text>` | closes an ask as answered in chat, recording the answer the caller says it was given | the same, with the caller's account of your answer kept on the ask. Closing one from the page as you is the signed `ask_close` |
+| `ask withdraw <id>` | takes an open ask out of your queue, unanswered | **the ask leaves your queue.** Run in a thread, a notice in the queue says which thread withdrew it and its question until you acknowledge it, and the log keeps it; `bb cow asks --all` lists it as withdrawn. Meant for the thread that asked and the threads above it; a caller that names nobody can withdraw any ask, and leaves no trace |
+| `ask close <id> --answered <text>` | closes an ask as answered in chat, recording the answer the caller says it was given | the same, with the caller's account of your answer kept on the ask. Run in a thread when you have not sent that thread a message since it asked, a notice says so, with the answer it claims, until you acknowledge it, and the log keeps it. Closing one from the page as you is the signed `ask_close` |
 | `brief submit` | stores a new version of a thread's brief and has it checked | the new version replaces the one that waited. If its check disputes nothing and it lists no judgement call, nothing waits, and the disputes of the version before are no longer in front of you; every version is kept and `bb cow brief show <thread> --version <n>` prints it |
 | `brief check` | as `brief_check` above; refused to the thread the brief is from when it names itself | as `brief_check`: it costs a run and cannot take a waiting brief out of your queue |
 | `cap request` | raises an ask for a capability and writes "requested" in the log | adds to your queue and grants nothing |
 | `wait`, `wait --clear` | as `wait_set` above, for the caller's thread or one under it | as `wait_set`: a reply addressed to you leaves the queue while the thread is said to be waiting, and the line says who on |
 | `next`, `todo add`, `todo done`, `todo rm` | the thread's own line of what is next, and its list of work not started | the next-move column of a line that waits on nothing shows the agent's words, marked as its own. A line with a note or a list stays in the tree instead of going to To settle. Nothing leaves the queue |
 | `project`, `project --clear` | as `project_set` above | as `project_set` |
-| `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date |
+| `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date. Run in a thread on a thread that was waiting on you, a notice says which thread parked it, why and when until you acknowledge it, and the log keeps it |
 | `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
 
 What follows from this: **the queue is everything cow knows waits on you,
@@ -1442,7 +1491,10 @@ unsigned takes an entry out of it, apart from a thread withdrawing or
 closing an ask, replacing its brief with a new version, taking a project
 mark off, or saying it waits on someone else, which hides only a reply. What bb's own commands can do to it is under "What cow cannot
 guarantee". So the Parked shelf, Kept and Archived are the three places to look
-for something an agent set aside, and each line there says why it is there.
+for something an agent set aside, and each line there says why it is there;
+and a park of something that waited on you, a withdrawn ask, and an ask
+closed when you had not written since, done with `bb cow` in a thread, each
+leave a notice in the queue until you acknowledge it.
 
 ### What cow cannot guarantee
 
@@ -1474,7 +1526,9 @@ So, plainly:
   keep (through cow's interface) or archive a thread, and that takes its line out of your queue. The line is
   on the Parked shelf or under Archived afterwards, with the reason given.
   The same goes for keeping, through cow's interface: the line is under
-  Kept. See the table above.
+  Kept. See the table above. Parking with `bb cow park` from a thread, when
+  the thread waited on you, also leaves a notice until you acknowledge it;
+  it is not signed, so a caller of the interface can still park without one.
 - **Still only visible, or not even that: bb's own commands.** Any thread
   can approve or deny another thread's permission request with
   `bb thread interactions`, and can send a thread a message as you with
@@ -1545,7 +1599,7 @@ bb cow help
 
 | Command | Does |
 | --- | --- |
-| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, bb's automations with their recent runs (40 listed), and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue |
+| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, bb's automations with their recent runs (40 listed), and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue. An ask of a thread under a parked or kept thread is in the queue, ending "under parked “…”". After the queue, when there are any, "Taken out of the user's queue by an agent, not yet acknowledged by the user" lists the traces about threads under this Main (see "What an agent took out of your queue") |
 | `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |

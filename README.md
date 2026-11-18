@@ -360,6 +360,12 @@ says why, and says what to do instead. There is no command that answers an
 ask, decides a permission request, or makes, deletes or acknowledges a
 capability: those are yours, on the page.
 
+Parking a thread that waits on you, withdrawing an ask, and closing an ask
+as answered when you have not written to that thread since it asked, are
+shown to you: a notice in your queue until you acknowledge it, in the log,
+and in `bb cow status` under a heading of its own. Agents are told this is
+no reason to avoid them when they are right.
+
 ## What cow stores and sends
 
 Written for someone who has to decide whether this may run on their machine.
@@ -467,7 +473,13 @@ An agent **can**, through cow:
   your queue**, with whatever it was waiting on you for. It stays on the
   page: a parked line is on the Parked shelf with its reason and comes back
   to the queue on its date or every four weeks, and an archived line is
-  listed under Archived with its reason for two days;
+  listed under Archived with its reason for two days. **Parking a thread
+  that was waiting on you** (an open ask, one of bb's own questions or
+  permission requests, a refused permission, a failure, a brief with
+  disputes, a reply addressed to you) with `bb cow park` **is shown to you**:
+  a notice in your queue says which thread did it, to what, why, and when,
+  until you acknowledge it, and the log keeps it. Parking one that waited on
+  nothing is not;
 - keep a thread, by calling cow's interface directly: there is no command
   for it, since keeping is the page's `z`. **This takes a line out of your
   queue** as parking does, without a date to come back. The line is in the
@@ -481,7 +493,11 @@ An agent **can**, through cow:
   unsigned too;
 - withdraw or close its own ask, and replace its own brief with a new
   version, which is checked again. Either can take that ask or that brief
-  out of your queue;
+  out of your queue. **Withdrawing an ask, and closing one as answered in
+  chat when you have not written to that thread since it asked, are shown
+  to you** the same way, with the question and the answer the agent says
+  you gave. Closing one after you did write to the thread is the ordinary
+  case, and is not;
 - order a new check of a brief, which costs a model run. Since 0.2.1 that
   cannot take a brief out of your queue: disputes you have not read keep it
   there whatever the new check says;
@@ -491,7 +507,10 @@ An agent **can**, through cow:
 - do the unsigned things above to any thread, not only its own, by calling
   cow's interface directly or by clearing the variable that names its
   thread: the CLI's rules about whose thread a command may touch go by the
-  caller's own word. None of the unsigned things is logged.
+  caller's own word. None of the unsigned things is logged, except the
+  three above that are shown to you, and those only through `bb cow`:
+  parking by calling cow's interface directly, as the page does, leaves no
+  notice.
 
 An agent **cannot**, through cow: make, delete, restore or acknowledge a
 capability; decide a permission request; answer an ask or close one as you;
@@ -511,8 +530,11 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
 - **Signing covers what cow's page does, not everything that empties your
   queue.** Parking and archiving are open to agents and take a line out of
   it, and so does keeping, through cow's interface; look at the Parked
-  shelf, at Kept and at Archived for what was set aside. An ask
-  under a parked thread does not show until the thread is resumed.
+  shelf, at Kept and at Archived for what was set aside. An agent that
+  parks something waiting on you, withdraws an ask, or closes one as
+  answered when you have not written since, with `bb cow`, leaves a notice
+  in your queue. An ask of a thread under a parked or kept thread is in
+  your queue like any ask, saying what it is under.
 - **bb's own commands are outside cow.** Any thread can approve or deny
   another thread's permission request with `bb thread interactions`, and can
   send a thread a message as you with `bb thread tell` once it clears the

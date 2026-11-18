@@ -85,7 +85,7 @@ export function capCommands(caps: Caps, asks: Asks, titleOf: (threadId: string) 
     }),
     "caps log": cliCommand({
       summary: "The capability log, newest first: what was made, deleted and allowed, and by which capability",
-      description: `Every capability made, deleted or restored, every notice acknowledged, every request cow allowed through a capability or the user decided on cow's page, and every request decided somewhere else. Read-only: nothing edits or clears it. ${ONLY_THE_PERSON}`,
+      description: `Every capability made, deleted or restored, every notice acknowledged, every request cow allowed through a capability or the user decided on cow's page, every request decided somewhere else, and, despite the name, every park of a thread that waited on the user, ask withdrawn, and ask closed as answered when the user had not written since, done by a thread. Read-only: nothing edits or clears it. ${ONLY_THE_PERSON}`,
       options: { limit: { type: "integer", min: 1, max: 500, description: "How many entries. Default: 50" }, json },
       async run(input) {
         const o = input.options;
