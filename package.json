@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-cow",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Run your work through one main thread and supervise it from one keyboard-driven page.",
   "license": "MIT",
   "type": "module",
@@ -10,7 +10,7 @@
   },
   "bb": {
     "name": "cow",
-    "description": "\ud83d\udc04 One Main thread, and one keyboard-driven page that shows everything it has delegated.",
+    "description": "🐄 One Main thread, and one keyboard-driven page that shows everything it has delegated.",
     "branding": {
       "icon": "./assets/cow.svg"
     },

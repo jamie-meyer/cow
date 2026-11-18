@@ -4,6 +4,32 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.7
+
+- **A project's reply to its own threads' reports no longer enters your
+  queue.** A reply now waits on you only when it ends the thread's newest
+  turn and you started that turn (or said something into it while it ran),
+  for every thread: Main, projects and workers alike. When a thread under a
+  project reports back, the project's answer to that report ("noted", a
+  status line) no longer reads "replied to you". Instead its line stays idle
+  and gets a small dot after its name, quietly coloured, meaning unread;
+  Main's heading gets the same dot. Opening the chat or `Space` clears it,
+  and `u` brings it back. `bb cow status` says `[unread]` on such lines.
+  What a project needs from you still comes in: its asks (`bb cow ask`),
+  bb's own questions and permission requests, refusals, failures, briefs
+  with disputes, and your own conversations with it.
+- **Main is read like every other thread.** It used to go by bb's own
+  unread record; now it goes by the rule above and cow's record of what you
+  have seen, so reading Main's reply in bb's own chat, outside cow's page,
+  no longer clears it there (a message you send Main does).
+- **bb's back and forward keys walk the chats you opened on the page**
+  (`Cmd+[` and `Cmd+]`), closing the pane included. The page's address
+  names the open chat, so a reload reopens it. A chat reopened that way, or
+  by back and forward, marks nothing as seen: only you opening it does. An
+  address naming a thread the page does not know (deleted, mistyped, a link
+  from another machine) opens nothing and says so; an archived thread's
+  chat opens as `Enter` on its line would.
+
 ## 0.2.6
 
 Another plugin can know things about a thread that cow does not: its pull

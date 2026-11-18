@@ -346,8 +346,7 @@ the parent of a thread's open children to none when it archives it).
   parent bb kept its own record of whether you read its reply; when bb had
   it as read, cow marks its newest reply seen as it moves it, so it does not
   come back as new. That mark is signed: on a page that is not enrolled the
-  move still happens, and the line may read "replied to you" until you open
-  it.
+  move still happens, and its reply may show as unseen until you open it.
 - **Taking it back.** `u` puts back exactly what was there, recorded before
   the move: no parent, its sidebar section in bb, and its notification
   setting, and the seen mark if the move set one. bb gives a thread whose
@@ -1408,7 +1407,7 @@ agent and stop no other.
 | `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Archived with its reason for two days. cow could not stop this by signing it: `bb thread archive` is bb's and does the same |
 | `archive_note_set` | sets or forgets the reason kept for an archived thread | the page, when an archive is undone or redone | the reason shown under Archived can be changed or removed. It archives nothing and moves nothing |
 | `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
-| `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it changes whose its replies are: one that ended a turn you did not start stops reading "replied to you" and leaves the queue, and the line reads done, under To settle, instead of idle in the tree. Marking only adds to what waits on you |
+| `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it moves it, once finished, from idle in the tree to done under To settle. Whose its replies are does not change: that is decided by who started each turn, for a project as for any thread |
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
 | `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's, which a caller can make fail by naming a model that does not exist. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
 

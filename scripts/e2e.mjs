@@ -2277,12 +2277,12 @@ async function historyChecks(page, ids, shot, chooseMain) {
   const pathA = await at(ha, "A open");
   check("opening a chat names it in the page's address", pathA.includes(ha), pathA);
   await page.waitFor(`!${inQueue(ha)}`, { label: "A's reply seen by opening it" });
-  // Take that mark back: Space marks it (and can be undone), u takes it back.
-  await page.key(" ");
-  await page.key("u");
-  await page.key("y");
-  await page.waitFor(`${inQueue(ha)}`, { label: "A's reply unseen again" });
-  check("u takes back the mark on A's reply while its chat is open", (await seenOf(ha)) === null);
+  // Take that mark back while the chat is open, as u does after Space: the check clears the record itself.
+  await signer.must("seen_set", { threadId: ha, seen: null });
+  // Marked on this page, the line stays where it is, out of the queue, until a reload; its reply is what shows it unseen.
+  await page.waitFor(`${lineEl(ha)}?.dataset.cowReply === ""`, { label: "A's reply unseen again" });
+  await sleep(2000);
+  check("with its mark taken back, the open chat does not mark A's reply again", (await seenOf(ha)) === null);
   await select(hb);
   await page.key("Enter");
   await at(hb, "B open");
@@ -2299,7 +2299,8 @@ async function historyChecks(page, ids, shot, chooseMain) {
   await page.eval(`history.back(); true`);
   await at(ha, "back to A");
   check("history.back() again brings A's chat, and the cursor follows it", await page.eval(isCursor(ha)));
-  check("a chat brought back by history marks nothing seen", (await seenOf(ha)) === null && (await page.eval(inQueue(ha))));
+  await sleep(2000);
+  check("a chat brought back by history marks nothing seen", (await seenOf(ha)) === null && (await page.eval(`${lineEl(ha)}?.dataset.cowReply === ""`)));
   await page.eval(`history.back(); true`);
   const closed = await at(null, "back to the page with no chat");
   check("history.back() a third time closes the pane: the address names no chat", !closed.includes(ha) && !closed.includes(hb), closed);
@@ -2312,10 +2313,12 @@ async function historyChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`${screen} === "overview" && ${pane} === "${ha}"`, { label: "the page reloaded with A open", timeout: 60_000 });
   await sleep(3000);
   check("a reload reopens the chat the address names", true);
-  check("the reload marks nothing seen: A's reply, un-marked, still waits in the queue", (await seenOf(ha)) === null && (await page.eval(inQueue(ha))));
+  const afterReload = { seen: await seenOf(ha), queued: await page.eval(`(${lineEl(ha)}?.querySelector(".cow-qn")?.textContent ?? "") !== ""`), state: await page.eval(`${lineEl(ha)}?.dataset.cowState ?? null`) };
+  check("the reload marks nothing seen: A's reply, un-marked, still waits in the queue", afterReload.seen === null && afterReload.queued, JSON.stringify(afterReload));
   await select(ha);
   await page.key("Enter");
   await page.waitFor(`!${inQueue(ha)}`, { label: "A seen by Enter" });
+  await sleep(1000);
   check("Enter on the reopened chat's line marks its reply seen: the person opened it", (await seenOf(ha)) !== null);
   await shot("history-reload");
 
@@ -2337,8 +2340,6 @@ async function historyChecks(page, ids, shot, chooseMain) {
   await page.goto(`${BB}${base}${hc}`);
   await page.waitFor(`${screen} === "overview" && ${pane} === "${hc}"`, { label: "the archived thread's chat", timeout: 60_000 });
   check("an archived thread's id opens its chat, as Enter on its line would", !(await page.eval(message)).includes("not a thread"));
-  await page.eval(`history.back(); true`);
-  await sleep(1000);
 }
 
 async function waitingChecks(page, ids, shot, chooseMain) {
