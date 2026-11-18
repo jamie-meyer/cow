@@ -61,7 +61,7 @@ export function filterOverview(overview: Overview, query: string): Filtered {
     heads[row.depth] = row.id;
   }
   // A folded section is searched too: what matches in it is drawn while the filter is open.
-  for (const line of [...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived]) {
+  for (const line of [...overview.parked, ...overview.asideAsks, ...overview.settle, ...overview.kept, ...overview.archived]) {
     if (matches(query, line.thread.title, line.derived.doing)) found.push(line.thread.id);
   }
   // The automations, each by its name, and their runs; a run's automation is drawn with it, for context.

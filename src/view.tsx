@@ -89,6 +89,7 @@ import {
   foldMove,
   isSection,
   keepFolds,
+  asideText,
   leftBehind,
   listed,
   nextMove,
@@ -538,7 +539,8 @@ function LineRow({
         <span className="cow-title">
           {thread.title}
           {quietUnread ? <UnreadDot /> : null}
-          {flat && parentTitle ? <small> · {parentTitle}</small> : null}
+          {flat && parentTitle && !line.aside ? <small> · {parentTitle}</small> : null}
+          {line.aside ? <small data-cow-aside={line.aside.id}> · under {line.aside.state} “{line.aside.title}”</small> : null}
           {open ? <small className="cow-openmark"> · chat open</small> : null}
           {line.stays ? (
             <small className="cow-staysmark" title="marked seen here: it moves to where its state puts it when the page is loaded again">
@@ -856,7 +858,7 @@ function TodoLine({ row, current, onSelect }: { row: TodoRow; current: boolean; 
 /** What a queue entry says: the question, the failure, or why parked work is back. */
 function queueText(line: Line, now: number): string {
   const park = line.derived.park;
-  return park?.due ? dueText(park.record, park.due, now) : line.derived.doing;
+  return park?.due ? dueText(park.record, park.due, now) : `${line.derived.doing}${asideText(line)}`;
 }
 
 function ColumnHead() {
@@ -1496,6 +1498,7 @@ function OverviewScreen({
   );
   const hit = useMemo(() => (found ? new Set(found.matches) : null), [found]);
   const parkedShown = hit ? overview.parked.filter((line) => hit.has(line.thread.id)) : overview.parked;
+  const asideShown = hit ? overview.asideAsks.filter((line) => hit.has(line.thread.id)) : overview.asideAsks;
   // While filtering, a folded section shows what matches in it.
   const settleFolded = !hit && sectionFolded(folded, SETTLE_SECTION);
   const keptFolded = !hit && sectionFolded(folded, KEPT_SECTION);
@@ -2437,6 +2440,12 @@ function OverviewScreen({
                 ) : (
                   parkedShown.map((line) => row(line, true))
                 )}
+                {asideShown.length > 0 ? (
+                  <p className="cow-shelf-empty" data-cow-aside-asks={asideShown.length}>
+                    Asks of threads set aside under a parked or kept thread: answering one resumes nothing.
+                  </p>
+                ) : null}
+                {asideShown.map((line) => row(line, true))}
                 <SectionHead
                   id={SETTLE_SECTION}
                   title="To settle"

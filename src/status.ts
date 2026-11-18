@@ -6,7 +6,7 @@ import { dueText } from "./park.ts";
 import { OUTSIDE_STATE_TEXT, type OutsideState, notListedText } from "./outside.ts";
 import { type LineState, STATE_LABEL, waitingSince } from "./state.ts";
 import { formatAge } from "./text.ts";
-import { type Line, type Overview, ROLLUP_ORDER, leftBehind, unread } from "./tree.ts";
+import { type Line, type Overview, ROLLUP_ORDER, asideText, leftBehind, unread } from "./tree.ts";
 
 /** How many lines of each section are given; the rest are counted. */
 export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, automations: 40, outside: 40, queue: 20, text: 140 } as const;
@@ -159,7 +159,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
       const park = line.derived.park;
       return {
         ...toStatusLine(line, now),
-        doing: cut(park?.due ? dueText(park.record, park.due, now) : line.derived.doing, STATUS_LIMITS.text),
+        doing: cut(park?.due ? dueText(park.record, park.due, now) : `${line.derived.doing}${asideText(line)}`, STATUS_LIMITS.text),
         waiting: formatAge(Math.max(0, now - waitingSince(line.derived))),
       };
     }),

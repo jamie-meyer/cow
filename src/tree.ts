@@ -54,6 +54,11 @@ export interface Line {
   stays?: true;
   /** A run of an automation, listed under it in the Automations section: the row id of that automation. */
   run?: string;
+  /**
+   * A thread under a parked or kept thread, listed only because it has an
+   * open ask: the thread it is set aside under, and how.
+   */
+  aside?: { id: string; title: string; state: "parked" | "kept" };
 }
 
 /** Work a thread has listed as not started yet: a row in its group. */
@@ -109,6 +114,13 @@ export interface Overview {
   settle: Line[];
   /** Kept by the person with z, newest kept first. Their descendants are only counted. */
   kept: Line[];
+  /**
+   * Threads under a parked or kept thread that have an open ask, oldest
+   * ask first: set aside with it, yet an ask is the person's to answer
+   * wherever it is, so each is listed after the Parked shelf and is in the
+   * queue, saying what it is under. Nothing else about them is listed.
+   */
+  asideAsks: Line[];
   /** Archived in the last two days, newest first, with their reasons. */
   archived: Line[];
   /** bb's automations, each with its recent run threads: see `automationSection`. A run that needs the person is in the queue. */
@@ -190,6 +202,7 @@ export function buildOverview(
     parked: [],
     settle: [],
     kept: [],
+    asideAsks: [],
     archived: [],
     automations: NO_SECTION,
     outside: NO_OUTSIDE,
@@ -294,12 +307,25 @@ export function buildOverview(
       overview.archived.push({ ...lineFor(node, 0, null), under: node.under });
     }
   };
-  /** Everything under a parked or kept thread is set aside with it. */
+  /**
+   * Everything under a parked or kept thread is set aside with it, except
+   * an open ask: a thread under it that has one is listed for that alone.
+   */
   const shelve = (node: Node): void => {
     noteUnarchived(node);
     const line = { ...lineFor(node, 0, null), under: node.under };
-    if (node.derived.state === "kept") overview.kept.push(line);
+    const state = node.derived.state === "kept" ? "kept" : "parked";
+    if (state === "kept") overview.kept.push(line);
     else overview.parked.push(line);
+    const aside = { id: node.thread.id, title: node.thread.title, state } as const;
+    const asking = (kid: Node): void => {
+      if (kid.thread.archivedAt !== null) return;
+      if ((kid.derived.asks?.length ?? 0) > 0) {
+        overview.asideAsks.push({ ...lineFor(kid, 1, node.thread.id), derived: { ...kid.derived, waitingOnYou: true }, aside });
+      }
+      kid.kids.forEach(asking);
+    };
+    node.kids.forEach(asking);
   };
   /** Appends the todo rows of `ownerId` at `depth`; returns how many. */
   const todoRows = (ownerId: string, depth: number): number => {
@@ -359,10 +385,11 @@ export function buildOverview(
   overview.settle.sort(settleOrder);
   overview.parked.sort((a, b) => a.derived.since - b.derived.since || a.thread.id.localeCompare(b.thread.id));
   overview.kept.sort((a, b) => b.derived.since - a.derived.since || a.thread.id.localeCompare(b.thread.id));
+  overview.asideAsks.sort((a, b) => waitingSince(a.derived) - waitingSince(b.derived) || a.thread.id.localeCompare(b.thread.id));
   // Main has no line of its own, but its unread reply or question is still
   // the user's to deal with, so it takes a place in the queue. A kept line
   // is there only for what truly needs the person: its open ask.
-  overview.queue = [mainLine, ...overview.lines, ...overview.parked, ...overview.kept, ...runLines(overview)]
+  overview.queue = [mainLine, ...overview.lines, ...overview.parked, ...overview.kept, ...overview.asideAsks, ...runLines(overview)]
     .filter((line) => line.derived.waitingOnYou)
     .sort(
       (a, b) =>
@@ -381,7 +408,8 @@ export function buildOverview(
 /**
  * A run of an automation as a line. It has no parent, so no reply of its is
  * the person's: it waits on them only for bb's own question or permission
- * request, or an open ask. Otherwise it is at rest, whatever it came to,
+ * request, an open ask, or a permission bb refused it without asking.
+ * Otherwise it is at rest, whatever it came to,
  * and nothing about it is coloured: a failure shows on its automation's row.
  */
 function runLine(thread: ThreadFacts, derived: Derived, group: string): Line {
@@ -496,9 +524,12 @@ export function leftBehind(line: Line, todos = 0): string[] {
   return out;
 }
 
-/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, Archived, then the automations' runs. Outside Main's lines are not `Line`s, and not here. */
+/** For an ask of a thread under a parked or kept one: what it is set aside under. Empty for any other line. */
+export const asideText = (line: Line): string => (line.aside ? ` · under ${line.aside.state} “${line.aside.title}”` : "");
+
+/** Every thread line on the page, top to bottom: the tree, the Parked shelf and the asks under what is set aside, To settle, Kept, Archived, then the automations' runs. Outside Main's lines are not `Line`s, and not here. */
 export function listed(overview: Overview): Line[] {
-  return [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived, ...runLines(overview)];
+  return [...overview.lines, ...overview.parked, ...overview.asideAsks, ...overview.settle, ...overview.kept, ...overview.archived, ...runLines(overview)];
 }
 
 /** The sections that fold, as the cursor names their headings. */
@@ -585,6 +616,7 @@ export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = ne
   return [
     ...visibleRows(overview, folded).map((row) => row.id),
     ...overview.parked.map((line) => line.thread.id),
+    ...overview.asideAsks.map((line) => line.thread.id),
     ...section(SETTLE_SECTION),
     ...section(KEPT_SECTION),
     ...overview.archived.map((line) => line.thread.id),

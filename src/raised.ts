@@ -38,7 +38,8 @@ export function withRaised(report: StatusReport, openAsks: readonly Ask[], brief
     kept: report.kept.map(marked),
     archived: report.archived.map(marked),
   };
-  const listed = new Set([out.main, ...out.threads, ...out.parked, ...out.settle, ...out.kept, ...out.archived].map((line) => line.id));
+  // The queue too: an ask of a thread under a parked or kept one is listed only there.
+  const listed = new Set([out.main, ...out.queue, ...out.threads, ...out.parked, ...out.settle, ...out.kept, ...out.archived].map((line) => line.id));
   return {
     ...out,
     asks: openAsks.filter((ask) => listed.has(ask.threadId)).sort((a, b) => a.createdAt - b.createdAt),

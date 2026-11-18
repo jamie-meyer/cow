@@ -290,7 +290,9 @@ runs.
   automation's runs are not read; its row shows what the plugin records of
   its last run.
 - **The queue.** A run that needs you, because of bb's own question or
-  permission request or an open ask, is in the queue like any thread. A
+  permission request, an open ask, or a permission bb refused it without
+  asking (blocked, ⊘), is in the queue like any thread, with the same keys:
+  `a` grants a capability, asks again as you or dismisses it. A
   finished run is not, whatever it came to, is not under To settle, and is
   never coloured. The legend's counts are of the threads under Main only.
 - **Verbs.** `Enter` on a run opens its chat; on an agent automation's row,

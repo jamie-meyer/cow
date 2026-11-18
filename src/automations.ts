@@ -336,8 +336,13 @@ export function olderText(group: Pick<AutomationGroup, "older" | "moreRuns">): s
   return group.moreRuns ? `${group.older > 0 ? `${group.older} older, and more` : "older runs"} not listed` : `${group.older} older not listed`;
 }
 
-/** What a run thread waits on the person for: only bb's own question or permission request, or an open ask. */
-export const runNeedsPerson = (line: Line): boolean => line.thread.hasPendingInteraction || (line.derived.asks?.length ?? 0) > 0;
+/**
+ * What a run thread waits on the person for: only bb's own question or
+ * permission request, an open ask, or a permission bb refused it without
+ * asking that has not been dismissed (granting or dismissing it is theirs).
+ */
+export const runNeedsPerson = (line: Line): boolean =>
+  line.thread.hasPendingInteraction || (line.derived.asks?.length ?? 0) > 0 || line.derived.blocked !== undefined;
 
 /** The script output of an automation's latest run, for the reader; null when there is none to show. */
 export function scriptOutput(group: AutomationGroup): string | null {

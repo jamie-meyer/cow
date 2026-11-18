@@ -320,3 +320,18 @@ test("the page reads again only when an automation's thread appears or changes",
   assert.notEqual(runThreadsKey(world().map((t) => (t.id === "n0" ? { ...t, status: "active" } : t))), before);
   assert.notEqual(runThreadsKey(world([thread({ id: "new", originPluginId: "automations" })])), before);
 });
+
+test("a run bb refused a permission without asking is blocked and in the queue, like any blocked thread; dismissed, it leaves", () => {
+  const refusal = { id: "call_1", kind: "command" as const, what: "npm publish", cwd: null, change: null, diff: null, why: "refused", at: NOW - HOUR, seq: 7 };
+  const threads = world([thread({ id: "refused", originPluginId: "automations", lastReadAt: NOW })]);
+  const read: AutomationsRead = { available: true, automations: [{ automation: automation({ id: "r" }), runs: [run("rr", "refused", 1)], moreRuns: false }] };
+  const blockedDerive = (dismissed: number | null) => (t: ThreadFacts) =>
+    t.id === "refused" ? derive(t, activity({ output: "tried", refusals: [refusal] }), NOW, null, null, dismissed, { seenSeq: null }) : derived(t);
+  const overview = buildOverview(threads, "main", blockedDerive(null), NOW, { note: () => null, todos: () => [], automations: read });
+  const line = overview.queue.find((other) => other.thread.id === "refused");
+  assert.ok(line, "the blocked run is in the queue");
+  assert.deepEqual([line.derived.state, line.run], ["blocked", "automation:r"]);
+  assert.equal(line.derived.blocked?.refusals.length, 1);
+  const dismissed = buildOverview(threads, "main", blockedDerive(7), NOW, { note: () => null, todos: () => [], automations: read });
+  assert.ok(!dismissed.queue.some((other) => other.thread.id === "refused"));
+});
