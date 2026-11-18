@@ -1,7 +1,8 @@
-// Whose a finished turn's reply is. bb tracks unread replies only for threads
-// without a parent, so for the rest cow works it out from the event log: a
-// reply is addressed to the person when they started the turn it ends, or
-// when the thread is one they talk to directly (a group head).
+// Whose a finished turn's reply is, worked out from the event log, the same
+// way for every thread under Main and for Main itself: a reply is addressed
+// to the person when it ends the thread's newest finished turn and the person
+// started that turn, or spoke into it while it ran. A turn an agent or one of
+// bb's notices started ends in a reply that is not theirs.
 //
 // How a turn's start looks in the log, established against bb 0.49:
 // - every prompt is a `client/turn/requested` event with `source` ("spawn"
@@ -33,8 +34,6 @@ export interface Replies {
   personSpokeSeq: number | null;
   /** When that message was sent. */
   personSpokeAt?: number | null;
-  /** bb told it that a thread was moved under it: it may have threads under it that it never started. */
-  adopted?: boolean;
 }
 
 export const NO_REPLIES: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
@@ -70,7 +69,7 @@ export function findReplies(events: readonly unknown[]): Replies {
   }
   log.sort((a, b) => a.seq - b.seq);
 
-  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null, adopted: false };
+  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
   /** Who sent the prompt that the next turn starts from; null when it is not among the events. */
   let waiting: Starter | null = null;
   /** Whether the turn in progress is the person's. */
@@ -86,7 +85,6 @@ export function findReplies(events: readonly unknown[]): Replies {
         found.personSpokeAt = event.at;
       }
       const kind = event.data.systemMessageKind;
-      if (kind === "ownership-assigned" || kind === "ownership-batch") found.adopted = true;
       const steers = record(event.data.target)?.kind === "steer";
       if (steers) {
         // Said into a turn that is running: its reply answers the person too.
@@ -120,33 +118,19 @@ export function findReplies(events: readonly unknown[]): Replies {
 }
 
 /**
- * Whether the person talks to a thread directly, so that every reply of its
- * is theirs. A thread with threads under it is taken to be one they talk to;
- * but one that bb has told a thread was moved under it, and that the person
- * has never written to in the turns read, is a worker that was handed a
- * thread: its replies go to whoever started its turns, as any worker's do.
- * A thread marked as a project is never read that way.
- */
-export function talksTo(head: boolean, replies: Replies | undefined, marked = false): boolean {
-  // One marked as a project is the person's by their own word, whatever was moved under it.
-  return head && (marked || !(replies?.adopted === true && replies.personSpokeSeq == null));
-}
-
-/**
- * The reply the person has not seen, or null.
+ * A reply the person has not seen, or null.
  *
- * - `head`: the thread has threads under it, so the person talks to it
- *   directly and every finished turn ends in a reply for them, whoever
- *   started it. A leaf's reply is theirs only when they started the turn,
- *   and only while that turn is its newest finished one.
+ * - `anyTurn` false: the reply addressed to them, which puts a line in the
+ *   queue: it ends the newest finished turn, and they started that turn.
+ *   Once another turn has ended after it (an agent's, a notice of bb's),
+ *   the person is no longer in conversation with the thread.
+ * - `anyTurn` true: the newest reply, whoever started its turn: what a line
+ *   marks unread without putting it in the queue.
  * - `seenSeq`: cow's own record of the turn the person last saw.
  * - A message the person sent after the reply means they read it.
  */
-export function unreadReply(replies: Replies | undefined, head: boolean, seenSeq: number | null | undefined): TurnEnd | null {
-  // A leaf's reply is the person's only while it ends the newest finished
-  // turn: once another turn has ended after it (an agent's, a notice of
-  // bb's), the person is no longer in conversation with it.
-  const reply = head ? replies?.last : replies?.toPerson && replies.last?.seq === replies.toPerson.seq ? replies.toPerson : null;
+export function unreadReply(replies: Replies | undefined, anyTurn: boolean, seenSeq: number | null | undefined): TurnEnd | null {
+  const reply = anyTurn ? replies?.last : replies?.toPerson && replies.last?.seq === replies.toPerson.seq ? replies.toPerson : null;
   if (!reply) return null;
   if (seenSeq != null && seenSeq >= reply.seq) return null;
   if (replies?.personSpokeSeq != null && replies.personSpokeSeq > reply.seq) return null;

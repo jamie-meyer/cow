@@ -220,7 +220,7 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
   {
     state: "idle",
     short: "a project, quiet for now",
-    long: "A project with nothing to say: not running, nothing waiting on you, no reply unseen. A project is Main, a thread with threads under it, or one marked with P or bb cow project. It is never done: it keeps its place, shows how long it has been quiet and what it says is next, and leaves only when you archive it with e.",
+    long: "A project with nothing to say: not running, nothing waiting on you. Its reply to a turn you did not start, a report from a thread under it say, does not wait on you: unseen, it puts a small dot after its name, which opening its chat or Space clears. A project is Main, a thread with threads under it, or one marked with P or bb cow project. It is never done: it keeps its place, shows how long it has been quiet and what it says is next, and leaves only when you archive it with e.",
   },
   {
     state: "done",
@@ -460,6 +460,8 @@ function LineRow({
   // A run of an automation is plain unless it waits on the person: its failure shows on its automation's row.
   if (line.run !== undefined) classes.push(derived.waitingOnYou ? "cow-run-waits" : "cow-run");
   const isUnread = settle && unread(line);
+  // A project's reply to a turn the person did not start: marked, quietly, where it is.
+  const quietUnread = !settle && derived.state === "idle" && derived.unseen !== undefined;
   if (isUnread) classes.push("cow-unread");
   const behind = settle ? leftBehind(line) : [];
   if (fold !== null) classes.push("cow-grouphead");
@@ -535,6 +537,7 @@ function LineRow({
         )}
         <span className="cow-title">
           {thread.title}
+          {quietUnread ? <UnreadDot /> : null}
           {flat && parentTitle ? <small> · {parentTitle}</small> : null}
           {open ? <small className="cow-openmark"> · chat open</small> : null}
           {line.stays ? (
@@ -2078,9 +2081,6 @@ function OverviewScreen({
         if (selectedTodo) return setMessage("that is work not started, not a reply");
         // A decision made outside cow is acknowledged first: it is the newer thing to know.
         if (selectedLine?.derived.outside) return acknowledgeOutside(selectedLine);
-        if (selectedLine === main && main.thread.parentThreadId === null) {
-          return setMessage("Main's reply is read by opening its chat: press m");
-        }
         return selectedLine ? verbs.markSeen(selectedLine, true) : undefined;
       case "project":
         if (selectedTodo) return setMessage("that is work not started, not a thread");
@@ -2304,6 +2304,7 @@ function OverviewScreen({
             <h1 className="cow-crumbs">
               <span className="cow-emoji">🐄</span>
               <b>{main.thread.title}</b>
+              {main.derived.state === "idle" && main.derived.unseen !== undefined ? <UnreadDot /> : null}
             </h1>
             <span
               className={`cow-mainstate cow-s-${main.derived.state}`}
@@ -2772,6 +2773,23 @@ function OverviewScreen({
   );
 }
 
+/**
+ * A project's or Main's newest reply, to a turn the person did not start, not
+ * yet seen: a small mark on its line, never a wait. Opening the chat or Space
+ * clears it; u brings it back.
+ */
+function UnreadDot() {
+  return (
+    <i
+      className="cow-unreaddot"
+      data-cow-unseen=""
+      role="img"
+      aria-label="unread"
+      title="unread: a reply to a turn you did not start · Enter reads it, Space marks it seen"
+    />
+  );
+}
+
 /** The whole page: decides between loading, an error, the picker and the overview. */
 export function CowPage({ subPath }: PluginNavPanelProps) {
   const sdk = useSdk();
@@ -2848,7 +2866,7 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
                 thread.id === mainId ? null : notes.get(thread.id),
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
-                { head: projects.has(thread.id), project: projects.has(thread.id), marked: parks.projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
+                { project: projects.has(thread.id), main: thread.id === mainId, seenSeq: parks.seen.get(thread.id)?.seq ?? null },
                 { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id), outside: caps.outside.get(thread.id) },
                 parks.waits.get(thread.id),
                 thread.id === mainId ? null : parks.keeps.get(thread.id),

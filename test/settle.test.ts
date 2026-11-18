@@ -17,7 +17,7 @@ const rested = (ago: number, { toPerson = false, spoke = null as number | null, 
   });
 const leaf = (id: string, ago: number, overrides: Partial<ThreadFacts> = {}) =>
   thread({ id, parentThreadId: "main", latestAttentionAt: NOW - ago, createdAt: NOW - 30 * DAY, ...overrides });
-const attention = (seen: Record<string, number> = {}) => (t: ThreadFacts): Attention => ({ head: false, project: false, seenSeq: seen[t.id] ?? null });
+const attention = (seen: Record<string, number> = {}) => (t: ThreadFacts): Attention => ({ project: false, seenSeq: seen[t.id] ?? null });
 
 function page(threads: ThreadFacts[], acts: Record<string, Activity>, seen: Record<string, number> = {}, brief: Record<string, BriefMark> = {}) {
   const look = attention(seen);
@@ -67,16 +67,18 @@ test("a reply the person never read, however old, never reads stuck", () => {
   assert.equal(report.settle[0]!.derived.state, "done");
 });
 
-test("a project's reply, and Main's, still enter the queue whoever started the turn", () => {
+test("a project's reply, and Main's, enter the queue only when the person started the turn", () => {
   const head = thread({ id: "head", parentThreadId: "main", latestAttentionAt: NOW - HOUR });
   const kid = thread({ id: "kid", parentThreadId: "head", latestAttentionAt: NOW - HOUR });
   const overview = buildOverview(
     [thread({ id: "main", lastReadAt: NOW - 3 * HOUR, latestAttentionAt: NOW - 2 * HOUR }), head, kid],
     "main",
-    (t) => derive(t, rested(HOUR), NOW, null, null, null, { head: t.id !== "kid", project: t.id !== "kid", seenSeq: null }),
+    (t) => derive(t, rested(HOUR, { toPerson: t.id === "main" }), NOW, null, null, null, { project: t.id !== "kid", main: t.id === "main", seenSeq: null }),
     NOW,
   );
-  assert.deepEqual(ids(overview.queue).sort(), ["head", "main"]);
+  // Main's reply ends a turn the person started; head's ends its worker's report.
+  assert.deepEqual(ids(overview.queue), ["main"]);
+  assert.deepEqual(overview.lines.find((line) => line.thread.id === "head")?.derived.unseen, { seq: 10 });
 });
 
 test("To settle lists every finished line however old, unread first, then oldest first", () => {

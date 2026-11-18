@@ -141,9 +141,12 @@ come back, work waiting on someone else whose reminder has come,
 capabilities you have not acknowledged, and permission requests decided
 somewhere other than cow. `Tab` and `1` to `9` jump to an entry. A reply you
 mark seen leaves the queue but its line stays where it is, dimmed, until you
-reload the page. A reply is in the queue only when it ends a turn you started,
-or comes from Main or a project: a worker's report on its job, or a turn
-another agent started, is not yours to act on now.
+reload the page. A reply is in the queue only when it ends the thread's
+newest turn and you started that turn (or spoke into it while it ran), for
+Main and projects as for workers: a worker's report on its job, a project's
+reply to a report from a thread under it, or a turn another agent started,
+is not yours to act on now. On a project or Main such a reply, unseen, puts
+a small dot after its name instead; opening its chat or `Space` clears it.
 
 **To settle.** A finished thread that is not archived waits here for one
 decision: archive it (`e`, with a reason), park it (`p`), keep it (`z`), or
@@ -272,7 +275,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `a` | answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card |
 | `b` | open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes |
-| `Space` | mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line to settle, it is no longer unread; on a line whose request was decided outside cow, acknowledge that |
+| `Space` | mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line to settle, or a project or Main marked with the unread dot, it is no longer unread; on a line whose request was decided outside cow, acknowledge that |
 | `w` | say the line is waiting on someone else: who or what, then a reminder (19 Nov, +3d, +2w) or nothing. On a waiting line, w clears it (y confirms); when its reminder comes, a keeps it waiting or takes it back |
 
 **Setting work aside, ending it, taking it back**

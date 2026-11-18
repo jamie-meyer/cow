@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findReplies, starterOf, talksTo, unreadReply } from "../src/attention.ts";
+import { findReplies, starterOf, unreadReply } from "../src/attention.ts";
 import { derive } from "../src/state.ts";
+import { buildOverview, projectIds } from "../src/tree.ts";
 import type { Refusal } from "../src/refusal.ts";
 import { HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
 
@@ -107,11 +108,10 @@ test("junk among the events is ignored", () => {
     toPerson: null,
     personSpokeSeq: null,
     personSpokeAt: null,
-    adopted: false,
   });
 });
 
-test("unread: a leaf counts only a newest turn the person started; a head counts every turn", () => {
+test("unread: the person's reply counts only while it ends the newest finished turn; the newest reply of any turn can be marked", () => {
   const events = [...turn("person"), ...turn("agent")];
   const replies = findReplies(events);
   // The person's turn is no longer the newest: another thread has spoken to it since.
@@ -132,7 +132,7 @@ test("unread: seen through that turn is read; a reply after the seen one is unre
   assert.equal(unreadReply(replies, false, end - 1)?.seq, end);
   const second = [...first, ...turn("person")];
   assert.equal(unreadReply(findReplies(second), false, end)?.seq, second[5]!.seq);
-  // A head: a notice-started turn after the seen one is a new reply too.
+  // Any turn: a notice-started turn after the seen one is a new reply to mark.
   const noticed = [...first, ...turn("system")];
   assert.equal(unreadReply(findReplies(noticed), true, end)?.seq, noticed[5]!.seq);
   assert.equal(unreadReply(findReplies(noticed), false, end), null);
@@ -149,8 +149,8 @@ test("unread: a message the person sent after the reply means they read it", () 
 
 const child = (overrides = {}) => thread({ id: "a", parentThreadId: "main", lastReadAt: null, ...overrides });
 const said = (events: unknown[]) => activity({ output: "All merged.\nDetails follow.", replies: findReplies(events) });
-const state = (t: ReturnType<typeof thread>, events: unknown[], head: boolean, seenSeq: number | null = null) =>
-  derive(t, said(events), NOW, null, null, null, { head, seenSeq });
+const state = (t: ReturnType<typeof thread>, events: unknown[], project: boolean, seenSeq: number | null = null) =>
+  derive(t, said(events), NOW, null, null, null, { project, seenSeq });
 
 test("a leaf that finished a turn its parent started is done", () => {
   for (const sender of ["spawn", "agent", "system"] as const) {
@@ -172,21 +172,12 @@ test("a leaf that finished a turn the person started replied to them", () => {
   assert.deepEqual(d.reply, { seq: events[2]!.seq });
 });
 
-test("a group head replied to the person whoever started the turn", () => {
-  for (const sender of ["person", "spawn", "agent", "system"] as const) {
-    const events = turn(sender);
-    const d = state(child(), events, true);
-    assert.equal(d.state, "wants", sender);
-    assert.deepEqual(d.reply, { seq: events[2]!.seq });
-  }
-});
-
 test("seen, it is done; a reply after the seen one wants the person again", () => {
-  const first = turn("system");
+  const first = turn("person");
   const seen = first[2]!.seq;
-  assert.equal(state(child(), first, true, seen).state, "done");
-  const again = [...first, ...turn("system")];
-  const d = state(child(), again, true, seen);
+  assert.equal(state(child(), first, false, seen).state, "done");
+  const again = [...first, ...turn("person")];
+  const d = state(child(), again, false, seen);
   assert.equal(d.state, "wants");
   assert.deepEqual(d.reply, { seq: again[5]!.seq });
 });
@@ -209,13 +200,13 @@ test("a reply nobody read for a week is still the person's, and never reads as s
   assert.deepEqual(d.reply, { seq: events[2]!.seq });
 });
 
-test("without attention, or without a parent, nothing changes: bb's own unread record decides", () => {
+test("without attention, or for a thread with no parent that is not Main, bb's own unread record decides", () => {
   const events = turn("person");
   assert.equal(derive(child(), said(events), NOW).state, "done");
   const main = thread({ id: "main", lastReadAt: NOW, latestAttentionAt: NOW - HOUR });
-  assert.equal(derive(main, said(events), NOW, null, null, null, { head: true, seenSeq: null }).state, "done");
+  assert.equal(derive(main, said(events), NOW, null, null, null, { seenSeq: null }).state, "done");
   const unread = thread({ id: "main", lastReadAt: NOW - 2 * HOUR, latestAttentionAt: NOW - HOUR });
-  const d = derive(unread, said(events), NOW, null, null, null, { head: true, seenSeq: 10_000 });
+  const d = derive(unread, said(events), NOW, null, null, null, { seenSeq: 10_000 });
   assert.equal(d.state, "wants");
   assert.equal(d.next, "read its reply");
 });
@@ -223,7 +214,7 @@ test("without attention, or without a parent, nothing changes: bb's own unread r
 test("parked, archived and failed outrank an unseen reply", () => {
   const events = turn("person");
   const park = { at: NOW - HOUR, reason: "later", pickUp: { kind: "none" as const }, checkedAt: NOW - HOUR };
-  assert.equal(derive(child(), said(events), NOW, park, null, null, { head: true, seenSeq: null }).state, "parked");
+  assert.equal(derive(child(), said(events), NOW, park, null, null, { seenSeq: null }).state, "parked");
   assert.equal(state(child({ archivedAt: NOW - MINUTE }), events, true).state, "done");
   assert.equal(state(child({ status: "error" }), events, true).state, "failed");
 });
@@ -232,10 +223,10 @@ test("a refused permission outranks an unseen reply, which is still there once i
   const events = turn("person");
   const refusal: Refusal = { id: "c1", kind: "command", what: "echo cow", cwd: null, change: null, diff: null, why: "refused", at: NOW - MINUTE, seq: 900 };
   const blocked = activity({ output: "ok", replies: findReplies(events), refusals: [refusal] });
-  const d = derive(child(), blocked, NOW, null, null, null, { head: false, seenSeq: null });
+  const d = derive(child(), blocked, NOW, null, null, null, { seenSeq: null });
   assert.equal(d.state, "blocked");
   assert.equal(d.reply, undefined);
-  const dismissed = derive(child(), blocked, NOW, null, null, 900, { head: false, seenSeq: null });
+  const dismissed = derive(child(), blocked, NOW, null, null, 900, { seenSeq: null });
   assert.equal(dismissed.state, "wants");
   assert.deepEqual(dismissed.reply, { seq: events[2]!.seq });
 });
@@ -271,20 +262,12 @@ test("a worker spawned by an agent, that hit a permission prompt, then was hande
   assert.equal(replies.personSpokeSeq, null);
   // bb's notice ends in no reply: the last one is its report.
   assert.equal(replies.last?.seq, work[work.length - 1]!.seq);
-  assert.equal(replies.adopted, true);
-  // Having a thread under it made it a group head, which is what read
-  // "replied to you": a head's every reply was the person's.
-  assert.notEqual(unreadReply(replies, true, null), null);
-  assert.equal(talksTo(true, replies), false);
-  // Marked as a project, it is the person's all the same.
-  assert.equal(talksTo(true, replies, true), true);
-  const d = state(child(), events, true);
-  assert.notEqual(d.state, "wants");
-  assert.equal(d.reply, undefined);
-  // As a group head it is a project: idle, and it can be archived.
-  const project = derive(child(), said(events), NOW, null, null, null, { head: true, project: true, seenSeq: null });
+  // Having a thread under it makes it a project: idle, its report marked unread, not in the queue.
+  const project = derive(child(), said(events), NOW, null, null, null, { project: true, seenSeq: null });
   assert.equal(project.state, "idle");
   assert.equal(project.waitingOnYou, false);
+  assert.equal(project.reply, undefined);
+  assert.deepEqual(project.unseen, { seq: work[work.length - 1]!.seq });
 });
 
 test("a notice of bb's is never the person, whatever initiator it records", () => {
@@ -297,13 +280,73 @@ test("a notice of bb's is never the person, whatever initiator it records", () =
   assert.equal(replies.toPerson?.seq, events[2]!.seq);
 });
 
-test("a head the person writes to stays theirs after a thread is moved under it; one bb never told of a move is a head as before", () => {
-  const spoken = findReplies([prompt("person"), started(), completed(), ownershipNotice(), started(), completed(), ...turn("system")]);
-  assert.equal(talksTo(true, spoken), true);
-  assert.equal(talksTo(false, spoken), false);
-  const plain = findReplies([prompt("spawn"), started(), completed(), ...turn("system")]);
-  assert.equal(plain.adopted, false);
-  assert.equal(talksTo(true, plain), true);
-  // A notice that a thread was moved away is not one of being handed one.
-  assert.equal(findReplies([ownershipNotice("system", "ownership-removed"), started(), completed()]).adopted, false);
+test("a project the person wrote to replied to them, though a thread was moved under it since; a later report ends that", () => {
+  const spoken = [prompt("person"), started(), completed(), ownershipNotice(), started(), completed()];
+  const d = state(child(), spoken, true);
+  assert.equal(d.state, "wants");
+  assert.deepEqual(d.reply, { seq: spoken[2]!.seq });
+  // A notice that a thread was moved away ends in no reply either.
+  const moved = [...turn("person"), ownershipNotice("system", "ownership-removed"), started(), completed()];
+  assert.equal(findReplies(moved).last?.seq, moved[2]!.seq);
+  // A report from a thread under it starts a turn that is not the person's: its reply is marked, not queued.
+  const reported = [...spoken, ...turn("system")];
+  const after = state(child(), reported, true);
+  assert.deepEqual([after.state, after.waitingOnYou, after.unseen], ["idle", false, { seq: reported[reported.length - 1]!.seq }]);
+});
+
+// ---- the rule, for every kind of thread -----------------------------------
+
+type Opener = "person" | "steer" | "agent" | "notice" | "spawn";
+/** One whole turn, opened as named: "steer" is an agent's turn the person spoke into while it ran. */
+function opened(by: Opener) {
+  if (by === "steer") return [prompt("agent"), started(), prompt("person", true), completed()];
+  return turn(by === "notice" ? "system" : by);
+}
+
+test("a reply enters the queue only when the person started its turn, or spoke into it, for Main, a project, a group head and a worker alike", () => {
+  const kinds = ["main", "marked", "head", "worker"] as const;
+  for (const by of ["person", "steer", "agent", "notice", "spawn"] as const) {
+    for (const kind of kinds) {
+      for (const seen of [false, true]) {
+        seq = 0;
+        const events = opened(by);
+        const end = events[events.length - 1]!.seq;
+        // bb has Main unread throughout: its own record no longer decides.
+        const threads = [
+          thread({ id: "main", lastReadAt: null, latestAttentionAt: NOW }),
+          thread({ id: "marked", parentThreadId: "main", createdAt: 2 }),
+          thread({ id: "head", parentThreadId: "main", createdAt: 3 }),
+          thread({ id: "kid", parentThreadId: "head", createdAt: 4, status: "active" }),
+          thread({ id: "worker", parentThreadId: "main", createdAt: 5 }),
+        ];
+        const projects = projectIds(threads, ["marked"], "main");
+        const overview = buildOverview(
+          threads,
+          "main",
+          (t) =>
+            derive(t, t.id === kind ? said(events) : activity({ lastEventAt: NOW }), NOW, null, null, null, {
+              project: projects.has(t.id),
+              main: t.id === "main",
+              seenSeq: t.id === kind && seen ? end : null,
+            }),
+          NOW,
+          { note: () => null, todos: () => [], marked: (id) => id === "marked" },
+        );
+        const line = kind === "main" ? overview.main! : [...overview.lines, ...overview.settle].find((l) => l.thread.id === kind)!;
+        const where = `${by} · ${kind} · ${seen ? "seen" : "unseen"}`;
+        const persons = by === "person" || by === "steer";
+        const queued = overview.queue.some((l) => l.thread.id === kind);
+        assert.equal(queued, persons && !seen, where);
+        if (persons && !seen) {
+          assert.deepEqual([line.derived.state, line.derived.reply], ["wants", { seq: end }], where);
+          continue;
+        }
+        assert.equal(line.derived.state, kind === "worker" ? "done" : "idle", where);
+        assert.equal(line.derived.reply, undefined, where);
+        // Unseen, the reply is marked; seen, nothing is.
+        assert.deepEqual(line.derived.unseen, seen ? undefined : { seq: end }, where);
+        if (kind === "worker") assert.equal(overview.settle.some((l) => l.thread.id === "worker"), true, where);
+      }
+    }
+  }
 });

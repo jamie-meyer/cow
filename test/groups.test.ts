@@ -267,7 +267,7 @@ test("the next move is the thread's own note, except where only the user can act
 
 test("a reply waiting on the user still shows the thread's own note of what is next", () => {
   const t = thread({ id: "proj", parentThreadId: "main" });
-  const derived = derive(t, { lastEventAt: null, turn: null, latestStep: "", output: "Done.", ask: null, refusals: [], replies: { last: { seq: 9, at: NOW - HOUR }, toPerson: null, personSpokeSeq: null } }, NOW, null, null, null, { head: true, seenSeq: null });
+  const derived = derive(t, { lastEventAt: null, turn: null, latestStep: "", output: "Done.", ask: null, refusals: [], replies: { last: { seq: 9, at: NOW - HOUR }, toPerson: { seq: 9, at: NOW - HOUR }, personSpokeSeq: 5 } }, NOW, null, null, null, { seenSeq: null });
   const base = build([thread({ id: "main" }), t]).settle[0]!;
   assert.deepEqual(nextMove({ ...base, derived, note: "next: the second half" }), { text: "next: the second half", own: true });
   assert.deepEqual(nextMove({ ...base, derived, note: null }), { text: "read it: Enter, or Space once seen", own: false });

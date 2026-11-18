@@ -8,9 +8,9 @@ import { undoShort, undoText } from "../src/undo.ts";
 import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
 
-const project: Attention = { head: true, project: true, seenSeq: null };
+const project: Attention = { project: true, seenSeq: null };
 const done = (at: number) => ({ phase: "completed" as const, at, failed: false });
-const replies = (seq: number, at: number) => ({ last: { seq, at }, toPerson: null, personSpokeSeq: null });
+const replies = (seq: number, at: number, person = false) => ({ last: { seq, at }, toPerson: person ? { seq, at } : null, personSpokeSeq: person ? seq - 3 : null });
 
 test("a project is Main, a thread that has or has had threads under it, or a marked one", () => {
   const threads = [
@@ -26,17 +26,20 @@ test("a project is Main, a thread that has or has had threads under it, or a mar
   assert.deepEqual([...projectIds(threads, [], null)].sort(), ["had", "head", "main"]);
 });
 
-test("a project that finished a turn replied to you; once seen it is idle, never done", () => {
+test("a project that finished a turn you started replied to you; once seen it is idle, never done", () => {
   const t = thread({ id: "p", parentThreadId: "main" });
-  const finished = activity({ output: "All set.", turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR) });
-  const unseen = derive(t, finished, NOW, null, null, null, project);
+  const yours = activity({ output: "All set.", turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR, true) });
+  const unseen = derive(t, yours, NOW, null, null, null, project);
   assert.equal(unseen.state, "wants");
   assert.equal(unseen.doing, "replied to you: All set.");
   assert.deepEqual(unseen.reply, { seq: 9 });
-  const seen = derive(t, finished, NOW, null, null, null, { ...project, seenSeq: 9 });
+  const seen = derive(t, yours, NOW, null, null, null, { ...project, seenSeq: 9 });
   assert.deepEqual(seen, { state: "idle", since: NOW - HOUR, doing: "All set.", next: "", waitingOnYou: false });
+  // A turn you did not start (a report from a thread under it): idle, marked unread, not in the queue.
+  const finished = activity({ output: "All set.", turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR) });
+  assert.deepEqual(derive(t, finished, NOW, null, null, null, project), { state: "idle", since: NOW - HOUR, doing: "All set.", next: "", waitingOnYou: false, unseen: { seq: 9 } });
   // The same thread, not a project: a worker that reported to its parent.
-  assert.equal(derive(t, finished, NOW, null, null, null, { head: false, seenSeq: null }).state, "done");
+  assert.equal(derive(t, finished, NOW, null, null, null, { seenSeq: null }).state, "done");
   assert.equal(derive(t, finished, NOW).state, "done");
   // With nothing known of what it said, it is quiet.
   assert.equal(derive(t, undefined, NOW, null, null, null, { ...project, seenSeq: 9 }).doing, "quiet");
@@ -57,9 +60,16 @@ test("everything else still happens to a project: running, stuck, asking, failed
   assert.equal(archived.archivedWhy, "shipped");
 });
 
-test("Main with no parent is idle once its reply is read", () => {
-  const main = thread({ id: "main", lastReadAt: NOW - HOUR, latestAttentionAt: NOW - 2 * HOUR });
-  assert.equal(derive(main, undefined, NOW, null, null, null, project).state, "idle");
+test("Main with no parent goes by cow's rule, not by bb's unread record", () => {
+  const main = thread({ id: "main", lastReadAt: null, latestAttentionAt: NOW - 2 * HOUR });
+  const asMain = { ...project, main: true };
+  // bb has it unread, but no reply of a turn you started: idle.
+  assert.equal(derive(main, undefined, NOW, null, null, null, asMain).state, "idle");
+  const noticed = derive(main, activity({ turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR) }), NOW, null, null, null, asMain);
+  assert.deepEqual([noticed.state, noticed.waitingOnYou, noticed.unseen], ["idle", false, { seq: 9 }]);
+  const yours = derive({ ...main, lastReadAt: NOW }, activity({ turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR, true) }), NOW, null, null, null, asMain);
+  assert.deepEqual([yours.state, yours.reply], ["wants", { seq: 9 }]);
+  // A thread with no parent that is not Main (an automation's run) still goes by bb's record.
   assert.equal(derive({ ...main, lastReadAt: null }, undefined, NOW, null, null, null, project).state, "wants");
 });
 
@@ -71,7 +81,7 @@ function page(marked: readonly string[], threads = [
   thread({ id: "worker", parentThreadId: "main", createdAt: 5 }),
 ]) {
   const projects = projectIds(threads, marked, "main");
-  const deriveThread = (t: (typeof threads)[number]) => derive(t, undefined, NOW, null, null, null, { head: projects.has(t.id), project: projects.has(t.id), seenSeq: null });
+  const deriveThread = (t: (typeof threads)[number]) => derive(t, undefined, NOW, null, null, null, { project: projects.has(t.id), seenSeq: null });
   const overview = buildOverview(threads, "main", deriveThread, NOW, { note: () => null, todos: () => [], marked: (id) => marked.includes(id) });
   return { overview, threads, deriveThread };
 }
@@ -152,14 +162,14 @@ test("a thread at rest whose newest known turn event is a start is still settlin
   const t = thread({ id: "w", parentThreadId: "main" });
   const started = activity({ lastEventAt: NOW - 2000, turn: { phase: "started", at: NOW - 30_000, failed: false }, latestStep: "$ npm test", replies: replies(4, NOW - HOUR) });
   assert.equal(isSettling(t, started, NOW), true);
-  const settling = derive(t, started, NOW, null, null, null, { head: true, seenSeq: null });
+  const settling = derive(t, started, NOW, null, null, null, { seenSeq: null });
   // Not done for a moment, and not an older reply: it is as it was, running.
   assert.deepEqual([settling.state, settling.doing, settling.waitingOnYou], ["running", "$ npm test", false]);
   assert.equal(settling.since, NOW - 30_000);
   // The end is read: now it is what the turn came to.
-  const ended = activity({ lastEventAt: NOW - 1000, turn: done(NOW - 1000), output: "ok", replies: replies(8, NOW - 1000) });
+  const ended = activity({ lastEventAt: NOW - 1000, turn: done(NOW - 1000), output: "ok", replies: replies(8, NOW - 1000, true) });
   assert.equal(isSettling(t, ended, NOW), false);
-  assert.equal(derive(t, ended, NOW, null, null, null, { head: true, seenSeq: null }).doing, "replied to you: ok");
+  assert.equal(derive(t, ended, NOW, null, null, null, { seenSeq: null }).doing, "replied to you: ok");
   // A turn whose end never comes is not waited on for ever.
   const stale = activity({ lastEventAt: NOW - LIMITS.settlingMs - 1000, turn: { phase: "started", at: NOW - HOUR, failed: false } });
   assert.equal(isSettling(t, stale, NOW), false);
@@ -211,4 +221,17 @@ test("bb cow project marks and clears, and says which thread is asking", async (
     { callerId: "thr_main", threadId: "thr_a", on: true },
     { callerId: null, threadId: "thr_a", on: false },
   ]);
+});
+
+test("status says unread on an idle project, and on Main, whose reply the person did not ask for and has not seen", () => {
+  const threads = [thread({ id: "main", createdAt: 1 }), thread({ id: "p", parentThreadId: "main", createdAt: 2 })];
+  const reported = activity({ output: "Noted.", turn: done(NOW - HOUR), replies: replies(9, NOW - HOUR) });
+  const overview = buildOverview(threads, "main", (t) => derive(t, reported, NOW, null, null, null, { ...project, main: t.id === "main" }), NOW, { note: () => null, todos: () => [], marked: (id) => id === "p" });
+  const report = statusReport(overview, NOW, false);
+  assert.deepEqual(report.queue, []);
+  assert.equal(report.main.unread, true);
+  assert.equal(report.threads[0]!.unread, true);
+  const text = statusText(report);
+  assert.match(text, /^Main: main \(main\) \[unread\] · idle /);
+  assert.match(text, /idle\s+1h  p \(p\) \[project\] \[unread\]  Noted\./);
 });

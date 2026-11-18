@@ -2,7 +2,7 @@
 // cow's own note on it when the user has parked it.
 
 import { type Ask, messagedSince } from "./asks/ask.ts";
-import { type Replies, talksTo, unreadReply } from "./attention.ts";
+import { type Replies, unreadReply } from "./attention.ts";
 import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
@@ -56,7 +56,7 @@ export type LineState =
   /** Kept by the person with z: around on purpose, asking for nothing. */
   | "kept"
   | "failed"
-  /** A project with nothing to say: not running, nothing waiting, no reply unseen. */
+  /** A project with nothing to say: not running, nothing waiting on the person. It may carry an unseen reply as a mark. */
   | "idle"
   | "done";
 
@@ -118,17 +118,18 @@ export interface Activity {
   replies?: Replies;
 }
 
-/** What decides whether a finished turn's reply is the person's to read. */
+/**
+ * What decides whether a finished turn's reply is the person's to read. The
+ * rule is the same for every thread: see `unreadReply`.
+ */
 export interface Attention {
-  /** The person talks to it directly, so every reply is theirs: it has threads under it, or is marked a project. */
-  head: boolean;
   /**
    * It is a project: Main, a thread that has or has had threads under it, or
    * one marked as a project. A project that is not archived is never done.
    */
   project?: boolean;
-  /** It is marked as a project, by the person or an agent: its replies are the person's whatever was moved under it. */
-  marked?: boolean;
+  /** It is Main: its replies go by cow's rule and record, not by bb's own unread record, though it has no parent. */
+  main?: boolean;
   /** cow's record of the turn the person last saw, as a place in the event log. */
   seenSeq: number | null;
 }
@@ -198,9 +199,10 @@ export interface Derived {
   /** Set when the person keeps it on the Kept shelf. */
   keep?: { note: KeepNote };
   /**
-   * Set on a done line whose newest reply the person has not seen: where
-   * that reply is in the event log, which is what "seen" records. It does
-   * not put the line in the queue; the line is listed first to settle.
+   * Set on a done or idle line whose newest reply the person has not seen:
+   * where that reply is in the event log, which is what "seen" records. It
+   * does not put the line in the queue: a done line is listed first to
+   * settle, and an idle one carries a small unread mark.
    */
   unseen?: { seq: number };
 }
@@ -218,12 +220,12 @@ function settledAt(thread: ThreadFacts, activity: Activity | undefined): number 
 }
 
 /**
- * bb's own record of an unread reply, kept only for a thread with no parent,
- * such as Main. For a thread with a parent cow keeps its own: see
- * `unreadReply`.
+ * bb's own record of an unread reply, kept only for a thread with no parent.
+ * It decides for one that cow does not read by its own rule: an automation's
+ * run, say. Main and the threads under it go by `unreadReply`.
  */
-function hasUnreadReply(thread: ThreadFacts): boolean {
-  if (thread.parentThreadId !== null || isBusy(thread)) return false;
+function hasUnreadReply(thread: ThreadFacts, ours: boolean): boolean {
+  if (ours || thread.parentThreadId !== null || isBusy(thread)) return false;
   return thread.lastReadAt === null || thread.lastReadAt < thread.latestAttentionAt;
 }
 
@@ -393,14 +395,13 @@ function deriveLine(
   const asked = thread.hasPendingInteraction;
   // Between bb saying a turn is over and its end being read, the line stays as it was.
   const busy = isBusy(thread) || isSettling(thread, activity, now);
-  // A thread with a parent: a worker whose newest turn the person did not
-  // start (its job's report, a turn an agent started) is done, to settle.
-  // One the person talks to replied to them, and waits until they have
-  // seen it; so does any thread whose newest turn the person started.
-  const reply =
-    !asked && attention && thread.parentThreadId !== null && !busy
-      ? unreadReply(activity?.replies, talksTo(attention.head, activity?.replies, attention.marked === true), attention.seenSeq)
-      : null;
+  // Main and every thread under it: a reply is the person's, and waits on
+  // them until they have seen it, only when it ends the newest finished turn
+  // and they started that turn. A turn an agent or a notice of bb's started
+  // (a worker's job, its report to the project above it) ends in a reply that
+  // is not theirs: a worker is done, to settle; a project is idle, marked unread.
+  const ours = attention != null && (thread.parentThreadId !== null || attention.main === true);
+  const reply = !asked && ours && !busy ? unreadReply(activity?.replies, false, attention.seenSeq) : null;
   // A refused permission outranks a reply that is waiting to be read: the
   // reply keeps, and only the user can unblock the work.
   const refusals = undismissed(activity?.refusals ?? [], dismissedThroughSeq);
@@ -465,7 +466,7 @@ function deriveLine(
     };
   }
 
-  if (asked || (!busy && hasUnreadReply(thread)) || (reply && !blocked)) {
+  if (asked || (!busy && hasUnreadReply(thread, ours)) || (reply && !blocked)) {
     const ask = asked ? (activity?.ask ?? null) : null;
     const since = ask?.at ?? reply?.at ?? settled;
     const doing = asked
@@ -537,18 +538,20 @@ function deriveLine(
     };
   }
 
-  // A project is never done: with nothing to say it is idle, in its place, for as long as it is quiet.
-  if (attention?.project) return { state: "idle", since: settled, doing: said || "quiet", next: "", waitingOnYou: false };
-  // A finished thread whose newest reply the person has not seen is listed
-  // first to settle, marked unread; it waits on them for nothing.
-  const unseen = attention && thread.parentThreadId !== null ? unreadReply(activity?.replies, true, attention.seenSeq) : null;
+  // Its newest reply, if the person has not seen it: a mark, not a wait.
+  const unseen = ours ? unreadReply(activity?.replies, true, attention.seenSeq) : null;
+  const mark = unseen ? { unseen: { seq: unseen.seq } } : {};
+  // A project is never done: with nothing to say it is idle, in its place,
+  // for as long as it is quiet, with a small unread mark while it has one.
+  if (attention?.project) return { state: "idle", since: settled, doing: said || "quiet", next: "", waitingOnYou: false, ...mark };
+  // A finished thread with such a reply is listed first to settle, marked unread.
   return {
     state: "done",
     since: settled,
     doing: said || "finished",
     next: "",
     waitingOnYou: false,
-    ...(unseen ? { unseen: { seq: unseen.seq } } : {}),
+    ...mark,
   };
 }
 

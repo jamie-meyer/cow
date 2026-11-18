@@ -1898,6 +1898,17 @@
 .cow-unreadmark {
   color: var(--cow-unread);
 }
+/* A project's reply nobody asked of the person: a small dot in the unread
+   colour, softened, never coloured by age. */
+.cow-unreaddot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--cow-unread) 55%, transparent);
+}
 .cow-behind {
   color: var(--cow-faint);
   font-size: inherit;

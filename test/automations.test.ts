@@ -101,7 +101,7 @@ test("when it runs next, in plain words", () => {
   assert.equal(nextRunText(automation({ id: "a", nextRunAt: null, runCount: 0 }), NOW, "UTC"), "not scheduled");
 });
 
-const derived = (t: ThreadFacts) => derive(t, activity({ output: `${t.id} said this` }), NOW, null, null, null, { head: false, seenSeq: null });
+const derived = (t: ThreadFacts) => derive(t, activity({ output: `${t.id} said this` }), NOW, null, null, null, { seenSeq: null });
 
 test("the last run's result: a script's own; an agent's is what its thread came to", () => {
   const script = automation({ id: "s", mode: "script" });

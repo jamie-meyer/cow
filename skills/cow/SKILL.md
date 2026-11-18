@@ -20,6 +20,12 @@ scrolls away and is not seen. Every question or decision you need from the
 user goes in an ask, which stays on their page until they answer it. You may
 also mention it in your message, but the ask is what they will see.
 
+A reply reaches the user's queue only when it ends a turn the user started.
+If you run a project, most of your turns are started by the threads under
+you reporting back, or by bb's notices: your reply to such a turn will not
+reach their queue, however it is worded. Anything that needs them goes
+through `bb cow ask`.
+
 ```sh
 bb cow ask --question "Ship the migration tonight or wait for the review?" \
   --option "tonight::unblocks the launch; no second pair of eyes" \
@@ -175,13 +181,14 @@ when the user asks.
   line also says what its latest brief came to, such as "brief disputed: 1
   contradicted" or "brief: the check failed".
 - States: `wants` (it asked the user something, or it finished with a reply
-  addressed to the user that they have not seen: a thread with threads
-  under it, or one whose newest turn the user started), `blocked` (bb refused it
+  addressed to the user that they have not seen: one that ends its newest
+  turn, which the user started), `blocked` (bb refused it
   a command or file change without asking; only the user can unblock it,
   from cow's page), `running`, `stuck`, `parked`, `kept`, `failed`, `idle` (a
   project with nothing to say; its line ends `[project]`), `done` (finished:
-  to settle, or archived). A finished job's report is not in the queue; it
-  is to settle, marked `[unread]` until the user has seen it.
+  to settle, or archived). A reply to a turn the user did not start is not
+  in the queue: a finished job's report is to settle, and an idle project's
+  or Main's line, marked `[unread]` until the user has seen it.
 - Output is bounded: at most 80 open threads, 30 parked, 40 to settle, 30
   kept, 20 archived, 40 outside Main and 20 queue entries; the rest are
   counted.
@@ -267,7 +274,8 @@ bb cow caps                      # what your thread holds, and where each comes 
 
 When you start a thread that the user will talk to over days, mark it as a
 project: `bb cow project <thread>`. A project is never shown as done; quiet,
-it reads idle and keeps its place, and its replies are the user's to read. Do
+it reads idle and keeps its place. Its replies to turns the user started wait
+on them; the rest only mark its line unread (see above: ask with `bb cow ask`). Do
 not mark a worker that does one job and reports to you. `--clear` takes the
 mark off; you may mark only yourself and threads under you.
 

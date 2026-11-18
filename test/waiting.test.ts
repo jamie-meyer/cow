@@ -21,7 +21,7 @@ const rested = (overrides: Partial<Activity> = {}): Activity =>
 /** Its last turn was the person's, so its reply is theirs to read. */
 const replied = (): Activity =>
   rested({ output: "Opened the pull request; waiting on review.", replies: { last: { seq: 9, at: NOW - 3.5 * DAY }, toPerson: { seq: 9, at: NOW - 3.5 * DAY }, personSpokeSeq: 2 } });
-const attention: Attention = { head: false, seenSeq: null };
+const attention: Attention = { seenSeq: null };
 
 const ask = (): Ask => ({
   id: "ask_1", threadId: "t", askedBy: "t", projectId: "proj_test", question: "Which branch?", options: [], optionsOnly: false, risk: null, proofs: [], context: null,
@@ -44,7 +44,7 @@ test("waiting outranks a reply addressed to the person, idle and done", () => {
   assert.equal(derive(child(), replied(), NOW, null, null, null, attention).state, "wants");
   assert.equal(derive(child(), replied(), NOW, null, null, null, attention, null, note()).state, "waiting");
   // A project with nothing to say would read idle.
-  assert.equal(derive(child(), rested(), NOW, null, null, null, { head: true, project: true, seenSeq: null }, null, note()).state, "waiting");
+  assert.equal(derive(child(), rested(), NOW, null, null, null, { project: true, seenSeq: null }, null, note()).state, "waiting");
   assert.equal(derive(child(), rested(), NOW).state, "done");
   assert.equal(derive(child(), rested(), NOW, null, null, null, null, null, note()).state, "waiting");
   // Main's own unread reply, which bb keeps.

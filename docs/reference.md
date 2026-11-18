@@ -97,13 +97,15 @@ thread is a project when:
 
 A project that is not archived is never done, and never moves to the To settle
 section. When it has nothing to say (no turn running, nothing waiting on
-you, no reply you have not seen) it is **idle**: a state of its own, with
+you) it is **idle**: a state of its own, with
 its own mark (○), that shows how long it has been quiet and, in the next
 column, what it says is next. It stays in its place in the tree.
 
-Everything else happens to a project as to any thread. Its finished turn is
-a reply addressed to you until you have seen it, whoever started the turn. It
-can ask, be parked (it goes to the shelf), run, and read as stuck or failed.
+Everything else happens to a project as to any thread. A reply to a turn you
+started waits on you in the queue; a reply to a turn you did not start (a
+report from a thread under it, say) gives its line a small unread mark and
+nothing more: see "Replies addressed to you". It can ask, be parked (it goes
+to the shelf), run, and read as stuck or failed.
 Archiving it with `e` is you saying it is finished: it leaves the tree and
 is listed under Archived with its reason.
 
@@ -113,41 +115,42 @@ mark instead. The mark is one of cow's notes on the thread.
 
 ## Replies addressed to you
 
-bb tracks unread replies only for threads without a parent, such as Main.
-Under cow you also talk to threads that have one: a project thread that
-Main started, say. So cow works out for itself whose a finished turn's
-reply is. It is addressed to you when:
+cow works out for itself whose a finished turn's reply is, by one rule for
+every thread under Main and for Main itself, project or not: **a reply
+enters the queue only when it ends the thread's newest finished turn and you
+started that turn**, with a message from the page or anywhere else in bb, or
+said something into it while it ran.
 
-- the thread is a project (a group head, or marked as one), whoever started
-  the turn. bb's own notice
-  that a thread under it finished starts a turn too, and that turn ends in
-  a reply for you. One exception: a thread that bb has told a thread was
-  moved under it, that you have not written to in the turns cow reads, and
-  that is not marked as a project,
-  is a worker that was handed a thread, not one you talk to; its replies
-  are yours only as a worker's are. It is still a project, so it reads idle
-  rather than done; or
-- you started the turn with a message, from the page or anywhere else in
-  bb, and it is the thread's newest finished turn. The first prompt a thread
-  was started with does not count, though bb records it as sent by a person;
-  nor does a message from another agent or one of bb's notices. cow tells
-  them apart by bb's record of each prompt: who sent it (`initiator`, and
-  `source` for the first prompt), and whether it started a turn or was said
-  into one that was running, which counts as yours too. A prompt that is one
-  of bb's notices (it has a `systemMessageKind`) is never yours, whatever
-  its `initiator` says.
+A turn started by another agent's message, by one of bb's notices (a thread
+under it finished, say) or by the prompt a thread was spawned with ends in a
+reply that is not yours. bb records the first prompt as sent by a person
+whoever sent it, so cow does not count it. cow tells prompts apart by bb's
+record of each: who sent it (`initiator`, and `source` for the first prompt),
+whether it started a turn or was said into a running one, and its
+`systemMessageKind`: anything but "unlabeled", an ordinary message, is a
+notice and never yours, whatever its `initiator` says.
 
 The turn bb starts only to tell a thread that another was moved under it or
-away from it ends in no reply for anyone, project or not: it is
-bookkeeping. The reply before it is the one that counts.
+away from it ends in no reply at all: it is bookkeeping, and the reply
+before it is the one that counts.
 
-Such a line reads "replied to you: …" with the first line of the reply, is
-in the state wants you, and is in the queue. A worker whose newest turn you
-did not start (its job's report to the thread that started it, or a turn
-another agent started) is done: it goes to To settle, marked unread until
-you have seen its reply, and is not in the queue. So once another agent has
-spoken to a thread after your turn, your reply there no longer waits on you;
-it is the thread's newest reply that is marked unread.
+A reply that is yours reads "replied to you: …" with its first line, is in
+the state wants you, and is in the queue. Once another turn has ended after
+it, it no longer waits on you. A reply that is not yours, while you have not
+seen it:
+
+- on a worker, which is then done, puts it first under To settle, marked
+  "unread";
+- on a project or Main, which is then idle, puts a small dot after its name
+  in a quiet shade of the theme's unread colour ("unread" to a screen reader
+  and on hover). It is not in the queue, its state stays idle, and the dot
+  never changes colour with age.
+
+Everything else that waits on you still does, for a project as for any
+thread: an open ask, bb's own question or permission request, a refused
+permission, a failure, a brief with disputes or judgement calls, a wait
+whose reminder has come, parked work that is back. An agent running a
+project that needs you asks with `bb cow ask`.
 
 However long a reply waits, it never reads stuck: the thread is at rest.
 
@@ -156,10 +159,10 @@ thread, in the plugin's own storage and not on the thread. Setting that
 record, and taking it back, is a signed call: see "Only you: signed calls".
 It is set when you:
 
-- open the thread's chat from the page (`Enter`), or have it open when the
-  reply arrives;
-- send it a message from the page (`I`, or `i` for a Main that has a
-  parent);
+- open the thread's chat from the page (`Enter`, `m` for Main), or have it
+  open when the reply arrives. A chat the page reopens by itself, on a
+  reload or by bb's back and forward, marks nothing;
+- send it a message from the page (`I`, or `i` for Main);
 - press `Space` on its line. `u` takes that one back.
 
 A line marked seen this way does not jump away. If its new state would move
@@ -176,13 +179,13 @@ you again. On a page whose key is not enrolled none of these marks anything:
 `Space` says "not marked as seen: this page's key … is not enrolled", and
 opening the chat says the reply still waits on you, and why.
 
-Main, when it has no parent, keeps bb's own unread record, as before:
-opening its chat reads it. A Main that has a parent is treated like any
-other group head.
+Main goes by the same rule and the same record, not by bb's own unread
+record: reading Main's reply in bb's own chat, outside this page, does not
+clear it here (a message you send Main does).
 
-On a line to settle, the same marks clear its unread mark: opening its
-chat, or `Space`. The line is already in its place, so it does not stay
-anywhere else.
+On a line to settle, and on an idle project's or Main's unread dot, the same
+marks clear it: opening its chat, or `Space`; `u` brings it back. The line
+is already in its place, so it does not stay anywhere else.
 
 cow reads the latest 40 turn starts and ends of a thread to decide this.
 
@@ -1468,8 +1471,7 @@ So, plainly:
   bb records no one for either. A message sent as you is not flagged, and
   it does what a message of yours does: the reply before it counts as read,
   what bb refused that thread stops counting, and an open ask of that
-  thread says you have messaged since. For a Main with no parent, cow goes
-  by bb's own record of what you have read, which bb's own commands set (`bb thread read`).
+  thread says you have messaged since.
   And `bb plugin config cow` is reachable: a caller that sets the checker's
   model to one that does not exist makes every later check fail, and a
   failed check disputes nothing.

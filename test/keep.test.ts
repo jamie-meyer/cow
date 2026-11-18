@@ -24,7 +24,7 @@ function page(threads: ThreadFacts[], keeps: Record<string, KeepNote>, { acts = 
   return buildOverview(
     [thread({ id: "main" }), ...threads],
     "main",
-    (t) => derive(t, acts[t.id] ?? rested(), NOW, null, null, null, { head: false, seenSeq: null }, { asks: asks[t.id] ?? [], brief: null }, null, t.id === "main" ? null : keeps[t.id]),
+    (t) => derive(t, acts[t.id] ?? rested(), NOW, null, null, null, { seenSeq: null }, { asks: asks[t.id] ?? [], brief: null }, null, t.id === "main" ? null : keeps[t.id]),
     NOW,
   );
 }

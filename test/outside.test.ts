@@ -60,7 +60,7 @@ test("Main, and the threads above it, are never outside it; nor is anything unde
   assert.deepEqual(outsideMain(looped, "a").lines.map((line) => line.thread.id), ["c"]);
 });
 
-const derived = (t: ThreadFacts) => derive(t, activity(), NOW, null, null, null, { head: false, seenSeq: null });
+const derived = (t: ThreadFacts) => derive(t, activity(), NOW, null, null, null, { seenSeq: null });
 const page = (threads = world()) => buildOverview(threads, "main", derived, NOW, { note: () => null, todos: () => [], otherMains: new Set(["otherMain"]) });
 
 test("the section is last on the page, folded by default, and folds like Kept", () => {

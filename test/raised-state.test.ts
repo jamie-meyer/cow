@@ -55,7 +55,7 @@ test("a thread with an open ask asks you, whether it is done or still running", 
 });
 
 test("an ask outranks a reply, a refusal and a brief; a failure and bb's own request outrank it", () => {
-  const replied = derive(child(), activity({ replies: { last: { seq: 9, at: NOW - HOUR }, toPerson: { seq: 9, at: NOW - HOUR }, personSpokeSeq: 5 } }), NOW, null, null, null, { head: false, seenSeq: null }, raised([ask("a", 5)]));
+  const replied = derive(child(), activity({ replies: { last: { seq: 9, at: NOW - HOUR }, toPerson: { seq: 9, at: NOW - HOUR }, personSpokeSeq: 5 } }), NOW, null, null, null, { seenSeq: null }, raised([ask("a", 5)]));
   assert.equal(replied.doing, "asks you: Question a?");
   assert.equal(replied.reply, undefined);
 
@@ -141,9 +141,9 @@ test("a finished thread with a disputed brief wants you; a clean one is done", (
 
 test("a disputed brief outranks a reply addressed to you", () => {
   const replies = { last: { seq: 9, at: NOW - HOUR }, toPerson: { seq: 9, at: NOW - HOUR }, personSpokeSeq: 5 };
-  const both = derive(child(), activity({ replies }), NOW, null, null, null, { head: false, seenSeq: null }, raised([], mark({ contradicted: 1 })));
+  const both = derive(child(), activity({ replies }), NOW, null, null, null, { seenSeq: null }, raised([], mark({ contradicted: 1 })));
   assert.equal(both.doing, "brief: 1 disputed");
-  const cleanBrief = derive(child(), activity({ replies, output: "all done" }), NOW, null, null, null, { head: false, seenSeq: null }, raised([], mark()));
+  const cleanBrief = derive(child(), activity({ replies, output: "all done" }), NOW, null, null, null, { seenSeq: null }, raised([], mark()));
   assert.equal(cleanBrief.doing, "replied to you: all done");
 });
 

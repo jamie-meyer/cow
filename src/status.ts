@@ -77,7 +77,7 @@ export interface StatusLine {
   queue: number | null;
   /** The names of the capabilities that apply to it; absent when none was looked up. */
   capabilities?: string[];
-  /** For a line to settle: whether a reply in it has not been seen, and what archiving it would leave behind. */
+  /** Whether a reply in it has not been seen (on a line to settle, or an idle project's), and, to settle, what archiving it would leave behind. */
   unread?: boolean;
   leftBehind?: string[];
 }
@@ -136,6 +136,8 @@ function toStatusLine(line: Line, now: number, todo: readonly string[] = []): St
     project: line.project !== null,
     depth: line.depth,
     queue: line.queueNumber,
+    // A project's or Main's reply to a turn the person did not start, not yet seen: marked, not queued.
+    ...(derived.state === "idle" && derived.unseen ? { unread: true } : {}),
   };
 }
 
@@ -247,7 +249,7 @@ export function statusText(report: StatusReport): string {
   const { main, omitted } = report;
   const waiting = report.queue.length + omitted.queue;
   const out: string[] = [
-    `Main: ${main.title} (${main.id}) · ${main.label} ${main.inState}${main.doing ? ` · ${main.doing}` : ""}${main.note !== null ? nextOf(main) : ""}${holds(main)}`,
+    `Main: ${main.title} (${main.id})${main.unread ? " [unread]" : ""} · ${main.label} ${main.inState}${main.doing ? ` · ${main.doing}` : ""}${main.note !== null ? nextOf(main) : ""}${holds(main)}`,
     ...main.todo.map((title, index) => `    not started ${index + 1}: ${title}`),
     "",
     `Waiting on the user (${waiting})`,
