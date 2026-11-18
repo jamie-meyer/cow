@@ -232,11 +232,13 @@ thought down, and may come back in months. Keeping is for those.
 - **Where it goes.** The **Kept** section, below To settle, folded by
   default and showing only its count. Open, it lists what is kept, newest
   kept first, each with its words and how long it has been kept. Threads
-  under a kept thread go with it, counted on its line, as with parking.
+  under a kept thread go with it, counted on its line, as with parking,
+  except one with an open ask, which is listed after the Parked shelf for
+  its ask (see "Asks").
 - **What it asks for.** Nothing. It is never coloured, never in the queue,
   and nothing reminds you of it, however long it stays. Only what truly
-  needs you shows through, exactly as on a parked line: its open ask, which
-  is in the queue and answered with `a`. Its failure, a refusal, or its
+  needs you shows through, exactly as on a parked line: its open ask, and
+  that of a thread under it, which are in the queue and answered with `a`. Its failure, a refusal, or its
   reply wait with it.
 - **Coming off the shelf.** By itself, when the thread starts a new turn:
   you typed to it, so you are being intentional about it again. It then
