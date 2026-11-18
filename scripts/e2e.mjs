@@ -3,7 +3,8 @@
 // It drives a separate headless Chrome (never your own bb window) and makes
 // its own fixture threads, titled "cow test", on the cheapest model. It writes
 // only to those threads, and it answers, stops and archives only those. It
-// archives them all when it finishes. The permission requests it grants are
+// archives them all when it finishes, and when it fails part-way (unless
+// --keep is given). The permission requests it grants are
 // for `echo` and for writing one small file under /tmp, which it removes.
 // It also runs `bb cow` against the same fixtures, and leaves and removes
 // notes of what is next on them.
@@ -230,6 +231,9 @@ Reply to anything else with exactly: ok`;
 /** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
 const RAISED = ["amain", "asker", "briefer"];
 
+/** The fixtures this run acts on, by name, as they become known: what a run that fails part-way archives. */
+const inUse = {};
+
 /**
  * Seven threads on three levels under Main: a quiet child, which heads a
  * group; under it a grandchild that fails, which heads a group of its own;
@@ -248,6 +252,7 @@ async function fixtures() {
     // A fixture kept from an earlier run may be archived, and bb starts nothing under an archived thread.
     if (options.parent && (await api(`/threads?threadIds=${options.parent}&limit=1`))[0]?.archivedAt) await bb("thread", "unarchive", options.parent);
     ids[name] = await spawn(options);
+    inUse[name] = ids[name];
     if (STATE) writeFileSync(STATE, JSON.stringify(ids));
   };
   await make("main", { prompt: QUIET });
@@ -1754,9 +1759,7 @@ async function waitingChecks(page, ids, shot, chooseMain) {
   await page.key("Enter");
   const mention = (id) => `[...document.querySelectorAll('[data-cow-chat] a[data-prompt-mention-resource]')].filter((a) => (a.getAttribute("data-prompt-mention-resource") ?? "").includes('"${id}"')).pop()`;
   await page.waitFor(`${pane} === "${ids.wlink}" && !!${mention(kid)} && !!${mention(ids.wother)}`, { label: "the linker's chat with its mentions", timeout: 30_000 });
-  const at = await page.eval(`(() => { const a = ${mention(kid)}; a.scrollIntoView({ block: "center" }); const r = a.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
-  await sleep(200);
-  await page.click(...at);
+  await clickSettled(page, mention(kid), "the mention of the waiting thread");
   await page.waitFor(`${pane} === "${kid}"`, { label: "the pane on the linked thread" });
   check(
     "a click on a thread mention switches the pane to that thread, and its line takes the cursor",
@@ -1793,6 +1796,30 @@ async function waitingChecks(page, ids, shot, chooseMain) {
   await sleep(500);
   check("a click with Shift on a thread mention is left to bb", leftToBb === true && (await page.eval(pane)) === ids.wlink);
   await page.key("Escape");
+}
+
+/**
+ * A click of the mouse on the middle of an element, once it has stopped
+ * moving and is the thing at that point. Scrolled into view, the chat goes on
+ * settling for a moment as rows above it are measured, and a point measured
+ * too soon lands beside the element, on nothing.
+ */
+async function clickSettled(page, expression, label) {
+  const centre = `(() => { const e = ${expression}; if (!e) return null; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.eval(`${expression}?.scrollIntoView({ block: "center" }); true`);
+    let at = await page.eval(centre);
+    for (let i = 0; i < 30; i += 1) {
+      await sleep(150);
+      const now = await page.eval(centre);
+      if (at && now && Math.abs(now[0] - at[0]) < 1 && Math.abs(now[1] - at[1]) < 1) break;
+      at = now;
+    }
+    if (!at) throw new Error(`nothing to click: ${label}`);
+    const hit = await page.eval(`(() => { const e = ${expression}; const there = document.elementFromPoint(${at[0]}, ${at[1]}); return !!e && !!there && e.contains(there); })()`);
+    if (hit) return page.click(...at);
+  }
+  throw new Error(`${label} is not what is under its own middle`);
 }
 
 /** Removes what the capability checks made outside bb's threads. */
@@ -2866,6 +2893,7 @@ async function main() {
   await guardPlugin(BB, PLUGIN, args);
   const ids = await fixtures();
   await assertOurs(ids);
+  Object.assign(inUse, ids);
 
   // A page left open by an earlier run would go on acting on the fixtures:
   // a chat open in its pane marks that thread's reply seen as it arrives.
@@ -5158,28 +5186,40 @@ async function main() {
   for (const name of [...RAISED, ...READING, ...CAPPED]) {
     if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   }
-  if (!flag("keep")) {
-    for (const id of Object.values(ids)) {
-      await rpc("park_set", { threadId: id, park: null });
-      await rpc("keep_set", { threadId: id, keep: null });
-      await rpc("archive_note_set", { threadId: id, note: null });
-      await cow("project", id, "--clear");
-      await cow("wait", id, "--clear");
-      await bb("thread", "archive", id);
-      // Archiving leaves a thread that is waiting on its question running.
-      await fetch(`${BB}/api/v1/threads/${id}/stop`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      }).catch(() => undefined);
-    }
-    console.log(`archived ${Object.values(ids).length} fixture threads`);
-  }
+  if (!flag("keep")) await archiveFixtures(Object.values(ids));
 
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length} of ${results.length} checks passed`);
   process.exit(failed.length ? 1 : 0);
   }
+}
+
+/** Clear cow's notes on the fixtures and archive them. Each step is tried even when one before it failed. */
+async function archiveFixtures(threadIds) {
+  let archived = 0;
+  for (const id of threadIds) {
+    const steps = [
+      () => rpc("park_set", { threadId: id, park: null }),
+      () => rpc("keep_set", { threadId: id, keep: null }),
+      () => rpc("archive_note_set", { threadId: id, note: null }),
+      () => cow("project", id, "--clear"),
+      () => cow("wait", id, "--clear"),
+    ];
+    for (const step of steps) await step().catch((cause) => console.error(`could not clear a note on ${id}`, cause));
+    try {
+      await bb("thread", "archive", id);
+      archived += 1;
+    } catch (cause) {
+      console.error(`could not archive ${id}`, cause);
+    }
+    // Archiving leaves a thread that is waiting on its question running.
+    await fetch(`${BB}/api/v1/threads/${id}/stop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).catch(() => undefined);
+  }
+  console.log(`archived ${archived} of ${threadIds.length} fixture threads`);
 }
 
 main().catch(async (error) => {
@@ -5190,6 +5230,14 @@ main().catch(async (error) => {
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
   await restoreCaps().catch((cause) => console.error("could not put back what the capability checks made", cause));
+  // The fixtures go too, unless asked to be kept: a failed run otherwise leaves them in the list, running or waiting.
+  if (!flag("keep")) {
+    for (const id of Object.values(inUse)) {
+      await signer?.must("dismissal_set", { threadId: id, dismissal: null }).catch(() => undefined);
+      await signer?.must("seen_set", { threadId: id, seen: null }).catch(() => undefined);
+    }
+    await archiveFixtures(Object.values(inUse));
+  }
   await signer?.resetEnrollment().catch((cause) => console.error("could not reset cow's enrollment", cause));
   process.exit(1);
 });
