@@ -54,6 +54,11 @@ export function toFacts(raw: unknown): ThreadFacts | null {
     lastReadAt: num(r.lastReadAt),
     latestAttentionAt: num(r.latestAttentionAt) ?? createdAt,
     createdAt,
+    originPluginId: typeof r.originPluginId === "string" && r.originPluginId !== "" ? r.originPluginId : null,
+    originKind: typeof r.originKind === "string" ? r.originKind : null,
+    visibility: r.visibility === "hidden" ? "hidden" : "visible",
+    sectionId: typeof r.sectionId === "string" ? r.sectionId : null,
+    parentNotifications: r.parentNotifications === "off" || r.parentNotifications === "stuck" ? r.parentNotifications : "auto",
   };
 }
 

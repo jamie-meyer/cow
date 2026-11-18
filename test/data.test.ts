@@ -28,7 +28,29 @@ test("toFacts reads a thread and falls back where bb left fields empty", () => {
     lastReadAt: null,
     latestAttentionAt: 20,
     createdAt: 10,
+    originPluginId: null,
+    originKind: null,
+    visibility: "visible",
+    sectionId: null,
+    parentNotifications: "auto",
   });
+});
+
+test("toFacts reads where a thread came from and how it tells its parent", () => {
+  const facts = toFacts({
+    id: "thr_2",
+    projectId: "proj_1",
+    originPluginId: "automations",
+    originKind: "fork",
+    visibility: "hidden",
+    sectionId: "sec_1",
+    parentNotifications: "stuck",
+  });
+  assert.equal(facts?.originPluginId, "automations");
+  assert.equal(facts?.originKind, "fork");
+  assert.equal(facts?.visibility, "hidden");
+  assert.equal(facts?.sectionId, "sec_1");
+  assert.equal(facts?.parentNotifications, "stuck");
 });
 
 test("toFacts rejects junk and deleted threads", () => {

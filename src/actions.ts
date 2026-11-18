@@ -462,8 +462,17 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
           `Choose another Main on cow's page (M), or pass --main <thread>; \`bb thread unarchive ${id}\` brings this one back.`,
         );
       }
-      const overview = buildOverview(seen.threads, id, seen.deriveThread((other) => other === id), seen.now, seen.plans);
-      return statusReport(overview, seen.now, seen.truncated);
+      const mains = await readMains();
+      const otherMains = new Set(Object.values(mains.mains).filter((other) => other !== id));
+      const overview = buildOverview(seen.threads, id, seen.deriveThread((other) => other === id), seen.now, { ...seen.plans, otherMains });
+      // A thread outside Main names its project when it is another one; without the names, its id.
+      const projectNames = await Promise.resolve()
+        .then(() => bb.sdk.projects.list())
+        .then(
+        (projects) => new Map(projects.map((project) => [project.id, project.name])),
+        () => new Map<string, string>(),
+      );
+      return statusReport(overview, seen.now, seen.truncated, projectNames);
     },
   };
 }

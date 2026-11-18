@@ -4,6 +4,47 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.4
+
+Open threads with no parent were on no page: old work, threads started by
+hand, forks, work left behind when bb archived its parent. The page showed
+only what is under Main, so they could be found only by looking through bb's
+sidebar.
+
+- **Outside Main.** A new section at the bottom of the page, after Archived,
+  lists every open thread with no parent that is not Main or above it, in
+  every bb project. It is folded by default and shows its count; `h` and
+  `l` on its heading fold it, and the window remembers. Each line gives the
+  title, its project when that is not Main's, how long since it last did
+  anything, and whether it is running, wants an answer or is at rest. A
+  thread with threads under it is one line, counting them. Nothing in it is
+  coloured or in your queue. Threads a plugin started, such as an
+  automation's runs, and other projects' Mains are only counted. `Enter`
+  opens a line's chat, and `/` finds its lines while it is folded.
+- **`A` brings a thread under Main.** On a line in Outside Main, `A` and
+  then `y`. The confirmation says what happens: bb gives Main a short
+  notice, so Main starts a turn, and the thread's notifications to Main are
+  set to "stuck", so it does not wake Main each time it finishes a turn.
+  The thread then reads as any other, in the tree or under To settle, and
+  the cursor follows it. A reply bb had as read stays read. `u` puts back
+  its parent, its sidebar section and its notification setting exactly as
+  they were. When bb refuses (the tree would be too deep, or Main is
+  archived), the page says so plainly. Agents use bb's own
+  `bb thread update --parent-thread`.
+- **`bb cow status`** has an "Outside Main" heading with the same lines, and
+  `--json` an `outside` list, with `outsideNotListed` counting what is left
+  out.
+- **A worker handed a thread no longer reads "replied to you".** A worker
+  that an agent started, and that then had a thread moved under it, became
+  a group head, and a group head's every reply was yours: its final report
+  sat in your queue and `bb cow archive` refused it. Now a thread that bb
+  has told a thread was moved under it, and that you have never written to,
+  is read as the worker it is: idle, out of the queue. And the turn bb
+  starts only to say a thread was moved under it or away ends in no reply
+  for anyone.
+
+After updating, reload any cow page that was open.
+
 ## 0.2.3
 
 Finished threads used to pile up: once read, a worker moved to Done and,

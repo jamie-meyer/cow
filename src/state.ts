@@ -2,7 +2,7 @@
 // cow's own note on it when the user has parked it.
 
 import { type Ask, messagedSince } from "./asks/ask.ts";
-import { type Replies, unreadReply } from "./attention.ts";
+import { type Replies, talksTo, unreadReply } from "./attention.ts";
 import { type BriefMark, briefWaits, briefWaitText } from "./briefs/review.ts";
 import { type Due, dueShort, parkDue, pickUpText } from "./park.ts";
 import { type Refusal, refusalSummary, undismissed } from "./refusal.ts";
@@ -86,6 +86,16 @@ export interface ThreadFacts {
   lastReadAt: number | null;
   latestAttentionAt: number;
   createdAt: number;
+  /** The plugin that started it, such as an automation; absent or null for one a person or an agent started. */
+  originPluginId?: string | null;
+  /** "fork" for a thread forked from another. */
+  originKind?: string | null;
+  /** bb leaves a hidden thread out of its sidebar. */
+  visibility?: "visible" | "hidden";
+  /** Its section in bb's sidebar. */
+  sectionId?: string | null;
+  /** When it tells its parent about its turns: bb's default is "auto". */
+  parentNotifications?: "auto" | "off" | "stuck";
 }
 
 /** What a thread's event log adds to its facts. Loaded lazily, so optional. */
@@ -387,7 +397,7 @@ function deriveLine(
   // seen it; so does any thread whose newest turn the person started.
   const reply =
     !asked && attention && thread.parentThreadId !== null && !busy
-      ? unreadReply(activity?.replies, attention.head, attention.seenSeq)
+      ? unreadReply(activity?.replies, talksTo(attention.head, activity?.replies), attention.seenSeq)
       : null;
   // A refused permission outranks a reply that is waiting to be read: the
   // reply keeps, and only the user can unblock the work.

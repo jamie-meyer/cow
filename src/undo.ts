@@ -1,9 +1,10 @@
 // What the page can take back: the last park, resume, archive, dismissal,
 // mark as seen, marking as a project, saying it waits on someone else, or
-// keeping it.
+// keeping it, or bringing a thread from outside Main under it.
 // Stopping a turn, answering a question and sending a message reach the
 // agent, so they are never recorded.
 
+import type { MoveRecord } from "./outside.ts";
 import type { Dismissal, KeepNote, ParkRecord, ProjectMark, Seen, WaitNote } from "./shared.ts";
 
 export type UndoEntry =
@@ -20,6 +21,13 @@ export type UndoEntry =
   | { kind: "project"; threadId: string; title: string; before: ProjectMark | null }
   /** Said it waits on someone else, kept it waiting, or cleared it; `before` is the note it had until then. */
   | { kind: "wait"; threadId: string; title: string; before: WaitNote | null }
+  /**
+   * Brought from outside Main under it. `before` is its parent, sidebar
+   * section and notification setting as they were; `seen` is set when the
+   * move marked its reply as seen, as bb had it read, and holds what cow
+   * recorded as seen until then.
+   */
+  | { kind: "move"; threadId: string; title: string; before: MoveRecord; seen?: { before: Seen | null } }
   /**
    * Archived; `dropped` when it was parked work, stopped and archived
    * together. bb archives a thread's descendants with it but brings back
@@ -60,6 +68,8 @@ export function undoText(entry: UndoEntry): string {
       return entry.before === null ? `undo marking ${name} as a project` : `undo unmarking ${name}: it is a project again`;
     case "wait":
       return entry.before === null ? `undo marking ${name} as waiting: it reads as it did before` : `undo: ${name} waits on ${entry.before.on} again, as before`;
+    case "move":
+      return `undo bringing ${name} under Main: it goes back outside Main, with its sidebar section and its notifications as they were`;
     case "dismiss":
       return `undo dismissing what bb refused ${name}: it reads as blocked again`;
     case "archive": {
@@ -80,5 +90,6 @@ export function undoShort(entry: UndoEntry): string {
   if (entry.kind === "seen") return "undo seen";
   if (entry.kind === "project") return entry.before === null ? "undo project" : "undo unmark";
   if (entry.kind === "wait") return "undo wait";
+  if (entry.kind === "move") return "undo move";
   return entry.dropped ? "undo drop" : "undo archive";
 }

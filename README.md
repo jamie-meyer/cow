@@ -47,7 +47,7 @@ committed to this repository, and there is no release asset to download.
 Check that it is there:
 
 ```sh
-bb plugin list        # cow@0.2.3  running
+bb plugin list        # cow@0.2.4  running
 bb cow help
 ```
 
@@ -64,7 +64,7 @@ Other ways bb can install it, and when to prefer them:
 | Command | Follows | Use it when |
 | --- | --- | --- |
 | `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.3` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
+| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.4` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
 
@@ -162,6 +162,14 @@ reminder of any kind. Only what truly needs you shows through, as on a
 parked line: its open ask. It comes off the shelf by itself when it starts a
 turn, as when you type to it; `z` on it takes it off too.
 
+**Outside Main.** Open threads with no parent are not under any Main, so the
+tree never reaches them: old work, threads started by hand, forks. The
+**Outside Main** section, last on the page and folded by default, lists
+them with their project when it is another one, how long since each did
+anything, and whether it is running, wants an answer or is at rest. Nothing
+in it is in the queue. Threads a plugin started are only counted. `A` on one
+brings it under Main, `u` takes that back.
+
 **Waiting on someone else.** A thread whose next move is a reviewer's, CI's
 or anyone's but yours says so with `bb cow wait`, or you do with `w`. Its
 line keeps its place and reads "waiting on the reviewer · 3d", out of the
@@ -229,7 +237,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `j` `k` | next, previous line (arrows work too); the heading, Main, is the line above the first |
 | `gg` `G` | the heading, the last line |
-| `h` `l` | fold, unfold a group, or the To settle and Kept sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too) |
+| `h` `l` | fold, unfold a group, or the To settle, Kept and Outside Main sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too) |
 | `Tab` | next entry in the queue of what waits on you (Shift+Tab previous) |
 | `1` to `9` | jump to that entry in the queue |
 | `/` | filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels |
@@ -264,7 +272,8 @@ says why, and what to press instead. `?` shows this map on the page.
 | `e` | archive a done, idle, waiting, kept or failed line: a reason or nothing, then Enter |
 | `z` | keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept |
 | `x` | stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it |
-| `u` | undo the last park, resume, archive, dismissal, mark as seen, project mark, wait or keep (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone |
+| `A` | on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn |
+| `u` | undo the last park, resume, archive, dismissal, mark as seen, project mark, wait, keep or move under Main (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone |
 | `P` | mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree |
 | `J` `K` | move a not-started item down, up its list |
 
@@ -429,6 +438,13 @@ An agent **can**, through cow:
   for it, since keeping is the page's `z`. **This takes a line out of your
   queue** as parking does, without a date to come back. The line is in the
   Kept section, which lists everything kept, as `bb cow status` does;
+- move a thread out from under Main, with bb's own `bb thread update
+  --parent-thread`, which cow does not see or sign. **This takes the thread
+  and everything under it out of your queue.** A thread left with no parent
+  is listed under Outside Main, at the bottom of the page and in
+  `bb cow status`; one moved under another thread with no parent is counted
+  on that thread's line there. Moving one under Main is the page's `A`,
+  unsigned too;
 - withdraw or close its own ask, and replace its own brief with a new
   version, which is checked again. Either can take that ask or that brief
   out of your queue;

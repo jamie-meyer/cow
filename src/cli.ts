@@ -216,10 +216,12 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
     commands: {
       ...planCommands(actions),
       status: cliCommand({
-        summary: "The overview: every thread under Main with its state, the queue, the parked shelf, what is to settle, and what is kept",
+        summary: "The overview: every thread under Main with its state, the queue, the parked shelf, what is to settle, what is kept, and the open threads outside Main",
         description:
           "One line per thread: state, time in state, what it is doing or waiting on. At most 80 open threads, " +
-          "30 parked, 40 to settle, 30 kept, 20 archived and 20 queue entries are listed; the rest are counted.",
+          "30 parked, 40 to settle, 30 kept, 20 archived, 40 outside Main and 20 queue entries are listed; the rest are counted. " +
+          "Outside Main is every open thread with no parent that is not Main or above it; one a plugin started is only counted. " +
+          "To move one under Main, use `bb thread update <thread> --parent-thread <main> --parent-notifications stuck`.",
         options: {
           main: {
             type: "string",

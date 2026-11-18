@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findReplies, starterOf, unreadReply } from "../src/attention.ts";
+import { findReplies, starterOf, talksTo, unreadReply } from "../src/attention.ts";
 import { derive } from "../src/state.ts";
 import type { Refusal } from "../src/refusal.ts";
 import { HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
@@ -103,6 +103,7 @@ test("junk among the events is ignored", () => {
     toPerson: null,
     personSpokeSeq: null,
     personSpokeAt: null,
+    adopted: false,
   });
 });
 
@@ -233,4 +234,70 @@ test("a refused permission outranks an unseen reply, which is still there once i
   const dismissed = derive(child(), blocked, NOW, null, null, 900, { head: false, seenSeq: null });
   assert.equal(dismissed.state, "wants");
   assert.deepEqual(dismissed.reply, { seq: events[2]!.seq });
+});
+
+// ---- a worker handed a thread ---------------------------------------------
+
+/** bb's notice that a thread was moved under this one, as it records it. */
+function ownershipNotice(initiator = "system", kind = "ownership-assigned") {
+  seq += 1;
+  return {
+    seq,
+    createdAt: at(seq),
+    type: "client/turn/requested",
+    data: { source: "tell", initiator, senderThreadId: null, systemMessageKind: kind, target: { kind: "new-turn" } },
+  };
+}
+/** What a permission prompt adds to the log: none of it is a turn's start or end. */
+const permissionPrompt = () => [
+  { seq: ++seq, createdAt: at(seq), type: "system/interaction/lifecycle", data: { phase: "requested", interaction: { kind: "approval" } } },
+  { seq: ++seq, createdAt: at(seq), type: "system/interaction/lifecycle", data: { phase: "resolved", decision: "allow_once" } },
+];
+
+test("a worker spawned by an agent, that hit a permission prompt, then was handed a thread, is not the person's to read", () => {
+  // Its one turn: spawned with a brief, a permission prompt on the way, a final report.
+  const work = [prompt("spawn"), started(), ...permissionPrompt(), completed()];
+  // Then a thread was moved under it, and bb started a turn to say so.
+  const notice = [ownershipNotice(), started(), completed()];
+  const events = [...work, ...notice];
+  const replies = findReplies(events);
+  // The permission prompt changes nothing: the turn is still its spawner's.
+  assert.equal(findReplies(work).toPerson, null);
+  assert.equal(replies.toPerson, null);
+  assert.equal(replies.personSpokeSeq, null);
+  // bb's notice ends in no reply: the last one is its report.
+  assert.equal(replies.last?.seq, work[work.length - 1]!.seq);
+  assert.equal(replies.adopted, true);
+  // Having a thread under it made it a group head, which is what read
+  // "replied to you": a head's every reply was the person's.
+  assert.notEqual(unreadReply(replies, true, null), null);
+  assert.equal(talksTo(true, replies), false);
+  const d = state(child(), events, true);
+  assert.notEqual(d.state, "wants");
+  assert.equal(d.reply, undefined);
+  // As a group head it is a project: idle, and it can be archived.
+  const project = derive(child(), said(events), NOW, null, null, null, { head: true, project: true, seenSeq: null });
+  assert.equal(project.state, "idle");
+  assert.equal(project.waitingOnYou, false);
+});
+
+test("a notice of bb's is never the person, whatever initiator it records", () => {
+  assert.equal(starterOf({ source: "tell", initiator: "user", systemMessageKind: "ownership-assigned" }), "system");
+  const events = [prompt("person"), started(), completed(), ownershipNotice("user"), started(), completed()];
+  const replies = findReplies(events);
+  assert.equal(replies.personSpokeSeq, events[0]!.seq);
+  // The person's turn is still the newest that ended in a reply.
+  assert.equal(replies.last?.seq, events[2]!.seq);
+  assert.equal(replies.toPerson?.seq, events[2]!.seq);
+});
+
+test("a head the person writes to stays theirs after a thread is moved under it; one bb never told of a move is a head as before", () => {
+  const spoken = findReplies([prompt("person"), started(), completed(), ownershipNotice(), started(), completed(), ...turn("system")]);
+  assert.equal(talksTo(true, spoken), true);
+  assert.equal(talksTo(false, spoken), false);
+  const plain = findReplies([prompt("spawn"), started(), completed(), ...turn("system")]);
+  assert.equal(plain.adopted, false);
+  assert.equal(talksTo(true, plain), true);
+  // A notice that a thread was moved away is not one of being handed one.
+  assert.equal(findReplies([ownershipNotice("system", "ownership-removed"), started(), completed()]).adopted, false);
 });

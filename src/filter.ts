@@ -31,7 +31,7 @@ export function matches(query: string, name: string, doing = ""): boolean {
 }
 
 export interface Filtered {
-  /** The rows that match, in page order: the tree, Parked, To settle, Kept, then Archived. The cursor moves among these. */
+  /** The rows that match, in page order: the tree, Parked, To settle, Kept, Archived, then Outside Main. The cursor moves among these. */
   matches: string[];
   /** The tree rows to draw: the matches, and the heads of the groups they are in, for context. */
   keep: ReadonlySet<string>;
@@ -63,6 +63,10 @@ export function filterOverview(overview: Overview, query: string): Filtered {
   // A folded section is searched too: what matches in it is drawn while the filter is open.
   for (const line of [...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived]) {
     if (matches(query, line.thread.title, line.derived.doing)) found.push(line.thread.id);
+  }
+  // Outside Main last, as on the page, folded or not.
+  for (const line of overview.outside.lines) {
+    if (matches(query, line.thread.title)) found.push(line.thread.id);
   }
   return { matches: found, keep };
 }

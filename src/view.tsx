@@ -80,6 +80,7 @@ import {
   cursorOrder,
   descendantIds,
   KEPT_SECTION,
+  OUTSIDE_SECTION,
   SETTLE_SECTION,
   type Section,
   foldMove,
@@ -97,6 +98,7 @@ import {
   visibleRows,
   waitingInside,
 } from "./tree.ts";
+import { OUTSIDE_STATE_TEXT, type OutsideLine, notListedText } from "./outside.ts";
 import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
 import { useReader } from "./reader/Reader.tsx";
 import type { FileRef } from "./reader/link.ts";
@@ -590,7 +592,67 @@ function LineRow({
 }
 
 /**
- * The heading of a section that folds, To settle or Kept: a cursor stop of
+ * A line of Outside Main: an open thread with no parent, from bb's thread
+ * list alone. Plain: nothing in it is in the queue or coloured for its age.
+ */
+function OutsideRow({
+  line,
+  now,
+  project,
+  current,
+  open,
+  onSelect,
+  onOpen,
+}: {
+  line: OutsideLine;
+  now: number;
+  /** Its bb project's name, when that is not Main's. */
+  project: string | null;
+  current: boolean;
+  open: boolean;
+  onSelect: (id: string) => void;
+  onOpen: (id: string) => void;
+}) {
+  const { thread } = line;
+  return (
+    <div
+      className={["cow-ln", "cow-flat", "cow-outline", current ? "cow-cur" : ""].join(" ").trim()}
+      data-cow-outside-line={thread.id}
+      data-cow-outside-state={line.state}
+      data-cow-open={open ? "" : undefined}
+      data-cow-hint=""
+      aria-current={current || undefined}
+      onClick={() => onSelect(thread.id)}
+      onDoubleClick={() => onOpen(thread.id)}
+    >
+      <span className="cow-qn" />
+      <span className="cow-gl" />
+      <span className="cow-ag cow-a0" title="time since it last did anything">
+        <b>{formatAge(Math.max(0, now - line.lastAt))}</b>
+      </span>
+      <span className="cow-nm">
+        <i className="cow-fold" aria-hidden="true" />
+        <span className="cow-title">
+          {thread.title}
+          {project !== null ? <small data-cow-outside-project=""> · {project}</small> : null}
+          {thread.originKind === "fork" ? <small> · a fork</small> : null}
+          {open ? <small className="cow-openmark"> · chat open</small> : null}
+          {line.under > 0 ? (
+            <small data-cow-under={line.under}>
+              {" "}
+              · with {line.under} {line.under === 1 ? "thread" : "threads"} under it
+            </small>
+          ) : null}
+        </span>
+      </span>
+      <span className="cow-wh">{OUTSIDE_STATE_TEXT[line.state]}</span>
+      <span className="cow-nx">A brings it under Main</span>
+    </div>
+  );
+}
+
+/**
+ * The heading of a section that folds, To settle, Kept or Outside Main: a cursor stop of
  * its own, where h and l fold and unfold it. Folded, it still shows its count.
  */
 function SectionHead({
@@ -759,7 +821,8 @@ function Help({ onClose }: { onClose: () => void }) {
             <b>The queue</b> at the side holds only what waits on you, oldest first. <b>Parked</b> is work you set aside; it comes
             back by itself. <b>To settle</b> is what finished and is not archived: each waits for one decision of yours, archive,
             park, keep or carry on, and none is hidden by age. <b>Kept</b> is what you keep around on purpose; it asks for
-            nothing. <b>Archived</b> is what was archived in the last 2 days. Select a line, then press a verb: the bar at the bottom
+            nothing. <b>Archived</b> is what was archived in the last 2 days. <b>Outside Main</b>, last and folded, lists open
+            threads with no parent, which are under no Main; <b>A</b> brings one under Main. Select a line, then press a verb: the bar at the bottom
             shows which apply, and a greyed-out one says why when pressed.
           </p>
           <p>
@@ -1023,7 +1086,12 @@ function useMainState(scopedProjectId: string | null, signer: Signer) {
     },
     [sign],
   );
-  return { loaded: stored !== null, projectId: resolved.projectId, mainId: resolved.mainId, error, load, choose };
+  // The Mains recorded for other projects, here or in this window: never listed outside this one.
+  const otherMains = useMemo(
+    () => new Set([...Object.values(stored?.mains ?? {}), ...Object.values(own.mains)].filter((id) => id !== resolved.mainId)),
+    [stored, own, resolved.mainId],
+  );
+  return { loaded: stored !== null, projectId: resolved.projectId, mainId: resolved.mainId, otherMains, error, load, choose };
 }
 
 /** j/k/gg/G/Enter/f over any list of ids; shared by the overview and the picker. */
@@ -1270,7 +1338,10 @@ function OverviewScreen({
   threads,
   onChooseMain,
   stay,
+  projectNames,
 }: {
+  /** bb's projects by id, for a line outside Main in another project. */
+  projectNames: ReadonlyMap<string, string>;
   /** Keep a line the person marked seen in its place on this page, or let it go. */
   stay: (id: string, stays: boolean) => void;
   overview: Overview;
@@ -1312,6 +1383,8 @@ function OverviewScreen({
   // While filtering, a folded section shows what matches in it.
   const settleFolded = !hit && sectionFolded(folded, SETTLE_SECTION);
   const keptFolded = !hit && sectionFolded(folded, KEPT_SECTION);
+  const outsideFolded = !hit && sectionFolded(folded, OUTSIDE_SECTION);
+  const outsideShown = hit ? overview.outside.lines.filter((line) => hit.has(line.thread.id)) : outsideFolded ? [] : overview.outside.lines;
   const settleShown = hit ? overview.settle.filter((line) => hit.has(line.thread.id)) : settleFolded ? [] : overview.settle;
   const keptShown = hit ? overview.kept.filter((line) => hit.has(line.thread.id)) : keptFolded ? [] : overview.kept;
   const archivedShown = hit ? overview.archived.filter((line) => hit.has(line.thread.id)) : overview.archived;
@@ -1340,15 +1413,19 @@ function OverviewScreen({
   );
   // Undo's cursor: the line it brings back is followed to its new place,
   // and whatever folds it away there is unfolded once the page shows it.
-  const following = useRef<string | null>(null);
-  const follow = useCallback((id: string) => {
-    following.current = id;
+  const following = useRef<{ id: string; away?: Section | "tree" } | null>(null);
+  const follow = useCallback((id: string, away?: Section | "tree") => {
+    following.current = { id, away };
     setCursorRaw(id);
   }, []);
   useEffect(() => {
-    const id = following.current;
-    if (id === null) return;
-    const placed = sectionOf(overview, id) !== null || overview.rows.some((row) => row.id === id) || listed(overview).some((line) => line.thread.id === id);
+    if (following.current === null) return;
+    const { id, away } = following.current;
+    const section = sectionOf(overview, id);
+    const inTree = overview.rows.some((row) => row.id === id);
+    // Still where it is leaving from: bb has not said it moved yet.
+    if (away !== undefined && (away === "tree" ? inTree : section === away)) return;
+    const placed = section !== null || inTree || listed(overview).some((line) => line.thread.id === id);
     if (!placed) return;
     following.current = null;
     setFolded((current) => unfoldAround(overview, current, id));
@@ -1509,6 +1586,7 @@ function OverviewScreen({
   const selectedLine =
     [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
   const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
+  const selectedOutside = overview.outside.lines.find((line) => line.thread.id === selected) ?? null;
   const sheetRef = useRef<BriefSheetControl | null>(null);
 
   // Capabilities: what each thread holds, which are new, and what they would cover.
@@ -1834,6 +1912,9 @@ function OverviewScreen({
         return setHelp(true);
       case "choose-main":
         return onChooseMain();
+      case "bring":
+        if (!selectedOutside) return setMessage("A brings a thread from Outside Main under Main: select a line there first");
+        return verbs.startBring(selectedOutside);
       default:
         return;
     }
@@ -2155,6 +2236,35 @@ function OverviewScreen({
                 {archivedShown.map((line) => row(line, true))}
               </>
             )}
+            {/* Outside Main shows even when Main has nothing under it: that is when it matters most. */}
+            <SectionHead
+              id={OUTSIDE_SECTION}
+              title="Outside Main"
+              count={overview.outside.lines.length}
+              words={[
+                overview.outside.lines.length === 0 ? "every open thread is under a Main" : "open, with no parent, not under this Main: A brings one under it",
+                notListedText(overview.outside),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              folded={outsideFolded}
+              heat={null}
+              current={selected === OUTSIDE_SECTION}
+              onSelect={setCursor}
+              onFold={toggleFold}
+            />
+            {outsideShown.map((line) => (
+              <OutsideRow
+                key={line.thread.id}
+                line={line}
+                now={now}
+                project={line.thread.projectId === main.thread.projectId ? null : (projectNames.get(line.thread.projectId) ?? null)}
+                current={line.thread.id === selected}
+                open={line.thread.id === pane}
+                onSelect={setCursor}
+                onOpen={openChat}
+              />
+            ))}
             {truncated ? (
               <p className="cow-warn">bb has more threads than this page reads; some may be missing.</p>
             ) : null}
@@ -2347,7 +2457,7 @@ function OverviewScreen({
           ) : (
             <>
               <span className={hint ? "cow-mode cow-m-hint" : "cow-mode"}>{hint ? "HINT" : "NORMAL"}</span>
-              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : "")}</span>
+              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? selectedOutside?.thread.title ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : selected === OUTSIDE_SECTION ? "Outside Main" : "")}</span>
               <span className="cow-sep">▸</span>
               <span className="cow-verbs">
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
@@ -2363,6 +2473,8 @@ function OverviewScreen({
                     <Verb keys="K" label="up" off={selectedTodo.number === 1} onRun={() => verbs.moveTodo(selectedTodo, -1)} />
                     <Verb keys="J" label="down" off={selectedTodo.number === selectedTodo.of} onRun={() => verbs.moveTodo(selectedTodo, 1)} />
                   </>
+                ) : selectedOutside ? (
+                  <Verb keys="A" label="bring under Main" name="bring" onRun={() => verbs.startBring(selectedOutside)} />
                 ) : (
                   (["answer", "brief", "park", "resume", "stop", "archive"] as const).map(verbButton)
                 )}
@@ -2491,9 +2603,10 @@ export function CowPage() {
               todos: (id) => parks.todos.get(id) ?? [],
               marked: (id) => parks.projects.has(id),
               stays: (id) => staying.has(id),
+              otherMains: mains.otherMains,
             },
           ),
-    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, mains.otherMains, now],
   );
 
   useEffect(() => {
@@ -2590,6 +2703,7 @@ export function CowPage() {
       threads={snapshot.threads}
       onChooseMain={() => setPicking(true)}
       stay={stay}
+      projectNames={projectNames}
     />
   );
 }

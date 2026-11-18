@@ -18,6 +18,7 @@
 // marked as a project) is never finished while it is not archived: with
 // nothing to say it is idle, and keeps its place.
 
+import { NO_OUTSIDE, type Outside, outsideMain } from "./outside.ts";
 import type { TodoItem } from "./shared.ts";
 import { type Derived, type Heat, LIMITS, type LineState, type ThreadFacts, atRest, setAside, settleHeat, waitingSince } from "./state.ts";
 
@@ -79,6 +80,8 @@ export interface Plans {
    * page's own rule; what is stored, and `bb cow status`, know nothing of it.
    */
   stays?(threadId: string): boolean;
+  /** The Mains of other projects: never listed outside this one, so never moved under it. */
+  otherMains?: ReadonlySet<string>;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -103,6 +106,8 @@ export interface Overview {
   kept: Line[];
   /** Archived in the last two days, newest first, with their reasons. */
   archived: Line[];
+  /** Open threads that are not under Main at all: see `outsideMain`. Never in the queue. */
+  outside: Outside;
   /** Every thread under Main that is not archived, listed or not, except under a parked or kept one. */
   unarchived: string[];
   /** Main and the lines that are waiting on the user, oldest first. */
@@ -179,11 +184,13 @@ export function buildOverview(
     settle: [],
     kept: [],
     archived: [],
+    outside: NO_OUTSIDE,
     unarchived: [],
     queue: [],
     counts: emptyCounts(),
   };
   if (!mainThread) return overview;
+  overview.outside = outsideMain(threads, mainId, plans.otherMains);
 
   // First what every thread under Main is, then where it goes.
   interface Node {
@@ -440,24 +447,26 @@ export function leftBehind(line: Line, todos = 0): string[] {
   return out;
 }
 
-/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, then Archived. */
+/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, then Archived. Outside Main's lines are not `Line`s, and not here. */
 export function listed(overview: Overview): Line[] {
   return [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived];
 }
 
-/** The two sections that fold, as the cursor names their headings. */
+/** The sections that fold, as the cursor names their headings. */
 export const SETTLE_SECTION = "section:settle";
 export const KEPT_SECTION = "section:kept";
-export type Section = typeof SETTLE_SECTION | typeof KEPT_SECTION;
-export const isSection = (id: string | null): id is Section => id === SETTLE_SECTION || id === KEPT_SECTION;
+export const OUTSIDE_SECTION = "section:outside";
+export type Section = typeof SETTLE_SECTION | typeof KEPT_SECTION | typeof OUTSIDE_SECTION;
+export const SECTIONS: readonly Section[] = [SETTLE_SECTION, KEPT_SECTION, OUTSIDE_SECTION];
+export const isSection = (id: string | null): id is Section => id === SETTLE_SECTION || id === KEPT_SECTION || id === OUTSIDE_SECTION;
 
 /**
- * Whether a section is folded. To settle starts open and Kept starts
- * folded, so the fold state records the one that is not as it starts:
- * To settle's id when it is folded, Kept's when it is open.
+ * Whether a section is folded. To settle starts open, and Kept and Outside
+ * Main start folded, so the fold state records the one that is not as it
+ * starts: To settle's id when it is folded, the others' when they are open.
  */
 export function sectionFolded(folded: ReadonlySet<string>, section: Section): boolean {
-  return section === KEPT_SECTION ? !folded.has(section) : folded.has(section);
+  return section === SETTLE_SECTION ? folded.has(section) : !folded.has(section);
 }
 
 function withSection(folded: ReadonlySet<string>, section: Section, fold: boolean): ReadonlySet<string> {
@@ -468,13 +477,17 @@ function withSection(folded: ReadonlySet<string>, section: Section, fold: boolea
   return next;
 }
 
-/** The lines of a section. */
-const sectionLines = (overview: Overview, section: Section): Line[] => (section === SETTLE_SECTION ? overview.settle : overview.kept);
+/** The ids of the lines of a section. */
+const sectionIds = (overview: Overview, section: Section): string[] =>
+  section === OUTSIDE_SECTION
+    ? overview.outside.lines.map((line) => line.thread.id)
+    : (section === SETTLE_SECTION ? overview.settle : overview.kept).map((line) => line.thread.id);
 
 /** The section the line `id` is listed in, if it is one that folds. */
 export function sectionOf(overview: Overview, id: string): Section | null {
   if (overview.settle.some((line) => line.thread.id === id)) return SETTLE_SECTION;
   if (overview.kept.some((line) => line.thread.id === id)) return KEPT_SECTION;
+  if (overview.outside.lines.some((line) => line.thread.id === id)) return OUTSIDE_SECTION;
   return null;
 }
 
@@ -499,9 +512,9 @@ export function visibleRows(overview: Overview, folded: ReadonlySet<string> = ne
 export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = new Set()): string[] {
   // An empty section's heading is no stop: there is nothing to fold.
   const section = (id: Section) => {
-    const lines = sectionLines(overview, id);
-    if (lines.length === 0) return [];
-    return [id, ...(sectionFolded(folded, id) ? [] : lines.map((line) => line.thread.id))];
+    const ids = sectionIds(overview, id);
+    if (ids.length === 0) return [];
+    return [id, ...(sectionFolded(folded, id) ? [] : ids)];
   };
   return [
     ...visibleRows(overview, folded).map((row) => row.id),
@@ -509,6 +522,7 @@ export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = ne
     ...section(SETTLE_SECTION),
     ...section(KEPT_SECTION),
     ...overview.archived.map((line) => line.thread.id),
+    ...section(OUTSIDE_SECTION),
   ];
 }
 
@@ -558,8 +572,8 @@ export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: st
     const isFolded = sectionFolded(folded, id);
     if (key === "h") return isFolded ? { kind: "none" } : { kind: "fold", folded: withSection(folded, id, true) };
     if (isFolded) return { kind: "fold", folded: withSection(folded, id, false) };
-    const first = sectionLines(overview, id)[0];
-    return first ? { kind: "cursor", id: first.thread.id } : { kind: "none" };
+    const first = sectionIds(overview, id)[0];
+    return first ? { kind: "cursor", id: first } : { kind: "none" };
   }
   const section = id === null ? null : sectionOf(overview, id);
   if (section !== null) return key === "h" ? { kind: "cursor", id: section } : { kind: "none" };
@@ -584,7 +598,7 @@ export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: st
 
 /** The fold state without threads that are no longer on the page, so it cannot grow for ever. */
 export function keepFolds(overview: Overview, folded: ReadonlySet<string>): ReadonlySet<string> {
-  const known = new Set([...overview.unarchived, SETTLE_SECTION, KEPT_SECTION]);
+  const known = new Set([...overview.unarchived, ...SECTIONS]);
   const kept = [...folded].filter((id) => known.has(id));
   return kept.length === folded.size ? folded : new Set(kept);
 }
@@ -617,7 +631,7 @@ export function afterLeaving(overview: Overview, id: string, folded?: ReadonlySe
   const at = order.indexOf(id);
   if (at < 0) return null;
   // It lands on a line: a section's heading is passed over.
-  const leaving = new Set<string>([id, SETTLE_SECTION, KEPT_SECTION]);
+  const leaving = new Set<string>([id, ...SECTIONS]);
   const inTree = overview.rows.findIndex((row) => row.id === id);
   if (inTree >= 0) {
     const depth = overview.rows[inTree]!.depth;

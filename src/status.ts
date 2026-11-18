@@ -2,12 +2,29 @@
 // data and as text, cut to a bounded size.
 
 import { dueText } from "./park.ts";
+import { OUTSIDE_STATE_TEXT, type OutsideState, notListedText } from "./outside.ts";
 import { type LineState, STATE_LABEL, waitingSince } from "./state.ts";
 import { formatAge } from "./text.ts";
 import { type Line, type Overview, ROLLUP_ORDER, leftBehind, unread } from "./tree.ts";
 
 /** How many lines of each section are given; the rest are counted. */
-export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, queue: 20, text: 140 } as const;
+export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, outside: 40, queue: 20, text: 140 } as const;
+
+/** An open thread that is not under Main: from the thread list alone. */
+export interface OutsideStatusLine {
+  id: string;
+  title: string;
+  /** Its bb project's name, when that is not Main's project; null when it is. */
+  project: string | null;
+  /** running, asking (bb's own pending question or permission request) or resting. */
+  state: OutsideState;
+  label: string;
+  /** How long since it last did anything, in milliseconds, and as the page writes it. */
+  sinceMs: number;
+  since: string;
+  /** How many open threads are under it. */
+  under: number;
+}
 
 export interface StatusLine {
   id: string;
@@ -59,8 +76,12 @@ export interface StatusReport {
   kept: StatusLine[];
   /** Archived in the last 2 days, with their reasons. */
   archived: StatusLine[];
+  /** Open threads with no parent that are not under Main, newest activity first. Never in the queue. */
+  outside: OutsideStatusLine[];
+  /** Open threads with no parent that are left out of `outside`: started by a plugin, or another project's Main. */
+  outsideNotListed: { byPlugins: number; otherMains: number };
   /** Lines left out to keep the answer bounded, by section. */
-  omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; queue: number };
+  omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; outside: number; queue: number };
   /** True when bb has more threads than cow reads. */
   truncated: boolean;
 }
@@ -93,7 +114,7 @@ function toStatusLine(line: Line, now: number, todo: readonly string[] = []): St
 }
 
 /** The overview as plain data. `overview.main` must be set. */
-export function statusReport(overview: Overview, now: number, truncated: boolean): StatusReport {
+export function statusReport(overview: Overview, now: number, truncated: boolean, projectNames: ReadonlyMap<string, string> = new Map()): StatusReport {
   const main = overview.main;
   if (!main) throw new Error("the overview has no Main");
   const todos = new Map<string, string[]>();
@@ -126,12 +147,28 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
     })),
     kept: lines(overview.kept, STATUS_LIMITS.kept),
     archived: lines(overview.archived, STATUS_LIMITS.archived),
+    outside: overview.outside.lines.slice(0, STATUS_LIMITS.outside).map((line) => {
+      const sinceMs = Math.max(0, now - line.lastAt);
+      const { projectId } = line.thread;
+      return {
+        id: line.thread.id,
+        title: cut(line.thread.title, 80),
+        project: projectId === main.thread.projectId ? null : (projectNames.get(projectId) ?? projectId),
+        state: line.state,
+        label: OUTSIDE_STATE_TEXT[line.state],
+        sinceMs,
+        since: formatAge(sinceMs),
+        under: line.under,
+      };
+    }),
+    outsideNotListed: { byPlugins: overview.outside.byPlugins, otherMains: overview.outside.otherMains },
     omitted: {
       threads: omitted(overview.lines, STATUS_LIMITS.threads),
       parked: omitted(overview.parked, STATUS_LIMITS.parked),
       settle: omitted(overview.settle, STATUS_LIMITS.settle),
       kept: omitted(overview.kept, STATUS_LIMITS.kept),
       archived: omitted(overview.archived, STATUS_LIMITS.archived),
+      outside: Math.max(0, overview.outside.lines.length - STATUS_LIMITS.outside),
       queue: omitted(overview.queue, STATUS_LIMITS.queue),
     },
     truncated,
@@ -189,6 +226,15 @@ export function statusText(report: StatusReport): string {
   out.push(...more(omitted.kept), "", `Archived in the last 2 days (${report.archived.length + omitted.archived})`);
   for (const line of report.archived) out.push(...row(line, false));
   out.push(...more(omitted.archived));
+  const notListed = notListedText({ lines: [], ...report.outsideNotListed });
+  out.push("", `Outside Main: open, with no parent, not under Main (${report.outside.length + omitted.outside}${notListed ? `; ${notListed}` : ""})`);
+  if (report.outside.length === 0) out.push("    nothing");
+  for (const line of report.outside) {
+    const where = line.project === null ? "" : `  [project: ${line.project}]`;
+    const under = line.under === 0 ? "" : `  [${line.under} under it]`;
+    out.push(`    ${line.label} · ${line.since}  ${line.title} (${line.id})${where}${under}`);
+  }
+  out.push(...more(omitted.outside));
   if (report.truncated) out.push("", "bb has more threads than cow reads; some may be missing.");
   return `${out.join("\n")}\n`;
 }

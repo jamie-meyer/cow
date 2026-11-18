@@ -11,7 +11,12 @@
 // - bb records a thread's first prompt as sent by "user" whoever spawned it,
 //   so `source: "spawn"` is never the person speaking;
 // - `turn/started` and `turn/completed` bracket the turn, the latter with a
-//   `status` of "completed", "failed" or "interrupted".
+//   `status` of "completed", "failed" or "interrupted";
+// - bb's own notices carry a `systemMessageKind`: "child-completed" and the
+//   like when a thread under it reports, "ownership-assigned" (or
+//   "ownership-batch") when a thread is moved under it, "ownership-removed"
+//   when one is moved away. A notice is never the person speaking, whatever
+//   its `initiator` says.
 
 /** Where a turn ended: its `turn/completed` event. */
 export interface TurnEnd {
@@ -28,6 +33,8 @@ export interface Replies {
   personSpokeSeq: number | null;
   /** When that message was sent. */
   personSpokeAt?: number | null;
+  /** bb told it that a thread was moved under it: it may have threads under it that it never started. */
+  adopted?: boolean;
 }
 
 export const NO_REPLIES: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
@@ -41,6 +48,7 @@ const record = (value: unknown): Record<string, unknown> | null =>
 /** Who sent the prompt a `client/turn/requested` event records. */
 export function starterOf(data: Record<string, unknown>): Starter {
   if (data.source === "spawn") return "spawn";
+  if (typeof data.systemMessageKind === "string") return "system";
   if (data.initiator === "user") return "person";
   return data.initiator === "agent" ? "agent" : "system";
 }
@@ -61,11 +69,14 @@ export function findReplies(events: readonly unknown[]): Replies {
   }
   log.sort((a, b) => a.seq - b.seq);
 
-  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null };
+  const found: Replies = { last: null, toPerson: null, personSpokeSeq: null, personSpokeAt: null, adopted: false };
   /** Who sent the prompt that the next turn starts from; null when it is not among the events. */
   let waiting: Starter | null = null;
   /** Whether the turn in progress is the person's. */
   let personsTurn = false;
+  /** Whether the next turn, and the one in progress, were started only to say a thread was moved: bb's bookkeeping, which ends in no reply. */
+  let waitingOwnership = false;
+  let ownershipTurn = false;
   for (const event of log) {
     if (event.type === "client/turn/requested") {
       const starter = starterOf(event.data);
@@ -73,17 +84,29 @@ export function findReplies(events: readonly unknown[]): Replies {
         found.personSpokeSeq = event.seq;
         found.personSpokeAt = event.at;
       }
+      const kind = event.data.systemMessageKind;
+      if (kind === "ownership-assigned" || kind === "ownership-batch") found.adopted = true;
       const steers = record(event.data.target)?.kind === "steer";
       if (steers) {
         // Said into a turn that is running: its reply answers the person too.
         if (starter === "person") personsTurn = true;
       } else {
         waiting = starter;
+        waitingOwnership = typeof kind === "string" && kind.startsWith("ownership-");
       }
     } else if (event.type === "turn/started") {
       personsTurn = waiting === "person";
+      ownershipTurn = waitingOwnership;
       waiting = null;
+      waitingOwnership = false;
     } else if (event.type === "turn/completed") {
+      // A turn bb started only to say a thread was moved ends in no reply
+      // anyone asked for, unless the person spoke into it.
+      if (ownershipTurn && !personsTurn) {
+        ownershipTurn = false;
+        continue;
+      }
+      ownershipTurn = false;
       if (event.data.status === "completed" || event.data.status === undefined) {
         const end = { seq: event.seq, at: event.at };
         found.last = end;
@@ -93,6 +116,17 @@ export function findReplies(events: readonly unknown[]): Replies {
     }
   }
   return found;
+}
+
+/**
+ * Whether the person talks to a thread directly, so that every reply of its
+ * is theirs. A thread with threads under it is taken to be one they talk to;
+ * but one that bb has told a thread was moved under it, and that the person
+ * has never written to in the turns read, is a worker that was handed a
+ * thread: its replies go to whoever started its turns, as any worker's do.
+ */
+export function talksTo(head: boolean, replies: Replies | undefined): boolean {
+  return head && !(replies?.adopted === true && replies.personSpokeSeq == null);
 }
 
 /**

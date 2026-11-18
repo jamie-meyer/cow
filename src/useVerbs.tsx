@@ -32,9 +32,12 @@ import { type PickUp, parsePickUp } from "./pickup.ts";
 import { ConfirmPrompt, TextPrompt } from "./prompts.tsx";
 import { BLOCKED_OPTIONS, type Refusal, chooseBlocked, confirmBlocked, emptyBlockedDraft, writeBlocked } from "./refusal.ts";
 import { keepNote } from "./keep.ts";
-import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type WaitNote } from "./shared.ts";
+import { findReplies } from "./attention.ts";
+import type { ThreadReader } from "./activity.ts";
+import { type OutsideLine, moveRecord, moveRefusal, moveText, moveUpdate, undoUpdates } from "./outside.ts";
+import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type Seen, type WaitNote } from "./shared.ts";
 import { isBusy } from "./state.ts";
-import { type Line, type Overview, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
+import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
 import { type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
 import { waitNote } from "./waiting.ts";
@@ -87,8 +90,12 @@ export interface VerbHost {
   /** The unarchived threads under a thread, which bb archives along with it. */
   under: (id: string) => string[];
   setCursor: (id: string | null) => void;
-  /** Put the cursor on a line that is about to move, and unfold what holds it once it has: undo's cursor. */
-  follow: (id: string) => void;
+  /**
+   * Put the cursor on a line that is about to move, and unfold what holds it
+   * once it has: undo's cursor. `away` is the section, or the tree, it is in
+   * now and is leaving: until it has left, it is not where it is going.
+   */
+  follow: (id: string, away?: Section | "tree") => void;
   say: (message: string) => void;
   openChat: (id: string) => void;
   focusOverview: () => void;
@@ -109,6 +116,8 @@ export interface Verbs {
   toggleProject: (line: Line) => void;
   /** Say the line waits on someone other than the person, or on a waiting line, offer to clear it. `u` takes it back. */
   startWait: (line: Line | null) => void;
+  /** Ask, then bring a thread from Outside Main under Main. `u` takes it back. */
+  startBring: (line: OutsideLine) => void;
   /** Ask, then take a not-started item off its list. */
   removeTodo: (row: TodoRow) => void;
   moveTodo: (row: TodoRow, by: 1 | -1) => void;
@@ -300,17 +309,71 @@ export function useVerbs(host: VerbHost): Verbs {
       else if (entry.kind === "seen") await parks.setSeen(entry.threadId, entry.before);
       else if (entry.kind === "project") await parks.setProject(entry.threadId, entry.before);
       else if (entry.kind === "wait") await parks.setWait(entry.threadId, entry.before);
-      else {
+      else if (entry.kind === "move") {
+        for (const update of undoUpdates(entry.before)) await sdk.threads.update(update);
+        if (entry.seen) await parks.setSeen(entry.threadId, entry.seen.before);
+      } else {
         for (const threadId of [entry.threadId, ...entry.under]) await sdk.threads.unarchive({ threadId });
       }
       setUndo((entries) => entries.filter((other) => other !== entry));
       // Where the line was is not where it goes: what to unfold is decided once it is there.
-      host.follow(entry.threadId);
+      host.follow(entry.threadId, entry.kind === "move" ? "tree" : undefined);
       close("undone");
     } catch (cause) {
       close(`not undone: ${errorText(cause)}`);
     }
   };
+
+  /**
+   * Bring a thread from outside Main under it. What bb had as its parent,
+   * sidebar section and notification setting is recorded first, for undo.
+   * bb kept its own record of whether the person read its reply while it
+   * had no parent; under Main cow keeps it, so a reply bb had as read is
+   * marked seen here and does not come back as new.
+   */
+  const bring = async (line: OutsideLine) => {
+    const { thread } = line;
+    const id = thread.id;
+    const before = moveRecord(thread);
+    try {
+      await sdk.threads.update(moveUpdate(id, main.thread.id));
+    } catch (cause) {
+      return say(`not moved: ${moveRefusal(cause)}`);
+    }
+    let seen: { before: Seen | null } | undefined;
+    let note = "";
+    const read = thread.lastReadAt !== null && thread.lastReadAt >= thread.latestAttentionAt;
+    if (read) {
+      try {
+        const reader: ThreadReader = sdk.threads;
+        const turns = await reader.events.list({ threadId: id, limit: "40", order: "desc", types: ["client/turn/requested", "turn/started", "turn/completed"] as never });
+        const last = findReplies(turns).last;
+        if (last) {
+          const previous = parks.seen.get(id) ?? null;
+          if (previous === null || previous.seq < last.seq) {
+            await parks.setSeen(id, { seq: last.seq, at: clockNow() });
+            seen = { before: previous };
+          }
+        }
+      } catch (cause) {
+        note = ` · its last reply, read in bb, may show as unseen: ${errorText(cause)}`;
+      }
+    }
+    remember({ kind: "move", threadId: id, title: thread.title, before, ...(seen ? { seen } : {}) });
+    host.follow(id, OUTSIDE_SECTION);
+    say(`brought under Main: Main gets bb's notice, and the thread tells Main only when it is stuck · u takes it back${note}`);
+  };
+
+  const startBring = (line: OutsideLine) =>
+    setModal({
+      kind: "confirm",
+      mode: "MOVE",
+      // The line is outside the tree, so the prompt is held by Main, as undo's is.
+      threadId: main.thread.id,
+      label: moveText(line, main.thread.title),
+      cancelled: "not moved",
+      run: () => void bring(line),
+    });
 
   const markSeen = (line: Line, asked: boolean) => {
     // A reply waiting on the person, or the unseen reply of a line to settle.
@@ -702,7 +765,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const undoable = undo[undo.length - 1] ?? null;
   const startUndo = () => {
-    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen, project mark, wait or keep can be taken back");
+    if (undoable === null) return say("nothing to undo: only the last park, resume, archive, dismissal, mark as seen, project mark, wait, keep or move under Main can be taken back");
     setModal({
       kind: "confirm",
       mode: "UNDO",
@@ -717,7 +780,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -733,7 +796,7 @@ export function useVerbs(host: VerbHost): Verbs {
         close();
         modal.run();
       },
-      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" || modal.mode === "REMOVE" ? "" : title} label={modal.label} />,
+      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" || modal.mode === "REMOVE" || modal.mode === "MOVE" ? "" : title} label={modal.label} />,
       card: null,
     };
   }

@@ -64,6 +64,9 @@
 //                       chat, and seen lines staying in place: four fixtures
 //   --only-settle       only To settle, which replies enter the queue, and
 //                       keeping a thread: three fixtures
+//   --only-outside      only Outside Main and bringing a thread under Main:
+//                       four fixtures, one a stand-in Main. It moves only
+//                       those, and puts each back
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -222,6 +225,8 @@ const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "am
 const WAITING = ["wmain", "wkid", "wlink", "wother"];
 /** The fixtures of the To settle and Kept checks: a Main of their own, and two workers under it. */
 const SETTLING = ["smain", "sjob", "schat"];
+/** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
+const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
 From then on, when you receive a message of the form "links A B C", where A, B and C are thread ids, reply with exactly these three lines, putting each id in its place:
 - first: @thread:A
@@ -244,7 +249,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -280,6 +285,10 @@ async function fixtures() {
   await make("smain", { prompt: QUIET });
   await make("sjob", { prompt: QUIET, parent: ids.smain });
   await make("schat", { prompt: QUIET, parent: ids.smain });
+  await make("omain", { prompt: QUIET });
+  await make("ostray", { prompt: QUIET });
+  await make("ohead", { prompt: QUIET });
+  await make("okid", { prompt: QUIET, parent: ids.ohead });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -298,7 +307,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1472,6 +1481,162 @@ async function prepareSettle(ids) {
   const end = (await api(`/threads/${ids.schat}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
   if (end !== undefined) await signer.must("seen_set", { threadId: ids.schat, seen: { seq: end, at: Date.now() } });
   await signer.must("seen_set", { threadId: ids.sjob, seen: null });
+}
+
+// ---- Outside Main, and bringing a thread under Main ------------------------
+
+/** The fixtures as a run starts: the two outside threads with no parent, the kid under its head. Only these are moved. */
+async function prepareOutside(ids) {
+  for (const name of OUTSIDE) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  for (const name of ["ostray", "ohead"]) {
+    const [thread] = await api(`/threads?threadIds=${ids[name]}&limit=1`);
+    if (thread.parentThreadId !== null) await bb("thread", "update", ids[name], "--clear-parent-thread");
+  }
+  const [kid] = await api(`/threads?threadIds=${ids.okid}&limit=1`);
+  if (kid.archivedAt) await bb("thread", "unarchive", ids.okid);
+  if (kid.parentThreadId !== ids.ohead) await bb("thread", "update", ids.okid, "--parent-thread", ids.ohead);
+  await signer.must("seen_set", { threadId: ids.ostray, seen: null });
+}
+
+/** Outside Main: the section, its fold, the filter, A and u, a refusal, and bb cow status. */
+async function outsideChecks(page, ids, shot, chooseMain) {
+  const { omain, ostray, ohead, okid } = ids;
+  await prepareOutside(ids);
+  const facts = async (id) => (await api(`/threads?threadIds=${id}&limit=1`))[0];
+  const before = await facts(ostray);
+  // Folds belong to the window: this one starts as a new window does, Outside Main folded.
+  await page.eval(`sessionStorage.removeItem("cow:folds"); true`);
+  await chooseMain(page, omain);
+  await page.send("Page.bringToFront");
+  const heading = `document.querySelector('[data-cow-section="section:outside"]')`;
+  const count = `Number(${heading}?.querySelector("[data-cow-section-count]")?.dataset.cowSectionCount ?? -1)`;
+  const outLine = (id) => `document.querySelector('[data-cow-outside-line="${id}"]')`;
+  const treeLine = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const isCur = (id) => `(${outLine(id)}?.classList.contains("cow-cur") === true || ${treeLine(id)}?.classList.contains("cow-cur") === true)`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const confirm = `(document.querySelector("[data-cow-confirm]")?.textContent ?? "")`;
+
+  // -- the section: last, folded, counted --
+  await page.waitFor(`!!${heading}`, { label: "the Outside Main heading" });
+  check(
+    "Outside Main is the last section, folded by default, showing its count",
+    (await page.eval(`${heading}.dataset.cowSectionFolded === ""`)) &&
+      (await page.eval(count)) >= 2 &&
+      !(await page.eval(`!!${outLine(ostray)}`)) &&
+      (await page.eval(`(() => { const all = [...document.querySelectorAll(".cow-main [data-cow-section], .cow-main [data-cow-archived], .cow-main [data-cow-shelf]")]; return all[all.length - 1] === ${heading}; })()`)),
+  );
+  // -- / finds its lines while folded --
+  await page.key("/");
+  await page.waitFor(`document.activeElement?.dataset.cowFilter === ""`, { label: "the filter" });
+  await page.type("cow test");
+  await page.waitFor(`!!${outLine(ostray)}`, { label: "a match outside Main", timeout: 10_000 });
+  check("/ finds a line outside Main while the section is folded", await page.eval(`!!${outLine(ohead)}`));
+  await page.key("Escape");
+  await page.waitFor(`!${outLine(ostray)}`, { label: "the filter closed" });
+
+  // -- unfolded: the lines, plain, with what is under them --
+  await page.eval(`${heading}.click(); true`);
+  await sleep(200);
+  await page.key("l");
+  await page.waitFor(`!!${outLine(ostray)}`, { label: "unfolded" });
+  check(
+    "l unfolds it: a thread with no parent is a line at rest; one with a thread under it is one line, counting it",
+    (await page.eval(`${outLine(ostray)}.dataset.cowOutsideState`)) === "resting" &&
+      (await page.eval(`${outLine(ohead)}.querySelector("[data-cow-under]")?.dataset.cowUnder`)) === "1" &&
+      !(await page.eval(`!!${outLine(okid)}`)) &&
+      !(await page.eval(`!!${outLine(omain)}`)),
+  );
+  check("nothing in it is in the queue", !(await page.eval(`!!document.querySelector('[data-cow-queue="${ostray}"], [data-cow-queue="${ohead}"]')`)));
+  await shot("outside");
+
+  // -- Enter opens its chat, which says it is not under this Main --
+  await page.eval(`${outLine(ostray)}.click(); true`);
+  await sleep(200);
+  check("a line outside Main takes the cursor, and the bar offers A", (await page.eval(isCur(ostray))) && (await page.eval(`!!document.querySelector('[data-cow-verb="bring"]')`)));
+  await page.key("Enter");
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${ostray}"`, { label: "its chat" });
+  check("Enter opens its chat in the pane, marked not under this Main", await page.eval(`!!document.querySelector("[data-cow-pane-outside]")`));
+  for (let i = 0; i < 3 && (await page.eval(`!!document.querySelector("[data-cow-pane]")`)); i += 1) {
+    await page.key("Escape");
+    await sleep(300);
+  }
+
+  // -- A asks first, and says what will happen; any other key cancels --
+  // Only ever on this run's own fixture: the cursor is checked before the key.
+  if (!(await page.eval(isCur(ostray)))) throw new Error("the cursor is not on the fixture; nothing is moved");
+  await page.key("A");
+  await page.waitFor(`${confirm}.includes("under Main")`, { label: "the confirmation" });
+  const asked = await page.eval(confirm);
+  check("A asks first: Main gets bb's notice and starts a turn, and the thread tells Main only when stuck", asked.includes("Main starts a turn") && asked.includes("“stuck”") && asked.includes("u takes it back"), asked);
+  await page.key("n");
+  await sleep(300);
+  check("any other key cancels, and nothing moves", (await page.eval(message)).includes("not moved") && (await facts(ostray)).parentThreadId === null);
+
+  // -- y moves it under Main, telling Main only when stuck; the cursor follows --
+  if (!(await page.eval(isCur(ostray)))) throw new Error("the cursor is not on the fixture; nothing is moved");
+  await page.key("A");
+  await page.waitFor(`${confirm}.includes("under Main")`, { label: "the confirmation again" });
+  await page.key("y");
+  const moved = await waitForThread(ostray, (t) => t.parentThreadId === omain, "under Main", 20_000);
+  check("y moves it under Main, its notifications to Main set to stuck", moved.parentNotifications === "stuck");
+  await page.waitFor(`!!${treeLine(ostray)} && !${outLine(ostray)}`, { label: "its line under Main", timeout: 20_000 });
+  check("afterwards it is a line under Main like any other, and the cursor followed it", await page.eval(isCur(ostray)));
+  await shot("outside-moved");
+
+  // -- Main gets bb's notice, and starts a turn --
+  let notice = null;
+  for (let i = 0; i < 20 && !notice; i += 1) {
+    const prompts = await api(`/threads/${omain}/events?types=client/turn/requested&limit=5&order=desc`);
+    notice = prompts.find((event) => typeof event.data?.systemMessageKind === "string" && event.data.systemMessageKind.startsWith("ownership")) ?? null;
+    if (!notice) await sleep(500);
+  }
+  check("Main got bb's notice that a thread is now under it", notice !== null, notice ? `${notice.data.systemMessageKind}, initiator ${notice.data.initiator}, target ${notice.data.target?.kind}` : "none");
+  await waitForThread(omain, (t) => t.status === "idle", "Main's turn over", 120_000);
+
+  // -- a worker handed a thread does not read "replied to you" --
+  await bb("thread", "update", okid, "--parent-thread", ostray);
+  await sleep(3000);
+  await waitForThread(ostray, (t) => t.status === "idle", "its turn on bb's notice", 120_000);
+  const handed = (await api(`/threads/${ostray}/events?types=client/turn/requested&limit=3&order=desc`)).find((event) => String(event.data?.systemMessageKind ?? "").startsWith("ownership"));
+  await page.waitFor(`["idle", "done"].includes(${treeLine(ostray)}?.dataset.cowState) || ["idle", "done"].includes(document.querySelector('[data-cow-line="${ostray}"]')?.dataset.cowState)`, { label: "its state", timeout: 20_000 }).catch(() => undefined);
+  const handedState = await page.eval(`document.querySelector('[data-cow-line="${ostray}"]')?.dataset.cowState ?? null`);
+  check("a worker that bb told a thread was moved under it does not read replied to you", handedState !== "wants" && !(await page.eval(`!!document.querySelector('[data-cow-queue="${ostray}"]')`)), `${handedState}; notice ${handed ? `${handed.data.systemMessageKind}, initiator ${handed.data.initiator}` : "not found"}`);
+  await bb("thread", "update", okid, "--parent-thread", ohead);
+
+  // -- u takes it back exactly --
+  await page.key("u");
+  await page.waitFor(`${confirm}.includes("undo bringing")`, { label: "undo's confirmation" });
+  await page.key("y");
+  const back = await waitForThread(ostray, (t) => t.parentThreadId === null, "outside again", 20_000);
+  await sleep(1500);
+  const after = await facts(ostray);
+  check(
+    "u puts back its parent, its sidebar section and its notification setting, exactly",
+    back.parentThreadId === null && after.sectionId === before.sectionId && after.parentNotifications === before.parentNotifications,
+    `section ${before.sectionId} → ${after.sectionId}; notifications ${before.parentNotifications} → ${after.parentNotifications}`,
+  );
+  await page.waitFor(`!!${outLine(ostray)}`, { label: "back outside Main", timeout: 20_000 });
+  check("its line is back in Outside Main, with the cursor on it", await page.eval(isCur(ostray)));
+
+  // -- a refusal of bb's is said plainly --
+  await bb("thread", "archive", okid);
+  let refused = "";
+  try {
+    await bb("thread", "update", ostray, "--parent-thread", okid);
+  } catch (error) {
+    refused = `${error.stderr ?? ""} ${error.stdout ?? ""}`.trim();
+  }
+  const { moveRefusal } = await import("../src/outside.ts");
+  const plain = moveRefusal(new Error(refused));
+  check("bb refuses a parent that is archived, and cow says so in plain words", refused !== "" && plain === "bb refused: Main cannot take a thread under it, as it is archived or deleted" && (await facts(ostray)).parentThreadId === null, refused.slice(0, 200));
+  await bb("thread", "unarchive", okid);
+
+  // -- bb cow status --
+  const status = (await cow("status", "--main", omain)).stdout;
+  check("bb cow status has an Outside Main heading with the same lines", /\nOutside Main: open, with no parent, not under Main \(\d+/.test(status) && status.includes(`(${ostray})`) && new RegExp(`\\(${ohead}\\)\\s+\\[1 under it\\]`).test(status), status.split("\n").filter((l) => l.includes(ostray) || l.includes(ohead) || l.startsWith("Outside")).join(" / "));
+  const json = JSON.parse((await cow("status", "--main", omain, "--json")).stdout);
+  const listedJson = (json.outside ?? json.result?.outside ?? []).find((line) => line.id === ostray);
+  check("bb cow status --json has it under outside", listedJson?.state === "resting" && typeof listedJson.since === "string", JSON.stringify(listedJson));
 }
 
 /** To settle, which replies enter the queue, and keeping a thread. */
@@ -2929,7 +3094,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -2951,6 +3116,7 @@ async function main() {
     if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
     else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
     else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
+    else if (flag("only-outside")) await outsideChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }

@@ -156,9 +156,12 @@ time in that state, title and id, what it is doing or waiting on, and what
 moves it next. Then the Parked shelf; To settle, every finished thread
 that is not archived, waiting for the user's decision (unread first, then
 oldest first, with what archiving each would leave behind); Kept, threads
-the user keeps around on purpose; and what was archived in the last 2 days.
-Kept threads are the user's choice, made on the page: leave them be, and do
-not archive or park one unless the user asks.
+the user keeps around on purpose; what was archived in the last 2 days; and
+Outside Main, the open threads with no parent that are under no Main (one a
+plugin started is only counted). Kept threads are the user's choice, made on
+the page: leave them be, and do not archive or park one unless the user
+asks. Do not move a thread from Outside Main under Main unless the user asks;
+the user does it on the page with `A`.
 
 - Main defaults to the one last chosen on cow's page for the project you are
   in. Pass `--main <thread>` (your own id is in `$BB_THREAD_ID`) when that is
@@ -177,7 +180,8 @@ not archive or park one unless the user asks.
   to settle, or archived). A finished job's report is not in the queue; it
   is to settle, marked `[unread]` until the user has seen it.
 - Output is bounded: at most 80 open threads, 30 parked, 40 to settle, 30
-  kept, 20 archived and 20 queue entries; the rest are counted.
+  kept, 20 archived, 40 outside Main and 20 queue entries; the rest are
+  counted.
 
 ### `bb cow archive <thread> [--reason <text>]`
 

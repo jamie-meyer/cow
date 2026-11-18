@@ -36,7 +36,9 @@ const report = (overrides: Partial<StatusReport> = {}): StatusReport => ({
   settle: [],
   kept: [],
   archived: [],
-  omitted: { threads: 0, parked: 0, settle: 0, kept: 0, archived: 0, queue: 0 },
+  outside: [],
+  outsideNotListed: { byPlugins: 0, otherMains: 0 },
+  omitted: { threads: 0, parked: 0, settle: 0, kept: 0, archived: 0, outside: 0, queue: 0 },
   truncated: false,
   ...overrides,
 });

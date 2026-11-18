@@ -40,7 +40,9 @@ export type Command =
   /** Scroll the chat in the pane to its newest message. */
   | { kind: "chat-end" }
   | { kind: "help" }
-  | { kind: "choose-main" };
+  | { kind: "choose-main" }
+  /** Bring the selected thread from Outside Main under Main. */
+  | { kind: "bring" };
 
 /** The key map as the legend shows it: grouped by what the person is doing. */
 export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
@@ -49,7 +51,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "j k", does: "next, previous line (arrows work too); the heading, Main, is the line above the first" },
       { keys: "gg G", does: "the heading, the last line" },
-      { keys: "h l", does: "fold, unfold a group, or the To settle and Kept sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too)" },
+      { keys: "h l", does: "fold, unfold a group, or the To settle, Kept and Outside Main sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too)" },
       { keys: "Tab", does: "next entry in the queue of what waits on you (Shift+Tab previous)" },
       { keys: "1 to 9", does: "jump to that entry in the queue" },
       { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
@@ -84,7 +86,8 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
       { keys: "e", does: "archive a done, idle, waiting, kept or failed line: a reason or nothing, then Enter" },
       { keys: "z", does: "keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept" },
       { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
-      { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen, project mark, wait or keep (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
+      { keys: "A", does: "on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn" },
+      { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen, project mark, wait, keep or move under Main (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
       { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
       { keys: "J K", does: "move a not-started item down, up its list" },
     ],
@@ -185,6 +188,8 @@ export class KeyReader {
         return { kind: "close" };
       case "P":
         return { kind: "project" };
+      case "A":
+        return { kind: "bring" };
       case "w":
         return { kind: "wait" };
       case ";":
