@@ -18,6 +18,7 @@
 // marked as a project) is never finished while it is not archived: with
 // nothing to say it is idle, and keeps its place.
 
+import { type AutomationSection, type AutomationsRead, NO_SECTION, automationSection, isAutomationRow, runNeedsPerson } from "./automations.ts";
 import { NO_OUTSIDE, type Outside, outsideMain } from "./outside.ts";
 import type { TodoItem } from "./shared.ts";
 import { type Derived, type Heat, LIMITS, type LineState, type ThreadFacts, atRest, setAside, settleHeat, waitingSince } from "./state.ts";
@@ -51,6 +52,8 @@ export interface Line {
   project: "marked" | "head" | null;
   /** The person marked it seen on this page, and it stays in its place instead of moving to To settle. */
   stays?: true;
+  /** A run of an automation, listed under it in the Automations section: the row id of that automation. */
+  run?: string;
 }
 
 /** Work a thread has listed as not started yet: a row in its group. */
@@ -82,6 +85,8 @@ export interface Plans {
   stays?(threadId: string): boolean;
   /** The Mains of other projects: never listed outside this one, so never moved under it. */
   otherMains?: ReadonlySet<string>;
+  /** bb's automations, as cow's server read them: the Automations section. */
+  automations?: AutomationsRead;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -106,7 +111,9 @@ export interface Overview {
   kept: Line[];
   /** Archived in the last two days, newest first, with their reasons. */
   archived: Line[];
-  /** Open threads that are not under Main at all: see `outsideMain`. Never in the queue. */
+  /** bb's automations, each with its recent run threads: see `automationSection`. A run that needs the person is in the queue. */
+  automations: AutomationSection;
+  /** Open threads that are not under Main at all, except automations' runs: see `outsideMain`. Never in the queue. */
   outside: Outside;
   /** Every thread under Main that is not archived, listed or not, except under a parked or kept one. */
   unarchived: string[];
@@ -184,13 +191,13 @@ export function buildOverview(
     settle: [],
     kept: [],
     archived: [],
+    automations: NO_SECTION,
     outside: NO_OUTSIDE,
     unarchived: [],
     queue: [],
     counts: emptyCounts(),
   };
   if (!mainThread) return overview;
-  overview.outside = outsideMain(threads, mainId, plans.otherMains);
 
   // First what every thread under Main is, then where it goes.
   interface Node {
@@ -326,6 +333,14 @@ export function buildOverview(
   };
 
   const main = read(mainThread);
+  // An automation's runs that are not in the tree: Main, what is under it, and what is above it.
+  if (plans.automations) {
+    const inTree = new Set(seen);
+    const byId = new Map(threads.map((thread) => [thread.id, thread]));
+    for (let id = mainThread.parentThreadId; id !== null && !inTree.has(id); id = byId.get(id)?.parentThreadId ?? null) inTree.add(id);
+    overview.automations = automationSection(plans.automations, threads, inTree, mainThread.projectId, (thread, group) => runLine(thread, deriveThread(thread), group));
+  }
+  overview.outside = outsideMain(threads, mainId, plans.otherMains, overview.automations.threadIds);
   const mainLine: Line = { ...lineFor(main, 0, null), rollup: null, note: plans.note(mainId) };
   overview.main = mainLine;
   for (const kid of main.kids) place(kid, 0, null);
@@ -347,7 +362,7 @@ export function buildOverview(
   // Main has no line of its own, but its unread reply or question is still
   // the user's to deal with, so it takes a place in the queue. A kept line
   // is there only for what truly needs the person: its open ask.
-  overview.queue = [mainLine, ...overview.lines, ...overview.parked, ...overview.kept]
+  overview.queue = [mainLine, ...overview.lines, ...overview.parked, ...overview.kept, ...runLines(overview)]
     .filter((line) => line.derived.waitingOnYou)
     .sort(
       (a, b) =>
@@ -356,11 +371,45 @@ export function buildOverview(
   overview.queue.forEach((line, index) => {
     line.queueNumber = index + 1;
   });
+  // The legend counts the threads under Main: an automation's runs are not.
   for (const line of listed(overview)) {
-    overview.counts[line.derived.state] += 1;
+    if (line.run === undefined) overview.counts[line.derived.state] += 1;
   }
   return overview;
 }
+
+/**
+ * A run of an automation as a line. It has no parent, so no reply of its is
+ * the person's: it waits on them only for bb's own question or permission
+ * request, or an open ask. Otherwise it is at rest, whatever it came to,
+ * and nothing about it is coloured: a failure shows on its automation's row.
+ */
+function runLine(thread: ThreadFacts, derived: Derived, group: string): Line {
+  const line: Line = {
+    thread,
+    derived,
+    depth: 1,
+    parentId: null,
+    queueNumber: null,
+    under: 0,
+    finishedAt: derived.since,
+    openUnder: 0,
+    members: 0,
+    rollup: null,
+    unseenUnder: 0,
+    note: null,
+    project: null,
+    run: group,
+  };
+  if (derived.waitingOnYou && !runNeedsPerson(line)) {
+    const unread = derived.state === "wants" || derived.state === "stuck";
+    line.derived = { ...derived, waitingOnYou: false, ...(unread ? { state: "done" as const, next: "" } : {}) };
+  }
+  return line;
+}
+
+/** Every run line of the Automations section, listed or not on the page. */
+export const runLines = (overview: Overview): Line[] => overview.automations.groups.flatMap((group) => group.runs);
 
 /**
  * One thread as a line, whatever it is under: its state, how many lines are
@@ -447,23 +496,25 @@ export function leftBehind(line: Line, todos = 0): string[] {
   return out;
 }
 
-/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, then Archived. Outside Main's lines are not `Line`s, and not here. */
+/** Every thread line on the page, top to bottom: the tree, the Parked shelf, To settle, Kept, Archived, then the automations' runs. Outside Main's lines are not `Line`s, and not here. */
 export function listed(overview: Overview): Line[] {
-  return [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived];
+  return [...overview.lines, ...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived, ...runLines(overview)];
 }
 
 /** The sections that fold, as the cursor names their headings. */
 export const SETTLE_SECTION = "section:settle";
 export const KEPT_SECTION = "section:kept";
+export const AUTOMATIONS_SECTION = "section:automations";
 export const OUTSIDE_SECTION = "section:outside";
-export type Section = typeof SETTLE_SECTION | typeof KEPT_SECTION | typeof OUTSIDE_SECTION;
-export const SECTIONS: readonly Section[] = [SETTLE_SECTION, KEPT_SECTION, OUTSIDE_SECTION];
-export const isSection = (id: string | null): id is Section => id === SETTLE_SECTION || id === KEPT_SECTION || id === OUTSIDE_SECTION;
+export type Section = typeof SETTLE_SECTION | typeof KEPT_SECTION | typeof AUTOMATIONS_SECTION | typeof OUTSIDE_SECTION;
+export const SECTIONS: readonly Section[] = [SETTLE_SECTION, KEPT_SECTION, AUTOMATIONS_SECTION, OUTSIDE_SECTION];
+export const isSection = (id: string | null): id is Section => (SECTIONS as readonly (string | null)[]).includes(id);
 
 /**
- * Whether a section is folded. To settle starts open, and Kept and Outside
- * Main start folded, so the fold state records the one that is not as it
- * starts: To settle's id when it is folded, the others' when they are open.
+ * Whether a section is folded. To settle starts open, and Kept, Automations
+ * and Outside Main start folded, so the fold state records the one that is
+ * not as it starts: To settle's id when it is folded, the others' when they
+ * are open.
  */
 export function sectionFolded(folded: ReadonlySet<string>, section: Section): boolean {
   return section === SETTLE_SECTION ? folded.has(section) : !folded.has(section);
@@ -477,16 +528,26 @@ function withSection(folded: ReadonlySet<string>, section: Section, fold: boolea
   return next;
 }
 
-/** The ids of the lines of a section. */
+/** The ids of the lines of a section; for Automations, the automations' rows. */
 const sectionIds = (overview: Overview, section: Section): string[] =>
   section === OUTSIDE_SECTION
     ? overview.outside.lines.map((line) => line.thread.id)
-    : (section === SETTLE_SECTION ? overview.settle : overview.kept).map((line) => line.thread.id);
+    : section === AUTOMATIONS_SECTION
+      ? overview.automations.groups.map((group) => group.id)
+      : (section === SETTLE_SECTION ? overview.settle : overview.kept).map((line) => line.thread.id);
+
+/** Whether an automation's runs are folded under its row. They start folded, so the fold state records the open ones. */
+export const automationFolded = (folded: ReadonlySet<string>, groupId: string): boolean => !folded.has(groupId);
+
+/** The automation a run line `id` is listed under, if it is one. */
+export const automationOf = (overview: Overview, id: string) =>
+  overview.automations.groups.find((group) => group.runs.some((line) => line.thread.id === id)) ?? null;
 
 /** The section the line `id` is listed in, if it is one that folds. */
 export function sectionOf(overview: Overview, id: string): Section | null {
   if (overview.settle.some((line) => line.thread.id === id)) return SETTLE_SECTION;
   if (overview.kept.some((line) => line.thread.id === id)) return KEPT_SECTION;
+  if (isAutomationRow(id) ? overview.automations.groups.some((group) => group.id === id) : automationOf(overview, id) !== null) return AUTOMATIONS_SECTION;
   if (overview.outside.lines.some((line) => line.thread.id === id)) return OUTSIDE_SECTION;
   return null;
 }
@@ -516,12 +577,18 @@ export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = ne
     if (ids.length === 0) return [];
     return [id, ...(sectionFolded(folded, id) ? [] : ids)];
   };
+  // Each automation's row, and its runs when it is unfolded.
+  const automations = section(AUTOMATIONS_SECTION).flatMap((id) => {
+    const group = overview.automations.groups.find((other) => other.id === id);
+    return group && !automationFolded(folded, id) ? [id, ...group.runs.map((line) => line.thread.id)] : [id];
+  });
   return [
     ...visibleRows(overview, folded).map((row) => row.id),
     ...overview.parked.map((line) => line.thread.id),
     ...section(SETTLE_SECTION),
     ...section(KEPT_SECTION),
     ...overview.archived.map((line) => line.thread.id),
+    ...automations,
     ...section(OUTSIDE_SECTION),
   ];
 }
@@ -545,7 +612,12 @@ export function groupsAround(overview: Overview, id: string): string[] {
 /** The fold state after making the row `id` visible: every group around it unfolded, or its section. */
 export function unfoldAround(overview: Overview, folded: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const section = sectionOf(overview, id);
-  if (section !== null) return withSection(folded, section, false);
+  if (section !== null) {
+    const open = withSection(folded, section, false);
+    // A run is shown with its automation unfolded too.
+    const group = section === AUTOMATIONS_SECTION ? automationOf(overview, id) : null;
+    return group && automationFolded(open, group.id) ? new Set([...open, group.id]) : open;
+  }
   const around = groupsAround(overview, id).filter((head) => folded.has(head));
   if (around.length === 0) return folded;
   const next = new Set(folded);
@@ -576,6 +648,20 @@ export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: st
     return first ? { kind: "cursor", id: first } : { kind: "none" };
   }
   const section = id === null ? null : sectionOf(overview, id);
+  if (section === AUTOMATIONS_SECTION && id !== null) {
+    const group = overview.automations.groups.find((other) => other.id === id);
+    // On a run: h goes to its automation's row.
+    if (!group) return key === "h" ? { kind: "cursor", id: automationOf(overview, id)?.id ?? section } : { kind: "none" };
+    const isFolded = automationFolded(folded, id);
+    if (key === "h") {
+      if (isFolded || group.runs.length === 0) return { kind: "cursor", id: section };
+      const next = new Set(folded);
+      next.delete(id);
+      return { kind: "fold", folded: next };
+    }
+    if (group.runs.length === 0) return { kind: "none" };
+    return isFolded ? { kind: "fold", folded: new Set([...folded, id]) } : { kind: "cursor", id: group.runs[0]!.thread.id };
+  }
   if (section !== null) return key === "h" ? { kind: "cursor", id: section } : { kind: "none" };
   const at = id === null ? -1 : overview.rows.findIndex((row) => row.id === id);
   const row = overview.rows[at];
@@ -598,8 +684,9 @@ export function foldMove(overview: Overview, folded: ReadonlySet<string>, id: st
 
 /** The fold state without threads that are no longer on the page, so it cannot grow for ever. */
 export function keepFolds(overview: Overview, folded: ReadonlySet<string>): ReadonlySet<string> {
-  const known = new Set([...overview.unarchived, ...SECTIONS]);
-  const kept = [...folded].filter((id) => known.has(id));
+  const known = new Set([...overview.unarchived, ...SECTIONS, ...overview.automations.groups.map((group) => group.id)]);
+  // Until the automations are read, which of them were unfolded is kept as it was.
+  const kept = [...folded].filter((id) => known.has(id) || (!overview.automations.available && isAutomationRow(id)));
   return kept.length === folded.size ? folded : new Set(kept);
 }
 

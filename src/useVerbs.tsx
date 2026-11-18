@@ -39,7 +39,7 @@ import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type Seen, type WaitNot
 import { isBusy } from "./state.ts";
 import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
-import { type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
+import { RUN_REFUSAL, type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
 import { waitNote } from "./waiting.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
@@ -401,6 +401,7 @@ export function useVerbs(host: VerbHost): Verbs {
   const toggleProject = (line: Line) => {
     const id = line.thread.id;
     if (id === main.thread.id) return say("Main is a project already, and always");
+    if (line.run !== undefined) return say(`${RUN_REFUSAL}: it is listed under its automation · e archives it`);
     if (line.thread.archivedAt !== null) return say("it is archived: a project is marked while it is open · u takes back an archive made on this page");
     const before = parks.projects.get(id) ?? null;
     const project = before === null ? { at: clockNow(), by: null } : null;
@@ -435,6 +436,7 @@ export function useVerbs(host: VerbHost): Verbs {
     if (line === null) return say("select a line first");
     const id = line.thread.id;
     if (line.thread.archivedAt !== null) return say("it is archived, so it waits on nobody");
+    if (line.run !== undefined) return say(`${RUN_REFUSAL}: it is listed under its automation · e archives it`);
     if (line.derived.state === "parked") return say("it is parked: r resumes it first");
     if (line.derived.state === "kept") return say("it is kept, and reminds you of nothing: z takes it off Kept first");
     say("");

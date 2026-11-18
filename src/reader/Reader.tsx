@@ -102,7 +102,7 @@ function Sheet({
   onMode: (searching: boolean) => void;
 }) {
   const { target } = entry;
-  const lines: LineRange | null = target.kind === "change" ? null : target.lines;
+  const lines: LineRange | null = target.kind === "change" || target.kind === "text" ? null : target.lines;
   const [file, setFile] = useState<FileRef | null>(null);
   const [load, setLoad] = useState<Loaded | null>(null);
   const [error, setError] = useState("");
@@ -139,6 +139,8 @@ function Sheet({
       const placedFile = await source.place(target);
       if (cancelled) return;
       setFile(placedFile);
+      // Text cow holds is shown as it is: there is no file to read, or to read again.
+      if (target.kind === "text") return setLoad({ type: "text", content: target.content, sha: "", size: target.content.length, cut: false });
       if (target.kind === "change") {
         const change = await source.change(target.threadId, target.rowId, placedFile.relPath).catch(() => null);
         if (cancelled) return;
@@ -158,7 +160,7 @@ function Sheet({
   }, []);
 
   // The file as it is on disk now: read again while it is open, and shown when it differs.
-  const sha = load && load.type !== "diff" ? load.sha : null;
+  const sha = load && load.type !== "diff" && target.kind !== "text" ? load.sha : null;
   const pollMs = load?.type === "image" || load?.type === "binary" ? POLL_IMAGE_MS : POLL_MS;
   useEffect(() => {
     if (file === null || sha === null) return;
@@ -410,6 +412,7 @@ function Sheet({
       }
       case "panel":
         if (!file) return;
+        if (target.kind === "text") return setNote("this is not a file: there is nothing to open in bb's panel");
         if (!host.openInPanel(file, cursorLine())) setNote("bb did not open it in its panel");
         return;
       case "close":
@@ -443,7 +446,7 @@ function Sheet({
   // ---- drawing ------------------------------------------------------------
 
   const threadId = file?.threadId ?? target.threadId;
-  const shownPath = file ? file.relPath : target.kind === "rooted" ? target.relPath : target.path;
+  const shownPath = file ? file.relPath : target.kind === "rooted" ? target.relPath : target.kind === "text" ? target.title : target.path;
   let body: ReactNode;
   if (mode === "error") {
     body = (

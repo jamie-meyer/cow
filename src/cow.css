@@ -1885,3 +1885,26 @@
   color: var(--cow-needs);
   font-size: 0.85em;
 }
+
+/* Automations: an automation's row is plain, and so is a run under it unless it waits on you. Only a failed last result takes a colour. */
+.cow-automation .cow-wh {
+  color: var(--cow-muted);
+}
+.cow-automation .cow-nx {
+  color: var(--cow-muted);
+}
+.cow-automation .cow-nx.cow-s-failed {
+  color: var(--cow-fail);
+}
+.cow-automation[data-cow-automation-paused] .cow-title {
+  color: var(--cow-muted);
+}
+.cow-ln.cow-run .cow-gl,
+.cow-ln.cow-run .cow-gl *,
+.cow-ln.cow-run .cow-ag *,
+.cow-ln.cow-run .cow-ag,
+.cow-ln.cow-run .cow-wh,
+.cow-ln.cow-run .cow-nx {
+  color: var(--cow-muted);
+  font-weight: 400;
+}

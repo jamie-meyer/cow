@@ -80,7 +80,9 @@ import {
   cursorOrder,
   descendantIds,
   KEPT_SECTION,
+  AUTOMATIONS_SECTION,
   OUTSIDE_SECTION,
+  automationFolded,
   SETTLE_SECTION,
   type Section,
   foldMove,
@@ -99,6 +101,8 @@ import {
   waitingInside,
 } from "./tree.ts";
 import { OUTSIDE_STATE_TEXT, type OutsideLine, notListedText } from "./outside.ts";
+import { type AutomationGroup, isAutomationRow, lastResultText, nextRunText, olderText, runThreadIds, scriptOutput } from "./automations.ts";
+import { useAutomations } from "./automationsData.ts";
 import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
 import { useReader } from "./reader/Reader.tsx";
 import type { FileRef } from "./reader/link.ts";
@@ -446,6 +450,8 @@ function LineRow({
   if (open) classes.push("cow-open");
   if (context) classes.push("cow-context");
   if (line.stays) classes.push("cow-stays");
+  // A run of an automation is plain unless it waits on the person: its failure shows on its automation's row.
+  if (line.run !== undefined) classes.push(derived.waitingOnYou ? "cow-run-waits" : "cow-run");
   const isUnread = settle && unread(line);
   if (isUnread) classes.push("cow-unread");
   const behind = settle ? leftBehind(line) : [];
@@ -475,6 +481,7 @@ function LineRow({
       data-cow-open={open ? "" : undefined}
       data-cow-context={context ? "" : undefined}
       data-cow-stays={line.stays ? "" : undefined}
+      data-cow-run={line.run}
       data-cow-settle={settle ? "" : undefined}
       data-cow-unread={isUnread ? "" : undefined}
       data-cow-kept={derived.keep ? "" : undefined}
@@ -652,7 +659,95 @@ function OutsideRow({
 }
 
 /**
- * The heading of a section that folds, To settle, Kept or Outside Main: a cursor stop of
+ * An automation's row: its name, its project when that is not Main's,
+ * when it runs next, and what its last run came to. Its runs fold under it.
+ * Plain but for a failed last run, whose result alone takes the failed colour.
+ */
+function AutomationRow({
+  group,
+  now,
+  folded,
+  waiting,
+  current,
+  onSelect,
+  onOpen,
+  onFold,
+}: {
+  group: AutomationGroup;
+  now: number;
+  folded: boolean;
+  /** How many of its runs wait on the person. */
+  waiting: number;
+  current: boolean;
+  onSelect: (id: string) => void;
+  onOpen: (id: string) => void;
+  onFold: (id: string) => void;
+}) {
+  const { automation, last } = group;
+  const foldable = group.runs.length > 0;
+  const older = olderText(group);
+  return (
+    <div
+      className={["cow-ln", "cow-flat", "cow-automation", current ? "cow-cur" : ""].join(" ").trim()}
+      data-cow-automation={automation.id}
+      data-cow-automation-mode={automation.mode}
+      data-cow-automation-paused={automation.enabled ? undefined : ""}
+      data-cow-last={last.kind}
+      data-cow-fold={foldable ? (folded ? "folded" : "open") : undefined}
+      data-cow-hint=""
+      aria-current={current || undefined}
+      aria-expanded={foldable ? !folded : undefined}
+      onClick={() => onSelect(group.id)}
+      onDoubleClick={() => onOpen(group.id)}
+    >
+      <span className="cow-qn" />
+      <span className="cow-gl" />
+      <span className="cow-ag cow-a0" title="since its last run">
+        <b>{last.at === null ? "" : formatAge(Math.max(0, now - last.at))}</b>
+      </span>
+      <span className="cow-nm">
+        {foldable ? (
+          <i
+            className="cow-fold cow-foldable"
+            title={folded ? "unfold: l" : "fold: h"}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFold(group.id);
+            }}
+          >
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <path d={folded ? "M3 1.5 7.2 5 3 8.5z" : "M1.5 3 5 7.2 8.5 3z"} fill="currentColor" />
+            </svg>
+          </i>
+        ) : (
+          <i className="cow-fold" aria-hidden="true" />
+        )}
+        <span className="cow-title">
+          {automation.name}
+          {group.project !== null ? <small data-cow-automation-project=""> · {group.project}</small> : null}
+          {automation.mode === "script" ? <small> · a script</small> : null}
+          {group.intoTree ? <small> · runs in a thread under Main</small> : null}
+          {folded && foldable ? (
+            <small data-cow-folded={group.runs.length}>
+              {" "}
+              · {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} folded{waiting > 0 ? `, ${waiting} waiting on you` : ""}
+            </small>
+          ) : null}
+          {older && !folded ? <small> · {older}</small> : null}
+        </span>
+      </span>
+      <span className="cow-wh" data-cow-next-run="">
+        {nextRunText(automation, now)}
+      </span>
+      <span className={last.kind === "failed" ? "cow-nx cow-s-failed" : "cow-nx"} data-cow-last-result="">
+        {lastResultText(last, now, formatAge)}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The heading of a section that folds, To settle, Kept, Automations or Outside Main: a cursor stop of
  * its own, where h and l fold and unfold it. Folded, it still shows its count.
  */
 function SectionHead({
@@ -1339,9 +1434,12 @@ function OverviewScreen({
   onChooseMain,
   stay,
   projectNames,
+  onAutomationsOpen,
 }: {
   /** bb's projects by id, for a line outside Main in another project. */
   projectNames: ReadonlyMap<string, string>;
+  /** Says whether the Automations section is unfolded: while it is, the automations are read again now and then. */
+  onAutomationsOpen: (open: boolean) => void;
   /** Keep a line the person marked seen in its place on this page, or let it go. */
   stay: (id: string, stays: boolean) => void;
   overview: Overview;
@@ -1384,6 +1482,16 @@ function OverviewScreen({
   const settleFolded = !hit && sectionFolded(folded, SETTLE_SECTION);
   const keptFolded = !hit && sectionFolded(folded, KEPT_SECTION);
   const outsideFolded = !hit && sectionFolded(folded, OUTSIDE_SECTION);
+  const automationsOpen = !sectionFolded(folded, AUTOMATIONS_SECTION);
+  useEffect(() => onAutomationsOpen(automationsOpen), [automationsOpen, onAutomationsOpen]);
+  const automationsFolded = !hit && !automationsOpen;
+  const groupsShown = hit
+    ? overview.automations.groups.filter((group) => hit.has(group.id) || group.runs.some((line) => hit.has(line.thread.id)))
+    : automationsFolded
+      ? []
+      : overview.automations.groups;
+  const runsShown = (group: AutomationGroup): Line[] =>
+    hit ? group.runs.filter((line) => hit.has(line.thread.id)) : automationFolded(folded, group.id) ? [] : group.runs;
   const outsideShown = hit ? overview.outside.lines.filter((line) => hit.has(line.thread.id)) : outsideFolded ? [] : overview.outside.lines;
   const settleShown = hit ? overview.settle.filter((line) => hit.has(line.thread.id)) : settleFolded ? [] : overview.settle;
   const keptShown = hit ? overview.kept.filter((line) => hit.has(line.thread.id)) : keptFolded ? [] : overview.kept;
@@ -1587,6 +1695,7 @@ function OverviewScreen({
     [main, ...listed(overview)].find((line) => line.thread.id === selected) ?? null;
   const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
   const selectedOutside = overview.outside.lines.find((line) => line.thread.id === selected) ?? null;
+  const selectedAutomation = isAutomationRow(selected) ? (overview.automations.groups.find((group) => group.id === selected) ?? null) : null;
   const sheetRef = useRef<BriefSheetControl | null>(null);
 
   // Capabilities: what each thread holds, which are new, and what they would cover.
@@ -1735,6 +1844,23 @@ function OverviewScreen({
   });
   const readerRef = useRef(reader);
   readerRef.current = reader;
+  /** Enter on an automation's row: a script's last output in the reader, or an agent's latest run in the pane. */
+  const openAutomation = (group: AutomationGroup) => {
+    const { automation } = group;
+    if (automation.mode === "script") {
+      const content = scriptOutput(group);
+      if (content === null) return setMessage(group.latest ? "its last run printed nothing" : automation.enabled ? "it has not run yet" : "it is paused, and its runs are not read");
+      return reader.open({ kind: "text", threadId: null, title: `${automation.name}: last run's output`, content });
+    }
+    const latest = group.runs[0];
+    if (latest) return openChat(latest.thread.id);
+    return setMessage(group.intoTree ? "it runs in a thread under Main: that thread is in the tree" : "it has no run thread open to show");
+  };
+  const openById = (id: string | null) => {
+    const group = isAutomationRow(id) ? overview.automations.groups.find((other) => other.id === id) : undefined;
+    if (group) return openAutomation(group);
+    return openChat(id);
+  };
   // A click on a link leaves focus on the link, which may be in the chat; the reader's keys are the page's.
   useEffect(() => {
     if (reader.depth > 0) focusOverview();
@@ -1845,6 +1971,7 @@ function OverviewScreen({
         if (pane !== null) scrollChat(() => "end");
         return;
       case "open":
+        if (selectedAutomation) return openAutomation(selectedAutomation);
         // What is not started has no chat of its own; its thread's is the nearest thing.
         return openChat(selectedTodo ? selectedTodo.ownerId : selected);
       case "main-chat":
@@ -2236,6 +2363,37 @@ function OverviewScreen({
                 {archivedShown.map((line) => row(line, true))}
               </>
             )}
+            {/* Only when the automations plugin answered: without it there is no section, and nothing to say. */}
+            {overview.automations.available ? (
+              <>
+                <SectionHead
+                  id={AUTOMATIONS_SECTION}
+                  title="Automations"
+                  count={overview.automations.groups.length}
+                  words={overview.automations.groups.length === 0 ? "bb has no automations" : "bb's scheduled runs: when each runs next and what its last run came to · l shows an automation's runs"}
+                  folded={automationsFolded}
+                  heat={null}
+                  current={selected === AUTOMATIONS_SECTION}
+                  onSelect={setCursor}
+                  onFold={toggleFold}
+                />
+                {groupsShown.map((group) => (
+                  <Fragment key={group.id}>
+                    <AutomationRow
+                      group={group}
+                      now={now}
+                      folded={!hit && automationFolded(folded, group.id)}
+                      waiting={group.runs.filter((line) => line.derived.waitingOnYou).length}
+                      current={selected === group.id}
+                      onSelect={setCursor}
+                      onOpen={openById}
+                      onFold={toggleFold}
+                    />
+                    {runsShown(group).map((line) => row(line, false))}
+                  </Fragment>
+                ))}
+              </>
+            ) : null}
             {/* Outside Main shows even when Main has nothing under it: that is when it matters most. */}
             <SectionHead
               id={OUTSIDE_SECTION}
@@ -2457,7 +2615,7 @@ function OverviewScreen({
           ) : (
             <>
               <span className={hint ? "cow-mode cow-m-hint" : "cow-mode"}>{hint ? "HINT" : "NORMAL"}</span>
-              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? selectedOutside?.thread.title ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : selected === OUTSIDE_SECTION ? "Outside Main" : "")}</span>
+              <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? selectedOutside?.thread.title ?? selectedAutomation?.automation.name ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : selected === AUTOMATIONS_SECTION ? "Automations" : selected === OUTSIDE_SECTION ? "Outside Main" : "")}</span>
               <span className="cow-sep">▸</span>
               <span className="cow-verbs">
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
@@ -2475,14 +2633,16 @@ function OverviewScreen({
                   </>
                 ) : selectedOutside ? (
                   <Verb keys="A" label="bring under Main" name="bring" onRun={() => verbs.startBring(selectedOutside)} />
+                ) : selectedAutomation ? (
+                  <Verb keys="l" label={selectedAutomation.runs.length === 0 ? "no runs to show" : "its runs"} off={selectedAutomation.runs.length === 0} onRun={() => run({ kind: "fold", key: "l" })} />
                 ) : (
                   (["answer", "brief", "park", "resume", "stop", "archive"] as const).map(verbButton)
                 )}
-                {selectedLine && !selectedTodo && selectedLine !== main ? verbButton("keep") : null}
+                {selectedLine && !selectedTodo && selectedLine !== main && selectedLine.run === undefined ? verbButton("keep") : null}
                 {selectedLine?.derived.reply || selectedLine?.derived.unseen ? (
                   <Verb keys="␣" label="seen" name="seen" onRun={() => verbs.markSeen(selectedLine, true)} />
                 ) : null}
-                {selectedLine && !selectedTodo && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
+                {selectedLine && !selectedTodo && selectedLine.run === undefined && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
                   <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
                 ) : null}
               </span>
@@ -2549,6 +2709,10 @@ export function CowPage() {
     storedMainId !== null &&
     !snapshot.threads.some((thread) => thread.id === storedMainId && thread.archivedAt === null);
   const mainId = mainGone ? null : storedMainId;
+  // bb's automations: read once, then again as their threads change and while their section is open.
+  const [automationsOpen, setAutomationsOpen] = useState(false);
+  const automations = useAutomations(snapshot.threads, automationsOpen);
+  const runIds = useMemo(() => runThreadIds(automations), [automations]);
 
   const underMain = useMemo(
     () =>
@@ -2556,8 +2720,9 @@ export function CowPage() {
         ? null
         : // A note may be on any open thread, or on one archived recently enough to be listed.
           // Main's own are its note of what is next and what it has not started.
-          [mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs)],
-    [snapshot.threads, snapshot.status, mainId, now],
+          // An automation's runs are read as the threads under Main are: an open ask of one's is the person's.
+          [...new Set([mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs), ...runIds])],
+    [snapshot.threads, snapshot.status, mainId, now, runIds],
   );
   const parks = useParks(underMain, signer);
   const notes = parks.notes;
@@ -2604,9 +2769,10 @@ export function CowPage() {
               marked: (id) => parks.projects.has(id),
               stays: (id) => staying.has(id),
               otherMains: mains.otherMains,
+              automations,
             },
           ),
-    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, mains.otherMains, now],
+    [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, mains.otherMains, automations, now],
   );
 
   useEffect(() => {
@@ -2704,6 +2870,7 @@ export function CowPage() {
       onChooseMain={() => setPicking(true)}
       stay={stay}
       projectNames={projectNames}
+      onAutomationsOpen={setAutomationsOpen}
     />
   );
 }

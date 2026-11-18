@@ -39,7 +39,13 @@ const open = (thread: ThreadFacts): boolean => thread.archivedAt === null && thr
  * only counted, and so is another project's Main. A thread with threads
  * under it is one line, counting them.
  */
-export function outsideMain(threads: readonly ThreadFacts[], mainId: string, otherMains: ReadonlySet<string> = new Set()): Outside {
+export function outsideMain(
+  threads: readonly ThreadFacts[],
+  mainId: string,
+  otherMains: ReadonlySet<string> = new Set(),
+  /** Threads listed in another section (an automation's runs): neither listed nor counted here. */
+  elsewhere: ReadonlySet<string> = new Set(),
+): Outside {
   const byId = new Map(threads.map((thread) => [thread.id, thread]));
   // Main and what is above it are where the tree starts, not outside it.
   const above = new Set<string>();
@@ -69,7 +75,7 @@ export function outsideMain(threads: readonly ThreadFacts[], mainId: string, oth
 
   const found: Outside = { lines: [], byPlugins: 0, otherMains: 0 };
   for (const thread of threads) {
-    if (thread.parentThreadId !== null || above.has(thread.id) || !open(thread)) continue;
+    if (thread.parentThreadId !== null || above.has(thread.id) || !open(thread) || elsewhere.has(thread.id)) continue;
     if (thread.originPluginId) {
       found.byPlugins += 1;
       continue;

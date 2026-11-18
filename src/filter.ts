@@ -31,9 +31,9 @@ export function matches(query: string, name: string, doing = ""): boolean {
 }
 
 export interface Filtered {
-  /** The rows that match, in page order: the tree, Parked, To settle, Kept, Archived, then Outside Main. The cursor moves among these. */
+  /** The rows that match, in page order: the tree, Parked, To settle, Kept, Archived, Automations, then Outside Main. The cursor moves among these. */
   matches: string[];
-  /** The tree rows to draw: the matches, and the heads of the groups they are in, for context. */
+  /** The tree rows to draw: the matches, and the heads of the groups they are in, for context; and the automations whose runs match. */
   keep: ReadonlySet<string>;
 }
 
@@ -63,6 +63,15 @@ export function filterOverview(overview: Overview, query: string): Filtered {
   // A folded section is searched too: what matches in it is drawn while the filter is open.
   for (const line of [...overview.parked, ...overview.settle, ...overview.kept, ...overview.archived]) {
     if (matches(query, line.thread.title, line.derived.doing)) found.push(line.thread.id);
+  }
+  // The automations, each by its name, and their runs; a run's automation is drawn with it, for context.
+  for (const group of overview.automations.groups) {
+    if (matches(query, group.automation.name)) found.push(group.id);
+    for (const line of group.runs) {
+      if (!matches(query, line.thread.title, line.derived.doing)) continue;
+      found.push(line.thread.id);
+      keep.add(group.id);
+    }
   }
   // Outside Main last, as on the page, folded or not.
   for (const line of overview.outside.lines) {

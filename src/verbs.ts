@@ -26,6 +26,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
   const parked = derived.state === "parked";
   const returned = derived.park?.due != null;
   const archived = thread.archivedAt !== null;
+  // A run of an automation is read, answered, stopped and archived here, never set aside: its automation makes the next.
+  if (line.run !== undefined && (verb === "park" || verb === "keep")) return RUN_REFUSAL;
   switch (verb) {
     case "answer":
       if (archived) return "it is archived";
@@ -71,8 +73,12 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
   }
 }
 
+/** Why a run of an automation is not parked, kept, marked as a project, or waited on. */
+export const RUN_REFUSAL = "it is a run of an automation";
+
 /** For each reason a verb is refused: what to do instead, on the page and from the CLI. */
 const INSTEAD: Record<string, { page: string; cli: string }> = {
+  [RUN_REFUSAL]: { page: "e archives it once you are done with it", cli: "" },
   "select a line first": { page: "j and k move to one", cli: "" },
   "it is archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
   "it is parked: resume it first": { page: "r resumes it", cli: "`bb cow resume <thread>` resumes it." },

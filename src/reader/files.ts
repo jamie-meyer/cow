@@ -15,7 +15,9 @@ export type OpenTarget =
   /** A path under one of a thread's roots, as cow's own links and bb's tabs give it. */
   | { kind: "rooted"; threadId: string | null; environmentId?: string | null; root: "workspace" | "storage"; relPath: string; lines: LineRange | null }
   /** A file change in a thread's timeline. */
-  | { kind: "change"; threadId: string; rowId: string; path: string };
+  | { kind: "change"; threadId: string; rowId: string; path: string }
+  /** Text cow already holds, with no file behind it: what a script automation printed. */
+  | { kind: "text"; threadId: null; title: string; content: string };
 
 export type Loaded =
   | { type: "text"; content: string; sha: string; size: number; cut: boolean }
@@ -82,6 +84,7 @@ export class FileSource {
 
   /** Work out which file a target names. Throws when its root cannot be found. */
   async place(target: OpenTarget): Promise<FileRef> {
+    if (target.kind === "text") return { root: "host", rootPath: null, relPath: target.title, absPath: target.title, hostId: null, environmentId: null, threadId: null };
     const roots = await this.rootsOf(target.threadId, target.kind === "rooted" ? target.environmentId : null);
     if (target.kind !== "rooted") {
       const path = normalise(target.path);

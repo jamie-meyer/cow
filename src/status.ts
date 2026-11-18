@@ -1,6 +1,7 @@
 // The overview as the CLI gives it: the same lines the page shows, as plain
 // data and as text, cut to a bounded size.
 
+import { type LastResult, lastResultText, nextRunText, olderText } from "./automations.ts";
 import { dueText } from "./park.ts";
 import { OUTSIDE_STATE_TEXT, type OutsideState, notListedText } from "./outside.ts";
 import { type LineState, STATE_LABEL, waitingSince } from "./state.ts";
@@ -8,7 +9,30 @@ import { formatAge } from "./text.ts";
 import { type Line, type Overview, ROLLUP_ORDER, leftBehind, unread } from "./tree.ts";
 
 /** How many lines of each section are given; the rest are counted. */
-export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, outside: 40, queue: 20, text: 140 } as const;
+export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, automations: 40, outside: 40, queue: 20, text: 140 } as const;
+
+/** An automation of bb's, with its recent run threads. */
+export interface AutomationStatusRow {
+  id: string;
+  name: string;
+  /** Its bb project's name, when that is not Main's project; null when it is. */
+  project: string | null;
+  paused: boolean;
+  mode: "agent" | "script";
+  /** When it runs next, in words ("in 3h", "tomorrow 09:00", "paused", "ran once"), and as a time. */
+  next: string;
+  nextRunAt: number | null;
+  /** Its last run's result, in words, and in one word. */
+  last: string;
+  lastKind: LastResult["kind"];
+  /** Its run threads, newest first, at most five. */
+  runs: StatusLine[];
+  /** Run threads not listed, and whether the plugin has older runs than were read. */
+  older: number;
+  moreRuns: boolean;
+  /** It sends into a thread under Main, so its runs are in the tree. */
+  intoTree: boolean;
+}
 
 /** An open thread that is not under Main: from the thread list alone. */
 export interface OutsideStatusLine {
@@ -76,12 +100,14 @@ export interface StatusReport {
   kept: StatusLine[];
   /** Archived in the last 2 days, with their reasons. */
   archived: StatusLine[];
+  /** bb's automations, enabled first; empty when the automations plugin is absent or did not answer. */
+  automations: AutomationStatusRow[];
   /** Open threads with no parent that are not under Main, newest activity first. Never in the queue. */
   outside: OutsideStatusLine[];
   /** Open threads with no parent that are left out of `outside`: started by a plugin, or another project's Main. */
   outsideNotListed: { byPlugins: number; otherMains: number };
   /** Lines left out to keep the answer bounded, by section. */
-  omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; outside: number; queue: number };
+  omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; automations: number; outside: number; queue: number };
   /** True when bb has more threads than cow reads. */
   truncated: boolean;
 }
@@ -147,6 +173,21 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
     })),
     kept: lines(overview.kept, STATUS_LIMITS.kept),
     archived: lines(overview.archived, STATUS_LIMITS.archived),
+    automations: overview.automations.groups.slice(0, STATUS_LIMITS.automations).map((group) => ({
+      id: group.automation.id,
+      name: cut(group.automation.name, 80),
+      project: group.project,
+      paused: !group.automation.enabled,
+      mode: group.automation.mode,
+      next: nextRunText(group.automation, now),
+      nextRunAt: group.automation.nextRunAt,
+      last: cut(lastResultText(group.last, now, formatAge), STATUS_LIMITS.text),
+      lastKind: group.last.kind,
+      runs: group.runs.map((line) => ({ ...toStatusLine(line, now), depth: 0 })),
+      older: group.older,
+      moreRuns: group.moreRuns,
+      intoTree: group.intoTree,
+    })),
     outside: overview.outside.lines.slice(0, STATUS_LIMITS.outside).map((line) => {
       const sinceMs = Math.max(0, now - line.lastAt);
       const { projectId } = line.thread;
@@ -168,6 +209,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
       settle: omitted(overview.settle, STATUS_LIMITS.settle),
       kept: omitted(overview.kept, STATUS_LIMITS.kept),
       archived: omitted(overview.archived, STATUS_LIMITS.archived),
+      automations: Math.max(0, overview.automations.groups.length - STATUS_LIMITS.automations),
       outside: Math.max(0, overview.outside.lines.length - STATUS_LIMITS.outside),
       queue: omitted(overview.queue, STATUS_LIMITS.queue),
     },
@@ -194,6 +236,9 @@ function row(line: StatusLine, indent: boolean): string[] {
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }
+
+/** A run line, indented under its automation. */
+const row_ = (line: StatusLine): string[] => row(line, false).map((text) => `    ${text}`);
 
 const more = (count: number): string[] => (count > 0 ? [`    … and ${count} more, not listed`] : []);
 
@@ -226,6 +271,18 @@ export function statusText(report: StatusReport): string {
   out.push(...more(omitted.kept), "", `Archived in the last 2 days (${report.archived.length + omitted.archived})`);
   for (const line of report.archived) out.push(...row(line, false));
   out.push(...more(omitted.archived));
+  if (report.automations.length + omitted.automations > 0) {
+    out.push("", `Automations: bb's scheduled runs, each with its recent run threads (${report.automations.length + omitted.automations})`);
+    for (const row of report.automations) {
+      const where = row.project === null ? "" : `  [project: ${row.project}]`;
+      const into = row.intoTree ? "  [runs in a thread under Main]" : "";
+      out.push(`    ${row.name} (${row.id}) · ${row.mode} · next: ${row.next} · last: ${row.last}${where}${into}`);
+      for (const line of row.runs) out.push(...row_(line));
+      const older = olderText({ older: row.older, moreRuns: row.moreRuns });
+      if (older) out.push(`          ${older}`);
+    }
+    out.push(...more(omitted.automations));
+  }
   const notListed = notListedText({ lines: [], ...report.outsideNotListed });
   out.push("", `Outside Main: open, with no parent, not under Main (${report.outside.length + omitted.outside}${notListed ? `; ${notListed}` : ""})`);
   if (report.outside.length === 0) out.push("    nothing");

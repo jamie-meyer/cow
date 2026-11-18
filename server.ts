@@ -6,6 +6,7 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createActions } from "./src/actions.ts";
 import { registerAttention } from "./src/raised-backend.ts";
+import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
@@ -106,6 +107,8 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const attention = registerAttention(bb);
+  // A read-through of the automations plugin's own methods: never more than a few seconds, never an error.
+  const automations = registerAutomations(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   const caps = registerCaps(bb, log);
@@ -118,6 +121,7 @@ export default async function plugin(bb: BbPluginApi) {
       return found;
     },
     openAsks: () => attention.asks.list(),
+    automations,
     marks: (ids) => attention.briefs.marks(ids),
     delivered: async () => {
       const found = new Map<string, number[]>();

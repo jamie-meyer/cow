@@ -39,6 +39,7 @@ import {
   waitNoteSchema,
 } from "./shared.ts";
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
+import { type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
 import { insteadFromCli, verbBlocked } from "./verbs.ts";
@@ -136,6 +137,8 @@ export interface RaisedSource {
   marks(threadIds: readonly string[]): Promise<ReadonlyMap<string, BriefMark>>;
   /** Thread id to the decisions on its permission requests that were made outside cow and are not acknowledged. */
   outside?(): Promise<ReadonlyMap<string, readonly OutsideFlag[]>>;
+  /** bb's automations and their latest runs, for the overview's Automations section. */
+  automations?(): Promise<AutomationsRead>;
 }
 
 export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource): Actions {
@@ -292,12 +295,13 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   };
 
   /** Everything the rules need to know about what is under `rootId`, read now. */
-  const look = async (rootId: string) => {
+  const look = async (rootId: string, extra: readonly string[] = []) => {
     const { threads, truncated } = await listThreads(reader);
     const now = Date.now();
     const root = threads.find((thread) => thread.id === rootId);
     if (!root) throw new CowError("thread_not_found", `there is no thread ${rootId}`, "Run `bb thread list` to see thread ids.");
-    const under = descendantIds(threads, rootId, now - LIMITS.archivedListedMs);
+    // With the overview, the threads of the automations' runs are read as the ones under Main are.
+    const under = [...new Set([...descendantIds(threads, rootId, now - LIMITS.archivedListedMs), ...extra])].filter((id) => id !== rootId);
     const noted = await notes([rootId, ...under]);
     // The root is Main when the overview is asked for; a thread named to a verb is read as it would be on a page.
     const projects = projectIds(threads, Object.keys(noted.projects), null);
@@ -453,7 +457,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       if (id === null) {
         throw new CowError("no_main", "no Main thread is chosen", "Pass --main <thread>, or choose a Main on cow's page.");
       }
-      const seen = await look(id);
+      const automations = (await raised?.automations?.().catch(() => NO_AUTOMATIONS)) ?? NO_AUTOMATIONS;
+      const seen = await look(id, runThreadIds(automations));
       if (seen.root.archivedAt !== null) {
         const title = seen.root.title.trim() || id;
         throw new CowError(
@@ -464,7 +469,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       }
       const mains = await readMains();
       const otherMains = new Set(Object.values(mains.mains).filter((other) => other !== id));
-      const overview = buildOverview(seen.threads, id, seen.deriveThread((other) => other === id), seen.now, { ...seen.plans, otherMains });
+      const overview = buildOverview(seen.threads, id, seen.deriveThread((other) => other === id), seen.now, { ...seen.plans, otherMains, automations });
       // A thread outside Main names its project when it is another one; without the names, its id.
       const projectNames = await Promise.resolve()
         .then(() => bb.sdk.projects.list())
