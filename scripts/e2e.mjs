@@ -81,6 +81,13 @@
 //                       and deleted when the run finishes or fails; their two
 //                       run threads are archived with the fixtures. It never
 //                       changes, runs or deletes any other automation
+//   --only-traces       only what an agent takes out of the queue (parking
+//                       what waits on the person, withdrawing an ask,
+//                       closing one as answered) and asks under a parked
+//                       thread: six fixtures, a stand-in Main and five
+//                       threads, one under another. It sends one fixture a
+//                       message as the user, and acknowledges every notice
+//                       about its fixtures when it finishes
 //   --only-plugins      only other plugins' badges and actions: two fixtures,
 //                       a stand-in Main and a thread under it, and a throwaway
 //                       plugin, cow-check-badge (scripts/cow-check-badge),
@@ -255,6 +262,8 @@ const AUTOMATING = ["umain"];
 const HISTORY = ["hmain", "ha", "hb", "hc"];
 /** The fixtures of the other plugins' checks: a Main of their own, and a thread under it. */
 const PLUGGED = ["bmain", "bkid"];
+/** The fixtures of the traces checks: a Main of their own; under it one to park with an ask, one idle, one that asks, and a head with a thread under it. */
+const TRACING = ["tmain", "tpark", "tidle", "task", "thead", "tkid"];
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
 const madeAutomations = [];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
@@ -279,7 +288,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -326,6 +335,12 @@ async function fixtures() {
   await make("ha", { prompt: QUIET, parent: ids.hmain });
   await make("hb", { prompt: LINKER, parent: ids.hmain });
   await make("hc", { prompt: QUIET, parent: ids.hmain });
+  await make("tmain", { prompt: QUIET });
+  await make("tpark", { prompt: QUIET, parent: ids.tmain });
+  await make("tidle", { prompt: QUIET, parent: ids.tmain });
+  await make("task", { prompt: QUIET, parent: ids.tmain });
+  await make("thead", { prompt: QUIET, parent: ids.tmain });
+  await make("tkid", { prompt: QUIET, parent: ids.thead });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -344,7 +359,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -2342,6 +2357,169 @@ async function historyChecks(page, ids, shot, chooseMain) {
   check("an archived thread's id opens its chat, as Enter on its line would", !(await page.eval(message)).includes("not a thread"));
 }
 
+// ---- what an agent takes out of the queue -------------------------------------
+
+/** Acknowledge every trace about a fixture, and withdraw (as the person, leaving none) every ask a fixture still has open. */
+async function clearTraces(ids) {
+  const ours = new Set(Object.values(ids));
+  for (const id of ours) for (const ask of await openAsksOf(id)) await cow("ask", "withdraw", ask.id);
+  for (const notice of (await capState()).notices) {
+    if (notice.kind === "trace" && (ours.has(notice.threadId) || ours.has(notice.trace?.actorThreadId))) await signer.must("cap_ack", { noticeId: notice.id });
+  }
+}
+
+async function prepareTraces(ids) {
+  for (const name of TRACING) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  await clearTraces(ids);
+  // Every run starts with every reply seen.
+  for (const name of TRACING) {
+    const id = ids[name];
+    const end = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq;
+    if (end !== undefined) await signer.must("seen_set", { threadId: id, seen: { seq: end, at: Date.now() } });
+  }
+}
+
+async function traceChecks(page, ids, shot, chooseMain) {
+  await prepareTraces(ids);
+  await chooseMain(page, ids.tmain);
+  await page.send("Page.bringToFront");
+  const { tmain, tpark, tidle, task, thead, tkid } = ids;
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const traces = async () => (await capState()).notices.filter((notice) => notice.kind === "trace" && Object.values(ids).includes(notice.threadId));
+  const noticeEl = (id) => `document.querySelector('[data-cow-notice="${id}"]')`;
+  const sheet = `document.querySelector('[data-cow-sheet="capabilities"]')`;
+  const paneOf = `(document.querySelector("[data-cow-pane]")?.dataset.cowPane ?? null)`;
+  const askAs = async (sender, thread, question) =>
+    JSON.parse((await cowAs(sender, "ask", "--question", question, "--option", "red", "--option", "blue", ...(thread ? ["--thread", thread] : []), "--json")).stdout).ask;
+  /** A new trace, once the server has it, and its notice on the page. */
+  const newTrace = async (before, label) => {
+    let found = null;
+    await waitUntil(async () => {
+      found = (await traces()).find((notice) => !before.includes(notice.id)) ?? null;
+      return found !== null;
+    }, label);
+    await page.waitFor(`!!${noticeEl(found.id)}`, { label: `${label}: on the page` });
+    return found;
+  };
+  const closePane = async () => {
+    for (let i = 0; i < 3 && (await page.eval(`!!document.querySelector("[data-cow-pane]")`)); i += 1) {
+      await page.key("Escape");
+      await sleep(300);
+    }
+  };
+
+  // -- an agent parks a thread with an open ask: a notice, until acknowledged --
+  const parkedAsk = await askAs(tmain, tpark, "Which colour for the park?");
+  await page.waitFor(`${lineEl(tpark)}?.dataset.cowState === "wants"`, { label: "the ask on its line" });
+  const none = (await traces()).map((notice) => notice.id);
+  const parked = await cowAs(tmain, "park", tpark, "--reason", "not needed this week");
+  check("an agent may park a thread that waits on the person", parked.code === 0 && parked.stdout.includes("they are shown that you parked it"), parked.stdout + parked.stderr);
+  const parkNotice = await newTrace(none, "the park's notice");
+  const parkText = await page.eval(`${noticeEl(parkNotice.id)}.textContent`);
+  check(
+    "the notice says who parked what, what it waited on, the reason and when, among the queue's notices",
+    parkNotice.threadId === tpark && parkNotice.trace?.action === "parked" && parkNotice.trace?.actorThreadId === tmain &&
+      parkText.includes("“cow test” parked “cow test”, which was waiting on you for an open ask · its reason: not needed this week") &&
+      (await page.eval(`${noticeEl(parkNotice.id)}.closest(".cow-notices") !== null && ${noticeEl(parkNotice.id)}.dataset.cowNoticeTrace === "parked"`)),
+    parkText,
+  );
+  check("the thread is parked all the same, and its own ask stays in the queue", (await rpc("notes_list", { threadIds: [tpark] })).parks[tpark] !== undefined && (await page.eval(`!!document.querySelector('[data-cow-queue="${tpark}"]')`)));
+  const logged = (await capLog(20)).find((entry) => entry.event.kind === "trace" && entry.event.threadId === tpark);
+  check("the park is in the log, done by no key", logged?.event.action === "parked" && logged.event.actorThreadId === tmain && logged.by === null);
+  const status = await cowAs(tmain, "status", "--main", tmain);
+  check("bb cow status lists it under a heading of its own", /Taken out of the user's queue by an agent, not yet acknowledged by the user \(1\)/.test(status.stdout) && status.stdout.includes(parkNotice.id), status.stdout.slice(0, 600));
+  await shot("trace-notice");
+
+  // -- Enter on it opens the thread's chat; Space acknowledges it --
+  await page.eval(`${noticeEl(parkNotice.id)}.click(); true`);
+  await page.waitFor(`!!${sheet}?.querySelector('[data-cow-cap-trace="${parkNotice.id}"].cow-cur')`, { label: "the sheet, on the notice" });
+  check("clicking the notice opens the capabilities sheet on it", true);
+  await shot("trace-sheet");
+  await page.key("Enter");
+  await page.waitFor(`${paneOf} === "${tpark}" && !${sheet}`, { label: "the parked thread's chat" });
+  check("Enter on it opens that thread's chat, and the notice stays", (await traces()).some((notice) => notice.id === parkNotice.id));
+  await closePane();
+  await page.eval(`${noticeEl(parkNotice.id)}.click(); true`);
+  await page.waitFor(`!!${sheet}?.querySelector('[data-cow-cap-trace="${parkNotice.id}"].cow-cur')`, { label: "the sheet again" });
+  await page.key(" ");
+  await waitUntil(async () => !(await traces()).some((notice) => notice.id === parkNotice.id), "acknowledged");
+  const ack = (await capLog(20)).find((entry) => entry.event.kind === "acknowledged" && entry.event.noticeId === parkNotice.id);
+  check("Space acknowledges it, signed by the page's key, and it is logged", ack !== undefined && ack.by === (await pageKeyNow()));
+  await page.key("q");
+  await page.waitFor(`!${sheet} && !${noticeEl(parkNotice.id)}`, { label: "the notice gone" });
+  await page.key("u");
+  await sleep(300);
+  await page.key("y");
+  await sleep(1500);
+  check("u does not bring it back", !(await traces()).some((notice) => notice.id === parkNotice.id) && !(await page.eval(`!!${noticeEl(parkNotice.id)}`)));
+
+  // -- an agent parks a thread that waited on nothing: no notice --
+  const beforeIdle = (await traces()).map((notice) => notice.id);
+  const idle = await cowAs(tmain, "park", tidle, "--reason", "later");
+  await sleep(2000);
+  check("parking a thread that waited on nothing leaves no notice", idle.code === 0 && !idle.stdout.includes("shown") && (await traces()).length === beforeIdle.length, idle.stdout + idle.stderr);
+
+  // -- withdrawing an ask --
+  const withdrawn = await askAs(task, null, "Withdraw me?");
+  const beforeWithdraw = (await traces()).map((notice) => notice.id);
+  await cowAs(task, "ask", "withdraw", withdrawn.id);
+  const withdrawNotice = await newTrace(beforeWithdraw, "the withdrawal's notice");
+  check("withdrawing an ask leaves a notice with its question", withdrawNotice.trace?.action === "withdrew" && withdrawNotice.trace?.askId === withdrawn.id && withdrawNotice.text === "“cow test” withdrew its ask: Withdraw me?", withdrawNotice.text);
+
+  // -- closing as answered when the person has not written since --
+  const quiet = await askAs(task, null, "Close me quietly?");
+  const beforeClose = (await traces()).map((notice) => notice.id);
+  await cowAs(task, "ask", "close", quiet.id, "--answered", "blue, they said");
+  const closeNotice = await newTrace(beforeClose, "the close's notice");
+  check(
+    "closing an ask as answered when the person has not written since leaves a notice with the answer it claims",
+    closeNotice.trace?.action === "closed" && closeNotice.text.includes("though you have not written to it since it asked: Close me quietly? · the answer it says you gave: blue, they said"),
+    closeNotice.text,
+  );
+
+  // -- closing after the person did write: quiet --
+  const answered = await askAs(task, null, "Answered in chat?");
+  await sleep(1500);
+  await tellAs(null, task, "red");
+  await sleep(3000);
+  await waitForThread(task, (t) => t.status === "idle", "its reply to the person");
+  const beforeAnswered = (await traces()).map((notice) => notice.id);
+  const closed = await cowAs(task, "ask", "close", answered.id, "--answered", "red");
+  await sleep(2000);
+  check("closing an ask the person answered in a message since leaves no notice", closed.code === 0 && (await traces()).length === beforeAnswered.length, closed.stdout + closed.stderr);
+
+  // -- an ask under a parked thread: in the queue, saying what it is under; answering it resumes nothing --
+  await rpc("park_set", { threadId: thead, park: { at: Date.now(), reason: "on hold", pickUp: { kind: "none" }, checkedAt: Date.now() } });
+  const beforeKid = (await traces()).length;
+  const under = await askAs(tkid, null, "Under the shelf?");
+  const queued = `(document.querySelector('[data-cow-queue="${tkid}"] p')?.textContent ?? null)`;
+  await page.waitFor(`${queued} !== null`, { label: "the ask under a parked thread in the queue" });
+  check("an ask of a thread under a parked thread is in the queue, and says what it is under", (await page.eval(queued)).includes("asks you: Under the shelf? · under parked “cow test”"), await page.eval(queued));
+  check(
+    "its line is listed after the shelf, saying what it is under; the parked thread stays on the shelf",
+    (await page.eval(`${lineEl(tkid)}?.querySelector("[data-cow-aside]")?.dataset.cowAside ?? null`)) === thead && (await page.eval(`${lineEl(thead)}?.dataset.cowState`)) === "parked",
+  );
+  check("parking by the page leaves no notice", (await traces()).length === beforeKid);
+  await shot("trace-aside-ask");
+  await page.eval(`${lineEl(tkid)}.click(); true`);
+  await sleep(300);
+  await page.key("a");
+  await page.waitFor(`document.querySelector("[data-cow-ask-card]")?.dataset.cowAsk === "${under.id}"`, { label: "its ask card" });
+  await page.key("1");
+  await page.key("Enter");
+  await waitUntil(async () => !(await openAsksOf(tkid)).some((ask) => ask.id === under.id), "the answer recorded");
+  const all = (await rpc("asks_list", { threadId: tkid, all: true })).asks;
+  check(
+    "it is answered as any ask, and the thread above it stays parked",
+    all.find((ask) => ask.id === under.id)?.status === "answered" && (await rpc("notes_list", { threadIds: [thead] })).parks[thead] !== undefined,
+  );
+  await page.waitFor(`!document.querySelector('[data-cow-queue="${tkid}"]')`, { label: "out of the queue" });
+  check("answered, it leaves the queue", true);
+
+  await clearTraces(ids);
+  check("every notice about the fixtures is acknowledged at the end", (await traces()).length === 0);
+}
+
 async function waitingChecks(page, ids, shot, chooseMain) {
   await prepareWaiting(ids);
   await chooseMain(page, ids.wmain);
@@ -3639,7 +3817,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -3665,6 +3843,7 @@ async function main() {
     else if (flag("only-automations")) await automationChecks(page, ids, shot, chooseMain);
     else if (flag("only-plugins")) await pluginChecks(page, ids, shot, chooseMain);
     else if (flag("only-history")) await historyChecks(page, ids, shot, chooseMain);
+    else if (flag("only-traces")) await traceChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }

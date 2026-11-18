@@ -2569,7 +2569,7 @@ function OverviewScreen({
                       <div>
                         <p>{notice.text}</p>
                         <small>
-                          by an agent · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd>, then on it <kbd>⏎</kbd> opens the chat, <kbd>␣</kbd> acknowledges
+                          agent · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd> <kbd>⏎</kbd> chat · <kbd>␣</kbd> acknowledges
                         </small>
                       </div>
                     </li>
