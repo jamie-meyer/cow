@@ -62,8 +62,14 @@
 //                       be a checkout of cow, whose files the fixture links to
 //   --only-waiting      only waiting on someone else, links to threads in the
 //                       chat, and seen lines staying in place: four fixtures
-//   --only-settle       only To settle, which replies enter the queue, and
-//                       keeping a thread: three fixtures
+//   --only-settle       only To settle, which replies enter the queue (a
+//                       project's and Main's included), and keeping a thread:
+//                       three fixtures
+//   --only-history      only bb's back and forward between chats, a reload
+//                       with a chat open, and an address naming an unknown
+//                       or archived thread: four fixtures. Back and forward
+//                       are driven with history.back() and history.forward(),
+//                       not with the keys
 //   --only-outside      only Outside Main and bringing a thread under Main:
 //                       four fixtures, one a stand-in Main. It moves only
 //                       those, and puts each back
@@ -245,6 +251,8 @@ const SETTLING = ["smain", "sjob", "schat"];
 /** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
 const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
 const AUTOMATING = ["umain"];
+/** The fixtures of the back and forward checks: a Main of their own, and three threads under it, the second of which links to the third. */
+const HISTORY = ["hmain", "ha", "hb", "hc"];
 /** The fixtures of the other plugins' checks: a Main of their own, and a thread under it. */
 const PLUGGED = ["bmain", "bkid"];
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
@@ -271,7 +279,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -314,6 +322,10 @@ async function fixtures() {
   await make("umain", { prompt: QUIET });
   await make("bmain", { prompt: QUIET });
   await make("bkid", { prompt: QUIET, parent: ids.bmain });
+  await make("hmain", { prompt: QUIET });
+  await make("ha", { prompt: QUIET, parent: ids.hmain });
+  await make("hb", { prompt: LINKER, parent: ids.hmain });
+  await make("hc", { prompt: QUIET, parent: ids.hmain });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -332,7 +344,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -2165,6 +2177,168 @@ async function settleChecks(page, ids, shot, chooseMain) {
   await page.key("y");
   await page.waitFor(`${settled(sjob)}`, { label: "unarchived" });
   check("u unarchives it, and it is to settle, not kept", (await keeps(sjob)) === null);
+
+  // -- a project's reply to a turn the person did not start stays out of the queue --
+  const dot = (id) => `!!${lineEl(id)}?.querySelector("[data-cow-unseen]")`;
+  const mainDot = `!!document.querySelector(".cow-mainline [data-cow-unseen]")`;
+  const seenOf = async (id) => (await rpc("notes_list", { threadIds: [id] })).seen[id]?.seq ?? null;
+  const marked = await cowAs(ids.smain, "project", schat);
+  check("bb cow project: Main marks a thread under it as a project", marked.code === 0, marked.stderr.trim());
+  await page.waitFor(`${stateOf(schat)} === "idle"`, { label: "the project idle" });
+  // A thread under it reports back, as an agent: that turn is not the person's.
+  await tellAs(sjob, schat, "report: the job is finished");
+  await sleep(3000);
+  await waitForThread(schat, (t) => t.status === "idle", "its reply to the report");
+  await page.waitFor(`${stateOf(schat)} === "idle" && ${dot(schat)}`, { label: "the project marked unread", timeout: 30_000 });
+  check(
+    "a project whose worker reports back reads idle, with the unread mark, and is not in the queue",
+    !(await page.eval(inQueue(schat))) && (await page.eval(`${lineEl(schat)}?.querySelector("[data-cow-unseen]")?.getAttribute("aria-label") === "unread"`)),
+  );
+  const projectStatus = (await cow("status", "--main", ids.smain)).stdout;
+  check("bb cow status says unread on that line", new RegExp(`idle\\s+\\S+\\s+cow test \\(${schat}\\) \\[project\\] \\[unread\\]`).test(projectStatus), projectStatus.split("\n").filter((l) => l.includes(schat)).join(" / "));
+  await select(schat);
+  await page.key(" ");
+  await page.waitFor(`!${dot(schat)}`, { label: "the mark cleared" });
+  check("Space clears the mark: it stays idle, out of the queue", (await page.eval(stateOf(schat))) === "idle" && !(await page.eval(inQueue(schat))) && (await seenOf(schat)) !== null);
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${dot(schat)}`, { label: "the mark back" });
+  check("u brings the mark back", (await page.eval(stateOf(schat))) === "idle");
+  await page.key(" ");
+  await page.waitFor(`!${dot(schat)}`, { label: "the mark cleared again" });
+  await tellAs(null, schat, "hello");
+  await sleep(3000);
+  await waitForThread(schat, (t) => t.status === "idle", "its reply to the person");
+  await page.waitFor(`${stateOf(schat)} === "wants" && ${inQueue(schat)}`, { label: "the project's reply in the queue", timeout: 30_000 });
+  check("the same project, after the person tells it something, is in the queue: replied to you", (await page.eval(`document.querySelector('[data-cow-queue="${schat}"]')?.textContent ?? ""`)).includes("replied to you"));
+  await select(schat);
+  await page.key(" ");
+  await page.waitFor(`!${inQueue(schat)}`, { label: "seen" });
+  const asked = await cowAs(schat, "ask", "--question", "Ship it?", "--option", "yes", "--option", "no");
+  await page.waitFor(`${inQueue(schat)} && ${stateOf(schat)} === "wants"`, { label: "the project's ask in the queue", timeout: 30_000 });
+  check("an ask from the project is in the queue", asked.code === 0 && (await page.eval(`document.querySelector('[data-cow-queue="${schat}"]')?.textContent ?? ""`)).includes("Ship it?"), asked.stderr.trim());
+  for (const ask of await openAsksOf(schat)) await cowAs(schat, "ask", "withdraw", ask.id);
+  await page.waitFor(`!${inQueue(schat)}`, { label: "the ask withdrawn", timeout: 30_000 });
+  // Main is read by the same rule: a report to it marks its heading, and it is not in the queue.
+  await tellAs(sjob, ids.smain, "report: the job is finished");
+  await sleep(3000);
+  await waitForThread(ids.smain, (t) => t.status === "idle", "Main's reply to the report");
+  await page.waitFor(`${mainDot}`, { label: "Main's heading marked unread", timeout: 30_000 });
+  check("Main's reply to a report is marked on its heading, and Main is not in the queue", !(await page.eval(inQueue(ids.smain))) && (await page.eval(`document.querySelector("[data-cow-main-state]")?.dataset.cowMainState`)) === "idle");
+  await shot("project-unread");
+  await page.eval(`document.querySelector(".cow-mainline").click(); true`);
+  await sleep(200);
+  await page.key(" ");
+  await page.waitFor(`!${mainDot}`, { label: "Main's mark cleared" });
+  check("Space clears Main's mark", (await seenOf(ids.smain)) !== null);
+  await cowAs(ids.smain, "project", schat, "--clear");
+}
+
+async function prepareHistory(ids) {
+  for (const name of HISTORY) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  // The linker writes its mention of the third thread once; a later run finds it in its chat.
+  const said = (await api(`/threads/${ids.hb}/output`)).output ?? "";
+  if (!said.includes(`@thread:${ids.hc}`)) {
+    await tellAs(ids.hmain, ids.hb, `links ${ids.hc} ${ids.ha} ${ids.hmain}`);
+    await sleep(3000);
+    await waitForThread(ids.hb, (t) => t.status === "idle", "the links written");
+  }
+  // The first thread has a reply addressed to the person, not yet seen.
+  await tellAs(null, ids.ha, "hello");
+  await sleep(3000);
+  await waitForThread(ids.ha, (t) => t.status === "idle", "its reply");
+  await signer.must("seen_set", { threadId: ids.ha, seen: null });
+}
+
+async function historyChecks(page, ids, shot, chooseMain) {
+  await prepareHistory(ids);
+  await chooseMain(page, ids.hmain);
+  await page.send("Page.bringToFront");
+  const { ha, hb, hc } = ids;
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const pane = `(document.querySelector("[data-cow-pane]")?.dataset.cowPane ?? null)`;
+  const inQueue = (id) => `!!document.querySelector('[data-cow-queue="${id}"]')`;
+  const message = `(document.querySelector("[data-cow-message]")?.textContent ?? "")`;
+  const path = `location.pathname`;
+  const seenOf = async (id) => (await rpc("notes_list", { threadIds: [id] })).seen[id]?.seq ?? null;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+  };
+  const at = async (id, label) => {
+    await page.waitFor(`${pane} === ${id === null ? "null" : `"${id}"`}`, { label, timeout: 20_000 });
+    return page.eval(path);
+  };
+  await page.waitFor(`${inQueue(ha)}`, { label: "the first thread's reply in the queue", timeout: 30_000 });
+
+  // -- open A, open B, follow a link to C --
+  await select(ha);
+  await page.key("Enter");
+  const pathA = await at(ha, "A open");
+  check("opening a chat names it in the page's address", pathA.includes(ha), pathA);
+  await page.waitFor(`!${inQueue(ha)}`, { label: "A's reply seen by opening it" });
+  // Take that mark back: Space marks it (and can be undone), u takes it back.
+  await page.key(" ");
+  await page.key("u");
+  await page.key("y");
+  await page.waitFor(`${inQueue(ha)}`, { label: "A's reply unseen again" });
+  check("u takes back the mark on A's reply while its chat is open", (await seenOf(ha)) === null);
+  await select(hb);
+  await page.key("Enter");
+  await at(hb, "B open");
+  const mention = `[...document.querySelectorAll('[data-cow-chat] a[data-prompt-mention-resource]')].filter((a) => (a.getAttribute("data-prompt-mention-resource") ?? "").includes('"${hc}"')).pop()`;
+  await page.waitFor(`!!${mention}`, { label: "B's mention of C", timeout: 30_000 });
+  await clickSettled(page, mention, "the mention of C");
+  const pathC = await at(hc, "C open by its link");
+  check("following a link names the linked chat in the address", pathC.includes(hc), pathC);
+
+  // -- back, back, back and forward, driven with history.back() and history.forward() --
+  await page.eval(`history.back(); true`);
+  await at(hb, "back to B");
+  check("history.back() from C brings B's chat, and the cursor follows it", await page.eval(isCursor(hb)));
+  await page.eval(`history.back(); true`);
+  await at(ha, "back to A");
+  check("history.back() again brings A's chat, and the cursor follows it", await page.eval(isCursor(ha)));
+  check("a chat brought back by history marks nothing seen", (await seenOf(ha)) === null && (await page.eval(inQueue(ha))));
+  await page.eval(`history.back(); true`);
+  const closed = await at(null, "back to the page with no chat");
+  check("history.back() a third time closes the pane: the address names no chat", !closed.includes(ha) && !closed.includes(hb), closed);
+  await page.eval(`history.forward(); true`);
+  await at(ha, "forward to A");
+  check("history.forward() brings A's chat again, with the cursor on its line", await page.eval(isCursor(ha)));
+
+  // -- a reload with a chat open --
+  await page.eval(`location.reload(); true`);
+  await page.waitFor(`${screen} === "overview" && ${pane} === "${ha}"`, { label: "the page reloaded with A open", timeout: 60_000 });
+  await sleep(3000);
+  check("a reload reopens the chat the address names", true);
+  check("the reload marks nothing seen: A's reply, un-marked, still waits in the queue", (await seenOf(ha)) === null && (await page.eval(inQueue(ha))));
+  await select(ha);
+  await page.key("Enter");
+  await page.waitFor(`!${inQueue(ha)}`, { label: "A seen by Enter" });
+  check("Enter on the reopened chat's line marks its reply seen: the person opened it", (await seenOf(ha)) !== null);
+  await shot("history-reload");
+
+  // -- an address that names no thread this page knows --
+  const base = pathA.slice(0, pathA.indexOf(ha));
+  const unknown = "thr_cowtestnosuchthread";
+  const length = await page.eval(`history.length`);
+  await page.goto(`${BB}${base}${unknown}`);
+  await page.waitFor(`${screen} === "overview" && ${message}.includes("not a thread this page knows")`, { label: "the unknown id said", timeout: 60_000 });
+  check(
+    "an unknown id in the address opens no chat, says so, and leaves no entry naming it",
+    (await page.eval(pane)) === null && !(await page.eval(path)).includes(unknown) && (await page.eval(`history.length`)) <= length + 1 && (await page.eval(screen)) === "overview",
+    await page.eval(message),
+  );
+
+  // -- an archived thread's id --
+  await bb("thread", "archive", hc);
+  await page.waitFor(`!${lineEl(hc)} || ${lineEl(hc)}?.dataset.cowState === "done"`, { label: "C archived", timeout: 30_000 });
+  await page.goto(`${BB}${base}${hc}`);
+  await page.waitFor(`${screen} === "overview" && ${pane} === "${hc}"`, { label: "the archived thread's chat", timeout: 60_000 });
+  check("an archived thread's id opens its chat, as Enter on its line would", !(await page.eval(message)).includes("not a thread"));
+  await page.eval(`history.back(); true`);
+  await sleep(1000);
 }
 
 async function waitingChecks(page, ids, shot, chooseMain) {
@@ -3464,7 +3638,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -3489,6 +3663,7 @@ async function main() {
     else if (flag("only-outside")) await outsideChecks(page, ids, shot, chooseMain);
     else if (flag("only-automations")) await automationChecks(page, ids, shot, chooseMain);
     else if (flag("only-plugins")) await pluginChecks(page, ids, shot, chooseMain);
+    else if (flag("only-history")) await historyChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }

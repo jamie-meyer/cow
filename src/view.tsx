@@ -1590,13 +1590,24 @@ function OverviewScreen({
 
   // The open chat lives in the page's address, so bb's back and forward move between chats.
   const bbNavigate = useBbNavigate();
-  const pane = chat;
+  /** Whether the address names a thread this page knows: Main, or one bb has told it about, archived or not. */
+  const knows = chat === null || chat === main.thread.id || threads.some((thread) => thread.id === chat);
+  const pane = knows ? chat : null;
   /** The chat this page last asked for; any other is history moving under it. */
-  const asked = useRef(chat);
+  const asked = useRef(pane);
+  /**
+   * Whether the person opened the chat that is open. A chat the page reopens
+   * by itself (on a reload, or by back and forward) marks no reply seen: the
+   * person may have taken that mark back. Opening it with Enter does.
+   */
+  const chosen = useRef(false);
+  /** Bumped when the person opens the chat that is already open, so that its reply is marked seen. */
+  const [chose, setChose] = useState(0);
   const setPane = useCallback(
     (id: string | null, replace = false) => {
       asked.current = id;
-      bbNavigate.toPluginPanel("main", { subPath: id ?? undefined, replace });
+      chosen.current = id !== null;
+      bbNavigate.toPluginPanel("main", { subPath: id === null ? undefined : encodeURIComponent(id), replace });
     },
     [bbNavigate],
   );
@@ -1666,13 +1677,32 @@ function OverviewScreen({
   useEffect(() => {
     if (pane === asked.current) return;
     asked.current = pane;
+    chosen.current = false;
     setPaneBack([]);
     if (pane !== null) setCursor(pane);
   }, [pane]);
+  // An address naming no thread this page knows (deleted, mistyped, another
+  // machine's link) opens nothing: it is said, and the entry is replaced by
+  // the page with no chat, so back does not come to it again.
+  useEffect(() => {
+    if (knows || chat === null) return;
+    asked.current = null;
+    chosen.current = false;
+    setMessage(`no chat opened: the address names ${chat}, which is not a thread this page knows`);
+    bbNavigate.toPluginPanel("main", { replace: true });
+  }, [knows, chat, bbNavigate]);
   /** Open a thread's chat in the pane, or switch the pane to it. It never takes the keyboard, and starts the way back afresh. */
   const openChat = useCallback(
     (id: string | null) => {
-      if (id === null || pane === id) return;
+      if (id === null) return;
+      if (pane === id) {
+        // The page reopened it by itself: the person opening it now reads its reply.
+        if (!chosen.current) {
+          chosen.current = true;
+          setChose((value) => value + 1);
+        }
+        return;
+      }
       setPane(id);
       setPaneBack([]);
       setMessage("");
@@ -1963,8 +1993,9 @@ function OverviewScreen({
     if (scroller) glide.current.push(scroller, delta(scroller.clientHeight));
   };
 
-  // A reply showing in the pane has been seen. Each is marked once, so that
-  // undoing a mark made with Space is not undone again by the open pane.
+  // A reply showing in a pane the person opened has been seen. Each is marked
+  // once, so that undoing a mark made with Space is not undone again by the
+  // open pane; a pane the page reopened by itself marks nothing.
   const paneLine = pane === null ? null : ([main, ...listed(overview)].find((line) => line.thread.id === pane) ?? null);
   const paneReply = paneLine?.derived.reply?.seq ?? paneLine?.derived.unseen?.seq ?? null;
   const autoSeen = useRef(new Set<string>());
@@ -1972,14 +2003,14 @@ function OverviewScreen({
   // is not enrolled tries once, and says why the reply still waits.
   const signing = signer.status;
   useEffect(() => {
-    if (paneLine === null || paneReply === null || signing === "loading") return;
+    if (paneLine === null || paneReply === null || signing === "loading" || !chosen.current) return;
     const key = `${paneLine.thread.id}:${paneReply}:${signing === "enrolled"}`;
     if (autoSeen.current.has(key)) return;
     autoSeen.current.add(key);
     verbs.markSeen(paneLine, false);
-    // Only a new pane, a new reply, or this page becoming enrolled marks anything.
+    // Only a new pane, a new reply, this page becoming enrolled, or the person opening the pane the page reopened marks anything.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane, paneReply, signing]);
+  }, [pane, paneReply, signing, chose]);
 
   const toggleFold = (id: string) =>
     setFolded((current) => {
@@ -2790,6 +2821,17 @@ function UnreadDot() {
   );
 }
 
+/** The thread whose chat the page's address names, or null; a part that does not decode is kept as it is, and is then no thread. */
+function chatOf(subPath: string): string | null {
+  const part = subPath.split("/")[0] ?? "";
+  if (part === "") return null;
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+}
+
 /** The whole page: decides between loading, an error, the picker and the overview. */
 export function CowPage({ subPath }: PluginNavPanelProps) {
   const sdk = useSdk();
@@ -2980,7 +3022,7 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
       stay={stay}
       projectNames={projectNames}
       onAutomationsOpen={setAutomationsOpen}
-      chat={subPath === "" ? null : decodeURIComponent(subPath.split("/")[0] ?? "")}
+      chat={chatOf(subPath)}
     />
   );
 }

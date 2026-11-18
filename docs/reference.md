@@ -444,8 +444,21 @@ its far edge, apart from the cursor's bar at the near edge; the pane's
 header names the thread. `i` always types into that chat, so the cursor can
 be anywhere, and it is the only key that puts the caret there: `Enter` and
 `m` open a chat and leave the keyboard with the overview, and `Enter` again
-on the same line does nothing. `Enter` on another line is the deliberate way
+on the same line does nothing (on a chat the page reopened by itself, it
+marks its reply seen). `Enter` on another line is the deliberate way
 to change which chat is open.
+
+The page's address names the open chat, so bb's own back and forward
+(`Cmd+[` and `Cmd+]`) walk the chats opened on this page: each open, switch
+and close of the pane is a step, and `Esc` back to the chat a link was
+followed from takes the place of the step instead of adding one. When back
+or forward brings a chat, the cursor goes to its line, and `Esc` closes it
+rather than going back through links. A reload reopens the chat the address
+names. A chat reopened by back, forward or a reload marks no reply seen:
+only you opening it does. An address that names no thread this page knows
+(deleted, mistyped, a link from another machine) opens nothing: the status
+line says so and the address is put back to the page with no chat. An
+archived thread's chat opens as `Enter` on its line would.
 
 When a verb makes a line leave its place (park, resume, archive, drop), the
 cursor goes to the next line down that stays, or up when nothing is below.

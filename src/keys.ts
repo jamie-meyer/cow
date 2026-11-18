@@ -69,6 +69,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
       { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },
       { keys: "I", does: "say something to the selected thread" },
       { keys: "Esc", does: "leave the chat, then close it; after following a link to a thread in the chat, it first goes back to the chat you came from, as many times as you followed one; cancel a prompt" },
+      { keys: "Cmd+[ Cmd+]", does: "bb's back and forward: walk the chats opened on this page, closing the pane included. The page's address names the open chat, so a reload reopens it; a chat reopened that way marks no reply seen until you open it with Enter" },
     ],
   },
   {
