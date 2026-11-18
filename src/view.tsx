@@ -19,6 +19,7 @@ import {
   useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
+import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { MainState, rpcContract } from "../server.ts";
 import { type BriefSheetControl, useBriefSheet } from "./BriefSheet.tsx";
 import { type BriefMark, disputeCount } from "./briefs/review.ts";
@@ -1446,7 +1447,10 @@ function OverviewScreen({
   stay,
   projectNames,
   onAutomationsOpen,
+  chat,
 }: {
+  /** The thread whose chat the page's address says is open beside the list, or null. */
+  chat: string | null;
   /** bb's projects by id, for a line outside Main in another project. */
   projectNames: ReadonlyMap<string, string>;
   /** Says whether the Automations section is unfolded: while it is, the automations are read again now and then. */
@@ -1581,7 +1585,18 @@ function OverviewScreen({
   };
   const moveInFilter = (by: 1 | -1) => setCursorRaw(step(order, selected, by));
 
-  const [pane, setPane] = useState<string | null>(null);
+  // The open chat lives in the page's address, so bb's back and forward move between chats.
+  const bbNavigate = useBbNavigate();
+  const pane = chat;
+  /** The chat this page last asked for; any other is history moving under it. */
+  const asked = useRef(chat);
+  const setPane = useCallback(
+    (id: string | null, replace = false) => {
+      asked.current = id;
+      bbNavigate.toPluginPanel("main", { subPath: id ?? undefined, replace });
+    },
+    [bbNavigate],
+  );
   const [focusRequest, setFocusRequest] = useState(0);
   const [sayTo, setSayTo] = useState<string | null>(null);
   const [sayText, setSayText] = useState("");
@@ -1644,6 +1659,13 @@ function OverviewScreen({
 
   // The chats a link in the pane was followed from, newest last: Escape goes back through them before it closes the pane.
   const [paneBack, setPaneBack] = useState<readonly string[]>([]);
+  // Back or forward brought another chat: the way back by Escape no longer applies, and the cursor follows the chat.
+  useEffect(() => {
+    if (pane === asked.current) return;
+    asked.current = pane;
+    setPaneBack([]);
+    if (pane !== null) setCursor(pane);
+  }, [pane]);
   /** Open a thread's chat in the pane, or switch the pane to it. It never takes the keyboard, and starts the way back afresh. */
   const openChat = useCallback(
     (id: string | null) => {
@@ -1652,7 +1674,7 @@ function OverviewScreen({
       setPaneBack([]);
       setMessage("");
     },
-    [pane],
+    [pane, setPane],
   );
   /** Put the caret in the composer of the chat that is open: the one way into it. */
   const typeInChat = useCallback(() => {
@@ -1665,7 +1687,7 @@ function OverviewScreen({
     setPane(null);
     setPaneBack([]);
     focusOverview();
-  }, [focusOverview]);
+  }, [focusOverview, setPane]);
 
   const startSay = (id: string | null) => {
     if (id === null) return;
@@ -2025,7 +2047,7 @@ function OverviewScreen({
         const previous = paneBack[paneBack.length - 1];
         if (pane !== null && previous !== undefined) {
           setPaneBack(paneBack.slice(0, -1));
-          setPane(previous);
+          setPane(previous, true);
           return setMessage(`back to ${previous === main.thread.id ? "Main" : `“${titles.get(previous) ?? threads.find((thread) => thread.id === previous)?.title ?? previous}”`}${paneBack.length > 1 ? " · Esc goes back again" : " · Esc closes the chat"}`);
         }
         if (pane !== null) closePane();
@@ -2751,7 +2773,7 @@ function OverviewScreen({
 }
 
 /** The whole page: decides between loading, an error, the picker and the overview. */
-export function CowPage() {
+export function CowPage({ subPath }: PluginNavPanelProps) {
   const sdk = useSdk();
   const context = useBbContext();
   const now = useNow();
@@ -2940,6 +2962,7 @@ export function CowPage() {
       stay={stay}
       projectNames={projectNames}
       onAutomationsOpen={setAutomationsOpen}
+      chat={subPath === "" ? null : decodeURIComponent(subPath.split("/")[0] ?? "")}
     />
   );
 }
