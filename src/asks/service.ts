@@ -2,6 +2,7 @@
 // person, and delivered to the asking thread as a message from the user.
 
 import { type Kv, Refusal, serial } from "../kv.ts";
+import { type TraceInput, closeLeavesTrace } from "../traces.ts";
 import { type Ask, type Risk, answerMessage, answered, askSchema, closedInChat, draftAsk, mayAskFor, openAsks, withdrawn } from "./ask.ts";
 
 const PREFIX = "ask:";
@@ -22,6 +23,15 @@ export interface AskDeps {
   send(threadId: string, text: string): Promise<void>;
   /** Tell open pages that asks changed. */
   changed(): void;
+  /**
+   * When the person last sent a thread a message, from anywhere in bb; null
+   * when they never have or it cannot be read. Without it, every close by an
+   * agent counts as one the person has not written since.
+   */
+  spokeAt?(threadId: string): Promise<number | null>;
+  /** Record a trace: an agent took an ask out of the person's queue. A failure here never undoes what was done. */
+  traced?(input: TraceInput): Promise<void>;
+  warn?(message: string): void;
 }
 
 export interface AskInput {
@@ -93,6 +103,14 @@ export function createAsks(deps: AskDeps): Asks {
     }
   };
 
+  /** Record a trace, after what it traces is done: a failure is reported, and undoes nothing. */
+  const trace = async (input: TraceInput) => {
+    await deps.traced?.(input).catch((cause: unknown) => deps.warn?.(`could not record that ${input.actorThreadId} ${input.action} ${input.askId}: ${cause instanceof Error ? cause.message : String(cause)}`));
+  };
+  /** When cow delivered answers to the thread's asks: messages from the person that answer nothing else. */
+  const deliveredTo = async (threadId: string): Promise<number[]> =>
+    (await all()).filter((ask) => ask.threadId === threadId && ask.deliveredAt !== null).map((ask) => ask.deliveredAt!);
+
   /** Send an answered ask's answer, once, and record that it arrived. */
   const deliver = (id: string): Promise<Ask> =>
     locked(id, async () => {
@@ -144,26 +162,41 @@ export function createAsks(deps: AskDeps): Asks {
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     },
 
-    withdraw: (caller, id) =>
-      locked(id, async () => {
+    async withdraw(caller, id) {
+      const done = await locked(id, async () => {
         const ask = await get(id);
         await allow(caller, ask.threadId, "withdraw an ask of");
         const next = withdrawn(ask, deps.now());
         if (!next.ok) throw new Refusal("cannot_withdraw", next.error);
         await write(next.value);
         return next.value;
-      }),
+      });
+      // A command run outside any thread is the person's own; any thread's leaves a trace.
+      if (caller !== null) await trace({ action: "withdrew", actorThreadId: caller, threadId: done.threadId, askId: done.id, question: done.question, claim: null, waited: [] });
+      return done;
+    },
 
-    close: (id, given) =>
-      locked(id, async () => {
+    async close(id, given) {
+      const person = "person" in given;
+      let quiet = true;
+      const done = await locked(id, async () => {
         const ask = await get(id);
-        const person = "person" in given;
         if (!person) await allow(given.caller, ask.threadId, "close an ask of");
+        // Read before it is closed: whether the person has written to the thread since it asked.
+        if (!person && given.caller !== null) {
+          const spokeAt = deps.spokeAt ? await deps.spokeAt(ask.threadId).catch(() => null) : null;
+          quiet = !closeLeavesTrace(ask, given.caller, spokeAt, await deliveredTo(ask.threadId));
+        }
         const next = closedInChat(ask, person ? { by: "person", closedBy: null, answer: null } : { by: "thread", closedBy: given.caller, answer: given.answer }, deps.now());
         if (!next.ok) throw new Refusal("cannot_close", next.error, next.hint);
         await write(next.value);
         return next.value;
-      }),
+      });
+      if (!person && !quiet && given.caller !== null) {
+        await trace({ action: "closed", actorThreadId: given.caller, threadId: done.threadId, askId: done.id, question: done.question, claim: done.closed?.answer ?? null, waited: [] });
+      }
+      return done;
+    },
 
     async answer(id, given) {
       // The answer is recorded first, so it is never lost; delivery can be retried.

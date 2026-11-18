@@ -12,6 +12,8 @@ import type { Attention } from "./raised-cli.ts";
 import { type CheckerSight, type CheckerSettings, MAX_RUNS, briefRecordSchema, createBriefs } from "./briefs/service.ts";
 import { Refusal } from "./kv.ts";
 import { RAISED_CHANGED } from "./raised.ts";
+import { readActivity } from "./activity.ts";
+import type { TraceInput } from "./traces.ts";
 
 export { RAISED_CHANGED } from "./raised.ts";
 export const CHECKER_TITLE = "cow check";
@@ -93,7 +95,12 @@ export function toolsUsed(rows: readonly unknown[]): string[] {
   return used;
 }
 
-export function registerAttention(bb: BbPluginApi): Attention {
+/** Where an agent's taking an ask out of the person's queue is recorded: set once the capabilities are registered. */
+export interface TraceSink {
+  record: ((input: TraceInput) => Promise<void>) | null;
+}
+
+export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record: null }): Attention {
   const settings = bb.settings.define({
     checkerModel: {
       type: "string",
@@ -152,6 +159,12 @@ export function registerAttention(bb: BbPluginApi): Attention {
       await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
     },
     changed,
+    spokeAt: async (threadId) => (await readActivity(bb.sdk.threads, threadId, { asking: false })).replies?.personSpokeAt ?? null,
+    traced: async (input) => {
+      if (traces.record === null) throw new Error("the log is not ready");
+      await traces.record(input);
+    },
+    warn: (message) => bb.log.warn(message),
   });
 
   const look = async (threadId: string): Promise<CheckerSight> => {

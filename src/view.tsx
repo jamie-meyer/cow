@@ -1836,6 +1836,7 @@ function OverviewScreen({
     startNew: () => capSteps.start({ via: "sheet", threadId: selectedTodo?.ownerId ?? selectedLine?.thread.id ?? main.thread.id, where: "sheet" }, null),
     steps: capSteps.origin?.where === "sheet" ? capSteps.node : null,
     onClose: () => focusOverview(),
+    openChat: (threadId) => openChat(threadId),
   });
   /** The line whose capabilities are shown under it, with c. */
   const [capsFor, setCapsFor] = useState<string | null>(null);
@@ -2264,12 +2265,14 @@ function OverviewScreen({
     return <HeldCard threadId={id} held={heldOf(id)} fresh={freshCaps} use={caps.uses.get(id) ?? null} outside={caps.outside.get(id) ?? []} titleOf={(thread) => titles.get(thread) ?? threads.find((other) => other.id === thread)?.title ?? thread} now={now} key={line?.thread.id} />;
   };
   const capNotices = caps.notices.filter((notice) => notice.kind === "capability");
+  // What an agent took out of the queue: in front of the person until acknowledged.
+  const traceNotices = caps.notices.filter((notice) => notice.kind === "trace");
   // Always in sight: a capability nobody remembers making shows as a number that went up.
   const inForce = caps.capabilities.filter((capability) => capability.deletedAt === null).length;
   // What waits on the person: the lines in the queue, and the capabilities they have not acknowledged.
   // A page that asks for its key to be enrolled waits on the person too, on a page that can approve it.
   const keyRequests = signer.status === "enrolled" ? (signer.keys?.requests ?? []).filter((request) => request.status === "pending") : [];
-  const waiting = overview.queue.length + capNotices.length + keyRequests.length;
+  const waiting = overview.queue.length + capNotices.length + traceNotices.length + keyRequests.length;
   const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
@@ -2555,10 +2558,22 @@ function OverviewScreen({
               </h2>
               <p className="cow-sub">
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
-                replies addressed to you, parked work that came back, reminders of work waiting on someone else, new capabilities and decisions made outside cow, oldest first.
+                replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, oldest first.
               </p>
-              {capNotices.length + keyRequests.length > 0 ? (
-                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length + keyRequests.length}>
+              {capNotices.length + traceNotices.length + keyRequests.length > 0 ? (
+                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length + traceNotices.length + keyRequests.length}>
+                  {traceNotices.map((notice) => (
+                    <li key={notice.id} className="cow-q cow-q-notice" data-cow-notice={notice.id} data-cow-notice-trace={notice.trace?.action ?? ""} data-cow-hint="" onClick={() => capSheet.show(notice.id)}>
+                      <span className="cow-qn">!</span>
+                      <span className="cow-gl" />
+                      <div>
+                        <p>{notice.text}</p>
+                        <small>
+                          by an agent · {formatAge(Math.max(0, now - notice.at))} · <kbd>C</kbd>, then on it <kbd>⏎</kbd> opens the chat, <kbd>␣</kbd> acknowledges
+                        </small>
+                      </div>
+                    </li>
+                  ))}
                   {keyRequests.map((request) => (
                     <li key={request.fingerprint} className="cow-q cow-q-notice" data-cow-key-waiting={request.fingerprint} data-cow-hint="" onClick={() => capSheet.show()}>
                       <span className="cow-qn">{CAP_GLYPH}</span>
@@ -2589,7 +2604,7 @@ function OverviewScreen({
               ) : null}
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
-                  <li className="cow-q-empty">{capNotices.length + keyRequests.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
+                  <li className="cow-q-empty">{capNotices.length + traceNotices.length + keyRequests.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
                 ) : (
                   overview.queue.map((line) => (
                     <li

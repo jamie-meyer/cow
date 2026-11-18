@@ -298,7 +298,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | Key | Does |
 | --- | --- |
 | `c` | show the capabilities the line's thread holds, and where each comes from: itself, a thread above it, or Main; c or Esc closes |
-| `C` | the capabilities sheet over the page: n makes one, x deletes (y confirms), u undoes a delete, Enter shows its history, Space acknowledges a new one or a decision made outside cow, Tab shows the log, q or Esc closes. It also lists the keys enrolled to act as you, this page's among them: Enter approves a page that asks, x refuses or removes one |
+| `C` | the capabilities sheet over the page: n makes one, x deletes (y confirms), u undoes a delete, Enter shows its history, Space acknowledges a new one, a decision made outside cow, or what an agent took out of your queue (on that, Enter opens the thread's chat), Tab shows the log, q or Esc closes. It also lists the keys enrolled to act as you, this page's among them: Enter approves a page that asks, x refuses or removes one |
 
 **Reading a file**
 

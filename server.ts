@@ -5,7 +5,7 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createActions } from "./src/actions.ts";
-import { registerAttention } from "./src/raised-backend.ts";
+import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
@@ -106,12 +106,17 @@ export default async function plugin(bb: BbPluginApi) {
     return stored.success ? stored.data : { mains: {}, currentProjectId: null };
   }
 
-  const attention = registerAttention(bb);
+  // What an agent takes out of the person's queue is traced in the log, once the log's owner is registered.
+  const traces: TraceSink = { record: null };
+  const attention = registerAttention(bb, traces);
   // A read-through of the automations plugin's own methods: never more than a few seconds, never an error.
   const automations = registerAutomations(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   const caps = registerCaps(bb, log);
+  traces.record = async (input) => {
+    await caps.trace(input);
+  };
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -122,6 +127,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
     openAsks: () => attention.asks.list(),
     automations,
+    trace: async (input) => {
+      await caps.trace(input);
+    },
+    traces: async () =>
+      (await caps.state()).notices.flatMap((notice) =>
+        notice.kind === "trace" && notice.trace !== null && notice.threadId !== null
+          ? [{ id: notice.id, threadId: notice.threadId, actorThreadId: notice.trace.actorThreadId, action: notice.trace.action, text: notice.text, at: notice.at }]
+          : [],
+      ),
     marks: (ids) => attention.briefs.marks(ids),
     delivered: async () => {
       const found = new Map<string, number[]>();

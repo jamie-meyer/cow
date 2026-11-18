@@ -29,11 +29,14 @@ export interface CapSheetHost {
   steps: ReactNode;
   /** The sheet closed. */
   onClose: () => void;
+  /** Open a thread's chat beside the overview: Enter on a trace. */
+  openChat: (threadId: string) => void;
 }
 
 export interface CapSheetControl {
   open: boolean;
-  show: () => void;
+  /** Open the sheet; with a notice's id, on that notice. */
+  show: (noticeId?: string) => void;
   /** A key while the sheet is open. False when the sheet leaves it to the page (hints). */
   onKey: (key: string) => boolean;
   node: ReactNode;
@@ -42,6 +45,8 @@ export interface CapSheetControl {
 type Row =
   | { kind: "capability"; id: string; capability: Capability; notices: Notice[] }
   | { kind: "outside"; id: string; notice: Notice }
+  /** An agent took something out of the person's queue. */
+  | { kind: "trace"; id: string; notice: Notice }
   /** A page that asks for its key to be enrolled, or was refused. */
   | { kind: "request"; id: string; request: KeyRequest }
   | { kind: "key"; id: string; key: EnrolledKey };
@@ -87,6 +92,7 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
       // A deleted capability stays listed while its notice has not been acknowledged.
       if (isActive(capability) || notices.length > 0) found.push({ kind: "capability", id: capability.id, capability, notices });
     }
+    for (const notice of caps.notices) if (notice.kind === "trace") found.push({ kind: "trace", id: notice.id, notice });
     for (const notice of caps.notices) if (notice.kind === "outside") found.push({ kind: "outside", id: notice.id, notice });
     for (const request of signer.keys?.requests ?? []) found.push({ kind: "request", id: `request:${request.fingerprint}`, request });
     for (const key of signer.keys?.keys ?? []) found.push({ kind: "key", id: `key:${key.fingerprint}`, key });
@@ -143,8 +149,8 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   };
 
   const acknowledge = (row: Row) => {
-    if (row.kind === "request" || row.kind === "key") return setNote("Space acknowledges a new capability or a decision made outside cow; a key is approved with Enter and removed with x");
-    const notices = row.kind === "outside" ? [row.notice] : row.notices;
+    if (row.kind === "request" || row.kind === "key") return setNote("Space acknowledges a new capability, what an agent took out of your queue, or a decision made outside cow; a key is approved with Enter and removed with x");
+    const notices = row.kind === "outside" || row.kind === "trace" ? [row.notice] : row.notices;
     if (notices.length === 0) return setNote("there is nothing to acknowledge on this line");
     Promise.all(notices.map((notice) => caps.acknowledge(notice.id))).then(
       () => setNote("acknowledged: it is in the log"),
@@ -289,6 +295,12 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
           if (current.request.status === "pending") setConfirming({ on: "key", what: "approve", request: current.request });
           else setNote("it was refused: x forgets the refusal, and that page can then ask again");
         } else if (current?.kind === "key") setNote(current.key.fingerprint === signer.fingerprint ? "this is this page's own key" : "an enrolled key: x removes it");
+        else if (current?.kind === "trace" && current.notice.threadId !== null) {
+          // Its chat opens beside the overview; the notice stays until it is acknowledged.
+          const threadId = current.notice.threadId;
+          close();
+          host.openChat(threadId);
+        }
         else if (current) setNote("Space acknowledges it; the log has the rest: Tab");
         return true;
       default:
@@ -416,6 +428,20 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
         ) : null}
         {rows.some((row) => row.kind === "capability") ? <h3 data-cow-caps-section="capabilities">Capabilities <b>{rows.filter((row) => row.kind === "capability" && isActive(row.capability)).length}</b></h3> : null}
         {rows.map((row) => (row.kind === "capability" ? capabilityRow(row) : null))}
+        {rows.some((row) => row.kind === "trace") ? <h3 data-cow-caps-section="traces">Taken out of your queue by an agent, not yet acknowledged <b>{rows.filter((row) => row.kind === "trace").length}</b></h3> : null}
+        {rows.map((row) =>
+          row.kind === "trace" ? (
+            <div key={row.id} className={row.id === current?.id ? "cow-cap-row cow-cap-new cow-cur" : "cow-cap-row cow-cap-new"} data-cow-cap-trace={row.notice.id} data-cow-hint="" onClick={() => setCursor(row.id)}>
+              <p className="cow-cap-line">
+                <b className="cow-cap-tag">agent</b>
+                <span>{row.notice.text}</span>
+                <span>
+                  {when(row.notice.at)} · {formatAge(Math.max(0, host.now - row.notice.at))} ago · <kbd>⏎</kbd> opens the chat of “{row.notice.threadId ? host.titleOf(row.notice.threadId) : "a thread"}” · <kbd>␣</kbd> acknowledges
+                </span>
+              </p>
+            </div>
+          ) : null,
+        )}
         {rows.some((row) => row.kind === "outside") ? <h3 data-cow-caps-section="outside">Decided outside cow, not yet acknowledged <b>{rows.filter((row) => row.kind === "outside").length}</b></h3> : null}
         {rows.map((row) =>
           row.kind === "outside" ? (
@@ -529,7 +555,8 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
 
   return {
     open,
-    show: () => {
+    show: (noticeId) => {
+      if (noticeId !== undefined) setCursor(noticeId);
       setOpen(true);
       setView("list");
       setNote("");

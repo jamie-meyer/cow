@@ -43,6 +43,7 @@ import { type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automation
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
 import { insteadFromCli, verbBlocked } from "./verbs.ts";
+import { type TraceAction, type TraceInput, parkWaitedOn } from "./traces.ts";
 
 /** bb reads plugin metadata for at most this many threads per request. */
 const METADATA_PAGE = 200;
@@ -124,7 +125,8 @@ export interface Actions {
   archive(args: { threadId: string; reason: string | null; dropped: boolean; at: number }): Promise<void>;
   /** The verbs as the CLI runs them: the page's rules first, then the same action. */
   archiveChecked(threadId: string, reason: string | null): Promise<{ title: string; under: number }>;
-  parkChecked(args: { threadId: string; reason: string; pickUp: string; stop: boolean }): Promise<{ title: string; record: ParkRecord; kept: boolean }>;
+  /** `callerId`: the thread that ran the command, or null for one run outside any thread (the person). An agent that parks what waited on the person leaves a trace. */
+  parkChecked(args: { callerId: string | null; threadId: string; reason: string; pickUp: string; stop: boolean }): Promise<{ title: string; record: ParkRecord; kept: boolean; traced: boolean }>;
   resumeChecked(threadId: string): Promise<{ title: string }>;
   status(mainId: string | null, projectId: string | null): Promise<StatusReport>;
 }
@@ -139,6 +141,20 @@ export interface RaisedSource {
   outside?(): Promise<ReadonlyMap<string, readonly OutsideFlag[]>>;
   /** bb's automations and their latest runs, for the overview's Automations section. */
   automations?(): Promise<AutomationsRead>;
+  /** Record a trace: an agent took something out of the person's queue. */
+  trace?(input: TraceInput): Promise<void>;
+  /** The traces the person has not acknowledged, oldest first. */
+  traces?(): Promise<readonly TraceNotice[]>;
+}
+
+/** A trace not yet acknowledged, as `bb cow status` lists it. */
+export interface TraceNotice {
+  id: string;
+  threadId: string;
+  actorThreadId: string;
+  action: TraceAction;
+  text: string;
+  at: number;
 }
 
 export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource): Actions {
@@ -417,7 +433,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       return { title: line.thread.title, under };
     },
 
-    async parkChecked({ threadId, reason, pickUp, stop }) {
+    async parkChecked({ callerId, threadId, reason, pickUp, stop }) {
       const { line, isMain, now } = await lineFor(threadId);
       const why = verbBlocked("park", line, isMain);
       if (why !== null) refuse("park", line, why);
@@ -436,8 +452,21 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       }
       // Parked work that came back is kept parked: it stays parked since when it was.
       const record = before ? { ...reparkNow(before, parsed.pickUp, now), reason } : parkNow(reason, parsed.pickUp, now);
+      // What it waited on the person for, read before it was parked.
+      const waited = parkWaitedOn(line);
       await setPark(threadId, record);
-      return { title: line.thread.title, record, kept: before !== undefined };
+      // A park by a thread that takes something out of the person's queue is put in front of them. The park stands either way.
+      let traced = false;
+      if (callerId !== null && waited.length > 0 && raised?.trace) {
+        traced = await raised.trace({ action: "parked", actorThreadId: callerId, threadId, askId: null, question: null, claim: reason, waited }).then(
+          () => true,
+          (cause: unknown) => {
+            bb.log.warn(`could not record that ${callerId} parked ${threadId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+            return false;
+          },
+        );
+      }
+      return { title: line.thread.title, record, kept: before !== undefined, traced };
     },
 
     async resumeChecked(threadId) {
@@ -477,7 +506,10 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         (projects) => new Map(projects.map((project) => [project.id, project.name])),
         () => new Map<string, string>(),
       );
-      return statusReport(overview, seen.now, seen.truncated, projectNames);
+      // The traces about this Main's threads, or made by one of them.
+      const ours = new Set([id, ...descendantIds(seen.threads, id)]);
+      const traces = ((await raised?.traces?.().catch(() => [])) ?? []).filter((trace) => ours.has(trace.threadId) || ours.has(trace.actorThreadId));
+      return { ...statusReport(overview, seen.now, seen.truncated, projectNames), traces: traces.map((trace) => ({ ...trace })) };
     },
   };
 }

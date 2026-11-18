@@ -285,16 +285,16 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           stop: { type: "boolean", description: "Stop its turn first when one is running. Stopping cannot be undone" },
           json,
         },
-        async run(input) {
+        async run(input, ctx) {
           const id = threadId(input.positionals.thread);
           const reason = reasonText(input.options.reason, true) ?? "";
           const done = await acting(() =>
-            actions.parkChecked({ threadId: id, reason, pickUp: input.options.pickup ?? "", stop: input.options.stop }),
+            actions.parkChecked({ callerId: ctx.threadId ?? null, threadId: id, reason, pickUp: input.options.pickup ?? "", stop: input.options.stop }),
           );
           return print(
             input.options.json,
-            { threadId: id, title: done.title, park: done.record },
-            `${done.kept ? "kept parked" : "parked"} “${done.title}” (${id}): ${reason} · ${pickUpText(done.record, done.record.checkedAt, LIMITS.parkCheckMs)}`,
+            { threadId: id, title: done.title, park: done.record, shownToUser: done.traced },
+            `${done.kept ? "kept parked" : "parked"} “${done.title}” (${id}): ${reason} · ${pickUpText(done.record, done.record.checkedAt, LIMITS.parkCheckMs)}${done.traced ? "\nit was waiting on the user: they are shown that you parked it, until they acknowledge it" : ""}`,
           );
         },
       }),

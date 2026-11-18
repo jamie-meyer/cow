@@ -1,10 +1,11 @@
-// The capability log: every creation, deletion and restoring of a
-// capability, every notice acknowledged, every request cow allowed through a
+// The capability log (named for capabilities, it holds more): every
+// creation, deletion and restoring of a capability, every notice acknowledged, every request cow allowed through a
 // capability, every decision made through cow's page, every decision cow saw
 // made somewhere else, every capability a thread asked for, and everything
 // else the person did on the page that is signed: a message sent, an ask
 // answered, a reply marked as seen, a refusal dismissed, a brief read, a key
-// enrolled. Entries are only ever appended. Pure: the hash function is passed in.
+// enrolled; and every trace of an agent taking something out of the
+// person's queue (see traces.ts). Entries are only ever appended. Pure: the hash function is passed in.
 //
 // Each entry carries its number and the hash of the entry before it, so an
 // entry taken out of the middle, or changed, shows as a break. That is all
@@ -15,6 +16,7 @@
 import { z } from "zod";
 import { canonical } from "../signing/canonical.ts";
 import { OUTSIDE_WHERE } from "../state.ts";
+import { TRACE_ACTIONS } from "../traces.ts";
 import { VIA_TEXT, type Via } from "./cap.ts";
 
 const what = z.string().max(2000);
@@ -58,6 +60,12 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("key-removed"), fingerprint: z.string() }),
   /** Every enrolled key was cleared, because the reset file was found. `keys`: how many. */
   z.object({ kind: z.literal("enrollment-reset"), keys: z.number() }),
+  /**
+   * An agent took something out of the person's queue: parked a thread that
+   * waited on them, withdrew an ask, or closed one as answered in chat when
+   * they had not written since. `what` is the notice's sentence.
+   */
+  z.object({ kind: z.literal("trace"), action: z.enum(TRACE_ACTIONS), actorThreadId: z.string(), threadId: z.string(), askId: z.string().nullable(), what }),
 ]);
 export type LogEvent = z.infer<typeof eventSchema>;
 
@@ -202,6 +210,8 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return `key ${event.fingerprint} was refused`;
     case "key-removed":
       return `key ${event.fingerprint} was removed`;
+    case "trace":
+      return event.what;
     case "enrollment-reset":
       return `enrollment was reset from the reset file: ${event.keys} ${event.keys === 1 ? "key" : "keys"} cleared`;
   }

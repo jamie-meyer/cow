@@ -110,6 +110,13 @@ export interface StatusReport {
   omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; automations: number; outside: number; queue: number };
   /** True when bb has more threads than cow reads. */
   truncated: boolean;
+  /**
+   * What agents took out of the user's queue that the user has not
+   * acknowledged on cow's page: a park of a thread that waited on them, an
+   * ask withdrawn, an ask closed as answered in chat when they had not
+   * written since. Oldest first.
+   */
+  traces?: { id: string; threadId: string; actorThreadId: string; action: string; text: string; at: number }[];
 }
 
 const cut = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
@@ -258,7 +265,12 @@ export function statusText(report: StatusReport): string {
   for (const line of report.queue) {
     out.push(`${String(line.queue ?? "").padStart(2)}  ${line.title} (${line.id})  ${line.doing} · waiting ${line.waiting}`);
   }
-  out.push(...more(omitted.queue), "", `Threads (${report.threads.length + omitted.threads})`);
+  out.push(...more(omitted.queue));
+  if (report.traces && report.traces.length > 0) {
+    out.push("", `Taken out of the user's queue by an agent, not yet acknowledged by the user (${report.traces.length})`);
+    for (const trace of report.traces) out.push(`    ${trace.text} (${trace.id})`);
+  }
+  out.push("", `Threads (${report.threads.length + omitted.threads})`);
   if (report.threads.length === 0) out.push("    none open");
   for (const line of report.threads) out.push(...row(line, true));
   out.push(...more(omitted.threads), "", `Parked (${report.parked.length + omitted.parked})`);

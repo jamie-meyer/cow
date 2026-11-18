@@ -30,7 +30,7 @@ function recorder(overrides: Partial<CliActions> = {}) {
     archiveChecked: async (...args) => (calls.push(["archive", ...args]), { title: "T", under: 0 }),
     parkChecked: async (args) => (
       calls.push(["park", args]),
-      { title: "T", kept: false, record: { at: NOW, reason: args.reason, pickUp: { kind: "none" }, checkedAt: NOW } }
+      { title: "T", kept: false, traced: false, record: { at: NOW, reason: args.reason, pickUp: { kind: "none" }, checkedAt: NOW } }
     ),
     resumeChecked: async (...args) => (calls.push(["resume", ...args]), { title: "T" }),
     status: async (...args) => (calls.push(["status", ...args]), EMPTY_REPORT),
@@ -87,8 +87,8 @@ test("park needs a reason, and passes the pick-up through as typed", async () =>
   assert.match(parked.stdout ?? "", /^parked “T” \(thr_a\): waiting on review · /);
   await run("park", "thr_a", "--reason", "r", "--stop");
   assert.deepEqual(calls, [
-    ["park", { threadId: "thr_a", reason: "waiting on review", pickUp: "+3d", stop: false }],
-    ["park", { threadId: "thr_a", reason: "r", pickUp: "", stop: true }],
+    ["park", { callerId: "thr_me", threadId: "thr_a", reason: "waiting on review", pickUp: "+3d", stop: false }],
+    ["park", { callerId: "thr_me", threadId: "thr_a", reason: "r", pickUp: "", stop: true }],
   ]);
 });
 

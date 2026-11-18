@@ -17,6 +17,7 @@ import type { LogStore } from "./logstore.ts";
 import { type Request, type Resolved, covers, coversResolved, requestText } from "./match.ts";
 import { type Places, directoryRefusal, readPath } from "./paths.ts";
 import { type Held, held } from "./scope.ts";
+import { TRACE_ACTIONS, type TraceInput, traceText } from "../traces.ts";
 import { z } from "zod";
 
 const CAP = "cap:";
@@ -32,16 +33,25 @@ export const DELETED_SHOWN_MS = 24 * 60 * 60_000;
 /** The log entries the page and the CLI are given at once, newest first. */
 export const MAX_LOG_PAGE = 500;
 
-/** Something the person has to acknowledge on the page: a capability that appeared, or a decision cow did not make. */
+/**
+ * Something the person has to acknowledge on the page: a capability that
+ * appeared, a decision cow did not make, or a trace of an agent taking
+ * something out of their queue.
+ */
 export const noticeSchema = z.object({
   id: z.string(),
-  kind: z.enum(["capability", "outside"]),
+  kind: z.enum(["capability", "outside", "trace"]),
   /** For a capability: which one. */
   capabilityId: z.string().nullable(),
-  /** For a decision made outside cow: on which thread. */
+  /** For a decision made outside cow: on which thread. For a trace: the thread it was done to, whose chat Enter opens. */
   threadId: z.string().nullable(),
   text: z.string(),
   at: z.number(),
+  /** For a trace: what was done, and by which thread. */
+  trace: z
+    .object({ action: z.enum(TRACE_ACTIONS), actorThreadId: z.string(), askId: z.string().nullable() })
+    .nullable()
+    .default(null),
 });
 export type Notice = z.infer<typeof noticeSchema>;
 
@@ -141,6 +151,8 @@ export interface Caps {
   watching(): Promise<string[]>;
   /** Forget what is kept about a thread that bb has deleted. Capabilities and the log stay. */
   forget(threadId: string): Promise<void>;
+  /** An agent took something out of the person's queue: log it, and raise a notice that stays until acknowledged. */
+  trace(input: TraceInput): Promise<Notice>;
 }
 
 export function createCaps(deps: CapDeps): Caps {
@@ -221,7 +233,7 @@ export function createCaps(deps: CapDeps): Caps {
       const summary = addedText(made, "added", () => title);
       // Logged before it is in force: nothing can be allowed by a capability the log does not hold.
       await append({ kind: "created", capabilityId: made.id, name: made.name, summary, via: made.via, sourceThreadId: made.sourceThreadId, scopeThreadId: made.scope.threadId }, by);
-      await notify({ kind: "capability", capabilityId: made.id, threadId: null, text: summary });
+      await notify({ kind: "capability", capabilityId: made.id, threadId: null, text: summary, trace: null });
       await kv.set(CAP + made.id, made);
       deps.changed();
       return made;
@@ -250,7 +262,7 @@ export function createCaps(deps: CapDeps): Caps {
       const title = await titleOf(found.scope.threadId);
       const summary = addedText(found, "restored", () => title);
       await append({ kind: "restored", capabilityId: id, name: found.name, summary, scopeThreadId: found.scope.threadId }, by);
-      await notify({ kind: "capability", capabilityId: id, threadId: null, text: summary });
+      await notify({ kind: "capability", capabilityId: id, threadId: null, text: summary, trace: null });
       const restored = { ...found, deletedAt: null };
       await kv.set(CAP + id, restored);
       deps.changed();
@@ -373,7 +385,7 @@ export function createCaps(deps: CapDeps): Caps {
       if (own || state.status === "gone") return;
       const text = outsideText(state.decision, pending.what);
       await append({ kind: "outside", threadId: pending.threadId, interactionId: pending.interactionId, decision: state.decision, what: pending.what }, null);
-      await notify({ kind: "outside", capabilityId: null, threadId: pending.threadId, text });
+      await notify({ kind: "outside", capabilityId: null, threadId: pending.threadId, text, trace: null });
       deps.changed();
     });
 
@@ -428,6 +440,17 @@ export function createCaps(deps: CapDeps): Caps {
     async requested(threadId, askId, rule) {
       await append({ kind: "requested", threadId, askId, what: `${rule.kind === "dir" ? "write under" : rule.mode === "exact" ? "run" : "run commands beginning"} ${ruleText(rule)}` }, null);
       deps.changed();
+    },
+
+    async trace(input) {
+      const titles = new Map<string, string>();
+      for (const id of new Set([input.actorThreadId, input.threadId])) titles.set(id, await titleOf(id));
+      const text = traceText(input, (id) => titles.get(id) ?? id);
+      // Logged first: a notice the log does not hold could be acknowledged and leave nothing behind.
+      await append({ kind: "trace", action: input.action, actorThreadId: input.actorThreadId, threadId: input.threadId, askId: input.askId, what: text }, null);
+      const made = await notify({ kind: "trace", capabilityId: null, threadId: input.threadId, text, trace: { action: input.action, actorThreadId: input.actorThreadId, askId: input.askId } });
+      deps.changed();
+      return made;
     },
 
     async forget(threadId) {
