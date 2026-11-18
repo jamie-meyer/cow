@@ -47,7 +47,7 @@ committed to this repository, and there is no release asset to download.
 Check that it is there:
 
 ```sh
-bb plugin list        # cow@0.2.4  running
+bb plugin list        # cow@0.2.5  running
 bb cow help
 ```
 
@@ -64,7 +64,7 @@ Other ways bb can install it, and when to prefer them:
 | Command | Follows | Use it when |
 | --- | --- | --- |
 | `bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'` | tagged releases from 0.2.0 up to, not including, 0.3.0 | the default: `bb plugin update cow` brings fixes and nothing else |
-| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.4` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
+| `bb plugin install git:https://github.com/jamie-meyer/cow.git@v0.2.5` | that one tag; bb refuses it if the tag is ever moved | you review a version before you run it |
 | `bb plugin install https://github.com/jamie-meyer/cow` | the default branch, every commit | you want what is newest and accept what is unreleased |
 | `git clone`, `npm install`, `bb plugin install .` | your checkout, in place | you are changing cow: see [Developing and testing](#developing-and-testing) |
 
@@ -167,8 +167,20 @@ tree never reaches them: old work, threads started by hand, forks. The
 **Outside Main** section, last on the page and folded by default, lists
 them with their project when it is another one, how long since each did
 anything, and whether it is running, wants an answer or is at rest. Nothing
-in it is in the queue. Threads a plugin started are only counted. `A` on one
+in it is in the queue. Threads a plugin started are only counted, except
+an automation's runs, which are listed under Automations. `A` on one
 brings it under Main, `u` takes that back.
+
+**Automations.** Each run of a bb automation is a new thread with no parent,
+so the tree never reaches it. The **Automations** section, after Archived
+and folded by default, has one row per automation: its name, its project
+when that is not Main's, when it runs next ("in 3h", "tomorrow 09:00",
+"paused") and what its last run came to, with the first line of the error
+when it failed. Its recent run threads fold under it as ordinary lines. A
+run that asks you something is in your queue like any thread; a finished
+one is not, and is never coloured. `e` archives a run. It is a view: cow
+does not pause, run or change automations. Without bb's automations plugin
+there is no section.
 
 **Waiting on someone else.** A thread whose next move is a reviewer's, CI's
 or anyone's but yours says so with `bb cow wait`, or you do with `w`. Its
@@ -237,7 +249,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `j` `k` | next, previous line (arrows work too); the heading, Main, is the line above the first |
 | `gg` `G` | the heading, the last line |
-| `h` `l` | fold, unfold a group, or the To settle, Kept and Outside Main sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too) |
+| `h` `l` | fold, unfold a group, or the To settle, Kept, Automations and Outside Main sections on their headings, or an automation's runs on its row; on a member, h goes to its group's head or its section's heading, and on a run to its automation (left, right arrows too) |
 | `Tab` | next entry in the queue of what waits on you (Shift+Tab previous) |
 | `1` to `9` | jump to that entry in the queue |
 | `/` | filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels |
@@ -247,7 +259,7 @@ says why, and what to press instead. `?` shows this map on the page.
 
 | Key | Does |
 | --- | --- |
-| `Enter` | open the line's chat beside the overview, or switch the pane to it; it never types into the chat |
+| `Enter` | open the line's chat beside the overview, or switch the pane to it; it never types into the chat. On an automation's row, its latest run's chat, or for a script what its last run printed, in the reader |
 | `m` | open Main's chat the same way |
 | `;` `'` | scroll the open chat down, up a few lines, from the overview; : and " by half a page; \ goes to its newest message |
 | `i` | type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main |
@@ -410,6 +422,14 @@ has never built a plugin, bb also downloads its own build tools then.
 
 The page asks bb's server for bb's version and theme, to decide whether to
 show its two one-time notes. Those are requests to bb.
+
+cow's server reads bb's automations through the methods of bb's own
+automations plugin, `automations_overview` and `automations_runs`: each
+automation and the latest 20 runs of each enabled one, including what a
+script run printed. That is a request to bb too. It only reads: cow never
+pauses, runs, changes or deletes an automation. When the plugin is absent,
+disabled, or does not answer within a few seconds, the page has no
+Automations section and nothing else changes.
 
 ### What an agent can and cannot do through cow
 
@@ -596,6 +616,12 @@ uses one that is not listed.
 | `experimental_openFilePreview` (page) | the reader's o: the same file in bb's own panel |
 | `experimental_useAppPanel` (page) | closing a file tab bb opened on cow's page, to show the file in the reader |
 | `experimental_usePanelTabs` (page) | seeing that file tab open |
+
+**Another plugin's methods.** The Automations section reads bb's bundled
+automations plugin through `automations_overview` and `automations_runs`,
+as that plugin answers in bb 0.49. Its answers are read without trusting
+their shape; if a newer bb changes them, the section shows less or
+disappears, and the rest of the page is unaffected.
 
 **Nothing tells cow that a thread waits on something other than you.** A
 thread waiting on a build, a person or another service reads as running, then

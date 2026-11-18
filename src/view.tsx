@@ -916,7 +916,9 @@ function Help({ onClose }: { onClose: () => void }) {
             <b>The queue</b> at the side holds only what waits on you, oldest first. <b>Parked</b> is work you set aside; it comes
             back by itself. <b>To settle</b> is what finished and is not archived: each waits for one decision of yours, archive,
             park, keep or carry on, and none is hidden by age. <b>Kept</b> is what you keep around on purpose; it asks for
-            nothing. <b>Archived</b> is what was archived in the last 2 days. <b>Outside Main</b>, last and folded, lists open
+            nothing. <b>Archived</b> is what was archived in the last 2 days. <b>Automations</b>, folded, has one row per bb
+            automation, with when it runs next and what its last run came to, and its recent runs folded under it; a run that asks
+            you something is in the queue, a finished one is not. <b>Outside Main</b>, last and folded, lists open
             threads with no parent, which are under no Main; <b>A</b> brings one under Main. Select a line, then press a verb: the bar at the bottom
             shows which apply, and a greyed-out one says why when pressed.
           </p>

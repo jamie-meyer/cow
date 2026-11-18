@@ -67,6 +67,14 @@
 //   --only-outside      only Outside Main and bringing a thread under Main:
 //                       four fixtures, one a stand-in Main. It moves only
 //                       those, and puts each back
+//   --only-automations  only the Automations section: one fixture, a stand-in
+//                       Main, and three automations of its own in --project,
+//                       titled "cow test automation": a script that prints a
+//                       line and fails, and two agent ones on the fixture
+//                       model, one that asks a question. Each is run once,
+//                       and deleted when the run finishes or fails; their two
+//                       run threads are archived with the fixtures. It never
+//                       changes, runs or deletes any other automation
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -227,6 +235,9 @@ const WAITING = ["wmain", "wkid", "wlink", "wother"];
 const SETTLING = ["smain", "sjob", "schat"];
 /** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
 const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
+const AUTOMATING = ["umain"];
+/** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
+const madeAutomations = [];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
 From then on, when you receive a message of the form "links A B C", where A, B and C are thread ids, reply with exactly these three lines, putting each id in its place:
 - first: @thread:A
@@ -249,7 +260,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -289,6 +300,7 @@ async function fixtures() {
   await make("ostray", { prompt: QUIET });
   await make("ohead", { prompt: QUIET });
   await make("okid", { prompt: QUIET, parent: ids.ohead });
+  await make("umain", { prompt: QUIET });
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -307,7 +319,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1499,6 +1511,169 @@ async function prepareOutside(ids) {
 }
 
 /** Outside Main: the section, its fold, the filter, A and u, a refusal, and bb cow status. */
+/** Delete the automations this run made, and only those. */
+async function removeAutomations() {
+  let deleted = 0;
+  const made = madeAutomations.splice(0);
+  for (const id of made) {
+    try {
+      await bb("automation", "delete", id, "--project", PROJECT, "--yes");
+      deleted += 1;
+    } catch (cause) {
+      console.error(`could not delete the automation ${id}`, cause);
+    }
+  }
+  if (made.length > 0) console.log(`deleted ${deleted} of ${made.length} automations this run made`);
+}
+
+async function automationChecks(page, ids, shot, chooseMain) {
+  const { umain } = ids;
+  const NAME = "cow test automation";
+  const make = async (name, args) => {
+    const made = await bb("automation", "create", "--project", PROJECT, "--name", `${NAME}: ${name}`, "--cron", "0 3 * * *", "--timezone", "UTC", ...args);
+    const id = made?.automation?.id ?? made?.id;
+    if (typeof id !== "string") throw new Error(`bb made an automation but did not say its id: ${JSON.stringify(made).slice(0, 300)}`);
+    madeAutomations.push(id);
+    return id;
+  };
+  let script, quiet, asks;
+  try {
+    script = await make("script", ["--script", "echo cow test automation ran; exit 3", "--interpreter", "sh"]);
+    quiet = await make("agent", ["--prompt", QUIET, "--provider", "claude-code", "--model", MODEL]);
+    asks = await make("asks", ["--prompt", ASKS, "--provider", "claude-code", "--model", MODEL]);
+  } catch (cause) {
+    check("bb lets the check make an automation of its own", false, String(cause).slice(0, 300));
+    return;
+  }
+  check("bb lets the check make an automation of its own", true);
+  for (const id of [script, quiet, asks]) await bb("automation", "run", id, "--project", PROJECT);
+  /** The newest run of an automation, once `ready` holds for it. */
+  const runOf = async (id, ready, label) => {
+    const deadline = Date.now() + 180_000;
+    for (;;) {
+      const answer = await bb("automation", "runs", id, "--project", PROJECT, "--limit", "5");
+      const runs = answer?.runs ?? answer ?? [];
+      const latest = runs[0];
+      if (latest && ready(latest)) return latest;
+      if (Date.now() > deadline) throw new Error(`the automation ${id} never ran: ${label}`);
+      await sleep(1000);
+    }
+  };
+  await runOf(script, (r) => r.status === "failed" || r.status === "succeeded", "the script finished");
+  const quietRun = (await runOf(quiet, (r) => typeof r.threadId === "string", "a run thread")).threadId;
+  const askRun = (await runOf(asks, (r) => typeof r.threadId === "string", "a run thread")).threadId;
+  // The run threads are fixtures too: archived when the run finishes, or fails.
+  ids.urunQuiet = inUse.urunQuiet = quietRun;
+  ids.urunAsks = inUse.urunAsks = askRun;
+  await waitForThread(quietRun, (t) => t.status === "idle", "idle");
+  await waitForThread(askRun, (t) => t.hasPendingInteraction, "asking");
+  check("an agent automation's run is a thread bb says the automations plugin started", (await api(`/threads?threadIds=${quietRun}&limit=1`))[0]?.originPluginId === "automations");
+
+  await page.eval(`sessionStorage.removeItem("cow:folds"); true`);
+  await chooseMain(page, umain);
+  await page.send("Page.bringToFront");
+  const heading = `document.querySelector('[data-cow-section="section:automations"]')`;
+  const row = (id) => `document.querySelector('[data-cow-automation="${id}"]')`;
+  const runLine = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const isCur = (expr) => `(${expr}?.classList.contains("cow-cur") === true)`;
+
+  // -- the section: after Archived and before Outside Main, folded, counted, plain --
+  await page.waitFor(`!!${heading} && Number(${heading}.querySelector("[data-cow-section-count]").dataset.cowSectionCount) >= 3`, { label: "the Automations heading, counting ours", timeout: 30_000 });
+  check(
+    "Automations is a section before Outside Main, folded by default, with its count, and its heading is plain",
+    (await page.eval(`${heading}.dataset.cowSectionFolded === ""`)) &&
+      !(await page.eval(`!!${row(script)}`)) &&
+      (await page.eval(`!${heading}.querySelector("[data-cow-heat]")`)) &&
+      (await page.eval(`(() => { const outside = document.querySelector('[data-cow-section="section:outside"]'); return !!(${heading}.compareDocumentPosition(outside) & Node.DOCUMENT_POSITION_FOLLOWING); })()`)),
+  );
+  // -- a run that asks is in the queue like any thread --
+  await page.waitFor(`!!document.querySelector('[data-cow-queue="${askRun}"]')`, { label: "the asking run in the queue", timeout: 30_000 });
+  check("a run that asks the person is in the queue", true);
+  check("a run that finished is not in the queue, nor under To settle", !(await page.eval(`!!document.querySelector('[data-cow-queue="${quietRun}"], [data-cow-settle][data-cow-line="${quietRun}"]')`)));
+
+  // -- / finds them while folded --
+  await page.key("/");
+  await page.waitFor(`document.activeElement?.dataset.cowFilter === ""`, { label: "the filter" });
+  await page.type(NAME);
+  await page.waitFor(`!!${row(script)} && !!${row(quiet)}`, { label: "automations found while folded", timeout: 10_000 });
+  check("/ finds automations while the section is folded", true);
+  await page.key("Escape");
+  await page.waitFor(`!${row(script)}`, { label: "the filter closed" });
+
+  // -- unfolded: one row per automation --
+  await page.eval(`${heading}.click(); true`);
+  await sleep(200);
+  await page.key("l");
+  await page.waitFor(`!!${row(script)}`, { label: "unfolded", timeout: 10_000 });
+  const scriptResult = await page.eval(`${row(script)}.querySelector("[data-cow-last-result]").textContent`);
+  check(
+    "a script automation's row: its next run in words, and its failed last run in the failed colour on the result only",
+    (await page.eval(`${row(script)}.dataset.cowLast`)) === "failed" &&
+      /^failed /.test(scriptResult) &&
+      (await page.eval(`${row(script)}.querySelector("[data-cow-last-result]").classList.contains("cow-s-failed")`)) &&
+      /^(in \d+[mh]|today \d\d:\d\d|tomorrow \d\d:\d\d)$/.test(await page.eval(`${row(script)}.querySelector("[data-cow-next-run]").textContent`)),
+    scriptResult,
+  );
+  check("an agent automation's row says its last run is done", (await page.eval(`${row(quiet)}.dataset.cowLast`)) === "done", await page.eval(`${row(quiet)}.querySelector("[data-cow-last-result]").textContent`));
+  await shot("automations");
+
+  // -- Enter on a script's row shows what it printed --
+  await page.eval(`${row(script)}.click(); true`);
+  await sleep(200);
+  check("an automation's row takes the cursor", await page.eval(isCur(row(script))));
+  await page.key("Enter");
+  await page.waitFor(`(document.querySelector("[data-cow-reader]")?.textContent ?? "").includes("cow test automation ran")`, { label: "the script's output in the reader", timeout: 10_000 });
+  check("Enter on a script automation shows its last run's output in the reader", true);
+  await page.key("q");
+  await page.waitFor(`!document.querySelector("[data-cow-reader]")`, { label: "the reader closed" });
+
+  // -- the runs fold under their automation --
+  await page.eval(`${row(quiet)}.click(); true`);
+  await sleep(200);
+  check("an automation's runs are folded under it", !(await page.eval(`!!${runLine(quietRun)}`)));
+  await page.key("l");
+  await page.waitFor(`!!${runLine(quietRun)}`, { label: "its run", timeout: 10_000 });
+  check(
+    "l shows its run thread as a cow line, plain",
+    (await page.eval(`${runLine(quietRun)}.dataset.cowRun`)) === `automation:${quiet}` && (await page.eval(`${runLine(quietRun)}.classList.contains("cow-run")`)),
+  );
+  await page.key("l");
+  await sleep(200);
+  check("l again steps onto the newest run", await page.eval(isCur(runLine(quietRun))));
+  await page.key("Enter");
+  await page.waitFor(`document.querySelector("[data-cow-pane]")?.dataset.cowPane === "${quietRun}"`, { label: "its chat" });
+  check("Enter on a run opens its chat in the pane", true);
+  for (let i = 0; i < 3 && (await page.eval(`!!document.querySelector("[data-cow-pane]")`)); i += 1) {
+    await page.key("Escape");
+    await sleep(200);
+  }
+  await page.key("p");
+  await sleep(300);
+  check("a run is not parked", !(await page.eval(`${runLine(quietRun)}?.dataset.cowState === "parked"`)));
+
+  // -- bb cow status --
+  const status = JSON.parse((await cow("status", "--main", umain, "--json")).stdout);
+  const ours = (status.automations ?? []).filter((entry) => [script, quiet, asks].includes(entry.id));
+  check(
+    "bb cow status --json lists the automations with their runs, and leaves their runs out of Outside Main",
+    ours.length === 3 &&
+      ours.find((entry) => entry.id === script)?.lastKind === "failed" &&
+      ours.find((entry) => entry.id === asks)?.runs?.[0]?.queue !== null &&
+      !status.outside.some((line) => line.id === quietRun || line.id === askRun),
+  );
+  check("bb cow status has an Automations heading", (await cow("status", "--main", umain)).stdout.includes("Automations: bb's scheduled runs"));
+
+  // -- e archives a run, as any line --
+  await page.eval(`${runLine(quietRun)}.click(); true`);
+  await sleep(200);
+  await page.key("e");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the archive prompt" });
+  await page.key("Enter");
+  await waitForThread(quietRun, (t) => t.archivedAt !== null, "archived", 20_000);
+  await page.waitFor(`!${runLine(quietRun)}`, { label: "the archived run gone from the section", timeout: 10_000 });
+  check("e archives a run, and it leaves the section", true);
+}
+
 async function outsideChecks(page, ids, shot, chooseMain) {
   const { omain, ostray, ohead, okid } = ids;
   await prepareOutside(ids);
@@ -3094,7 +3269,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -3117,6 +3292,7 @@ async function main() {
     else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
     else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
     else if (flag("only-outside")) await outsideChecks(page, ids, shot, chooseMain);
+    else if (flag("only-automations")) await automationChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
@@ -5331,6 +5507,7 @@ async function main() {
   page.close();
 
   // -- put things back --
+  await removeAutomations();
   await restoreSettings();
   await restoreReading();
   await restoreCaps();
@@ -5393,6 +5570,7 @@ main().catch(async (error) => {
   // Whatever went wrong, the next cow window must start where it did before. Recording that is signed.
   await ownKey().catch(() => undefined);
   await restoreStored().catch((cause) => console.error("could not restore the stored Mains", cause));
+  await removeAutomations().catch((cause) => console.error("could not delete the automations this run made", cause));
   await restoreSettings().catch((cause) => console.error("could not restore cow's checker settings", cause));
   await restoreReading().catch((cause) => console.error("could not put back what the reader checks changed", cause));
   await restoreCaps().catch((cause) => console.error("could not put back what the capability checks made", cause));

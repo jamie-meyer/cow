@@ -207,7 +207,7 @@ function Sheet({
             ? "binary"
             : kind === "markdown" && !isRaw
               ? "markdown"
-              : lineCount > PLAIN_ABOVE.lines || load.content.length > PLAIN_ABOVE.chars
+              : lineCount > PLAIN_ABOVE.lines || load.content.length > PLAIN_ABOVE.chars || target.kind === "text"
                 ? "plain"
                 : "source";
   const lineBased = mode === "source" || mode === "plain";

@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Outside Main](#outside-main) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -249,6 +249,62 @@ thought down, and may come back in months. Keeping is for those.
   clears it. It is not signed: see "What is not signed, method by method".
 - **The filter.** `/` finds kept lines even while the section is folded.
 
+## Automations
+
+Each run of a bb automation is a new thread with no parent, so the tree
+never reaches it. This section shows bb's automations, each with its recent
+runs.
+
+- **Where it comes from.** cow's server asks bb's bundled automations
+  plugin (`automations_overview`, then `automations_runs` for each enabled
+  automation, the latest 20) and gives the page and `bb cow status` the
+  same answer. Each call has a few seconds; a slow, failing, absent or
+  disabled plugin means no section, with no error, and nothing else on the
+  page waits for it. The page reads it when it opens, when a thread an
+  automation started appears or changes, when the section is unfolded, and
+  once a minute while it is unfolded: it cannot hear the plugin's own
+  signals.
+- **Where.** The **Automations** section, after Archived and before Outside
+  Main. Folded by default with its count; `h` and `l` on its heading fold
+  it and the window remembers. Its heading is never coloured.
+- **A row.** One per automation, enabled ones first, then by name: its
+  name; its bb project when that is not Main's; "a script" for a script
+  automation; when it runs next in plain words ("in 25m", "in 3h", "today
+  21:00", "tomorrow 09:00", "Mon 08:00", "paused", "ran once", "not
+  scheduled"), in this browser's time zone (the server's, for
+  `bb cow status`); and its last run's result with how long ago. For an
+  agent run the plugin's "succeeded" only means its turn ended, so the
+  result is what cow reads from the run's thread: done, failed, wants you,
+  or running. A failed result says the first line of the error, and that
+  result alone takes the failed colour.
+- **Its runs.** Under the row, folded by default (`l` on the row unfolds
+  them, `l` again steps onto the newest, `h` on a run goes back to the row;
+  the window remembers): its open run threads, newest first, at most five,
+  as ordinary cow lines with their state, time and what they last said,
+  then how many older ones are not listed. A run's thread that is under
+  Main (an automation that sends into an existing thread, say) stays in the
+  tree, and the row says "runs in a thread under Main". A paused
+  automation's runs are not read; its row shows what the plugin records of
+  its last run.
+- **The queue.** A run that needs you, because of bb's own question or
+  permission request or an open ask, is in the queue like any thread. A
+  finished run is not, whatever it came to, is not under To settle, and is
+  never coloured. The legend's counts are of the threads under Main only.
+- **Verbs.** `Enter` on a run opens its chat; on an agent automation's row,
+  its latest run's chat; on a script automation's row, what its last run
+  printed, and its error and exit code, in the reader (a script run has no
+  thread). `a`, `x`, `I` and `e` work on a run as on any line; `e` archives
+  it and it leaves the section. A run is not parked, kept, marked as a
+  project or waited on. There are no keys to pause, resume or run an
+  automation, and cow never moves a run under Main.
+- **Filtering.** `/` finds automations by name and runs by title or what
+  they said, while folded.
+- **Agents.** `bb cow status` has an "Automations" heading with the same
+  rows and runs, and `--json` an `automations` list: for each, `id`,
+  `name`, `project`, `paused`, `mode`, `next`, `nextRunAt`, `last`,
+  `lastKind`, `runs` (status lines), `older`, `moreRuns` and `intoTree`.
+  The heading is left out when the plugin did not answer.
+
 ## Outside Main
 
 The tree follows parent links down from Main, so an open thread with no
@@ -260,9 +316,10 @@ the parent of a thread's open children to none when it archives it).
   parent, and is not Main or a thread above Main, in any bb project. A
   thread with threads under it is one line, with how many open threads are
   under it. Forks are listed, marked "a fork". Threads a plugin started
-  (bb's `originPluginId`, an automation's run, say) are only counted, and so
-  are the Mains chosen for other projects: "3 started by plugins, not
-  listed".
+  (bb's `originPluginId`) are only counted, and so are the Mains chosen for
+  other projects: "3 started by plugins, not listed". An automation's runs
+  that the Automations section lists or counts are neither listed nor
+  counted here, so nothing is counted twice.
 - **Where.** The **Outside Main** section, at the bottom of the page after
   Archived. Folded by default with its count showing; `h` and `l` on its
   heading fold it and the window remembers, as for To settle and Kept.
@@ -1420,7 +1477,7 @@ bb cow help
 
 | Command | Does |
 | --- | --- |
-| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue |
+| `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, bb's automations with their recent runs (40 listed), and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue |
 | `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |

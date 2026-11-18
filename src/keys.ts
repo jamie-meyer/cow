@@ -51,7 +51,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "j k", does: "next, previous line (arrows work too); the heading, Main, is the line above the first" },
       { keys: "gg G", does: "the heading, the last line" },
-      { keys: "h l", does: "fold, unfold a group, or the To settle, Kept and Outside Main sections on their headings; on a member, h goes to its group's head or its section's heading (left, right arrows too)" },
+      { keys: "h l", does: "fold, unfold a group, or the To settle, Kept, Automations and Outside Main sections on their headings, or an automation's runs on its row; on a member, h goes to its group's head or its section's heading, and on a run to its automation (left, right arrows too)" },
       { keys: "Tab", does: "next entry in the queue of what waits on you (Shift+Tab previous)" },
       { keys: "1 to 9", does: "jump to that entry in the queue" },
       { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
@@ -61,7 +61,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
   {
     title: "Reading a thread and talking to it",
     keys: [
-      { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat" },
+      { keys: "Enter", does: "open the line's chat beside the overview, or switch the pane to it; it never types into the chat. On an automation's row, its latest run's chat, or for a script what its last run printed, in the reader" },
       { keys: "m", does: "open Main's chat the same way" },
       { keys: "; '", does: "scroll the open chat down, up a few lines, from the overview; : and \" by half a page; \\ goes to its newest message" },
       { keys: "i", does: "type in the chat that is open, wherever the cursor is: the only key that does; with no chat open, say something to Main" },

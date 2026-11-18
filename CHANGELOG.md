@@ -4,6 +4,39 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.5
+
+Each run of a bb automation is a new thread with no parent, so cow never
+showed it: runs of a nightly job or a daily check piled up out of sight,
+and were found only in bb's sidebar.
+
+- **Automations.** A new section, after Archived and before Outside Main,
+  folded by default with its count; `h` and `l` on its heading fold it, and
+  the window remembers. One row per automation: its name, its project when
+  that is not Main's, when it runs next in plain words ("in 3h", "tomorrow
+  09:00", "paused", "ran once"), and what its last run came to and how long
+  ago. For an agent automation that is what its run's thread came to, not
+  only that the turn ended. A failed run says the first line of its error,
+  in the failed colour; nothing else in the section is coloured.
+- **Its runs, folded under it.** `l` on an automation's row shows its
+  recent run threads as ordinary lines, newest first, at most five, with a
+  count of older ones. `Enter` on a run opens its chat; on the row, the
+  latest run's chat, or for a script automation what its last run printed,
+  in the reader. `e` archives a run as any line.
+- **A run that needs you is in your queue**, like any thread: bb's own
+  question or permission request, or an open ask. A finished run is not, is
+  not under To settle, and is never coloured.
+- **View only.** cow does not pause, resume, run or change an automation,
+  and never moves a run under Main. Runs listed here are no longer counted
+  again under Outside Main.
+- **`/`** finds automations and their runs while folded. **`bb cow status`**
+  has an "Automations" heading with the same rows, and `--json` an
+  `automations` list.
+- Without bb's automations plugin, or when it does not answer within a few
+  seconds, there is simply no section.
+
+After updating, reload any cow page that was open.
+
 ## 0.2.4
 
 Open threads with no parent were on no page: old work, threads started by
