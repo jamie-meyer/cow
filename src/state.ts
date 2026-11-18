@@ -127,6 +127,8 @@ export interface Attention {
    * one marked as a project. A project that is not archived is never done.
    */
   project?: boolean;
+  /** It is marked as a project, by the person or an agent: its replies are the person's whatever was moved under it. */
+  marked?: boolean;
   /** cow's record of the turn the person last saw, as a place in the event log. */
   seenSeq: number | null;
 }
@@ -397,7 +399,7 @@ function deriveLine(
   // seen it; so does any thread whose newest turn the person started.
   const reply =
     !asked && attention && thread.parentThreadId !== null && !busy
-      ? unreadReply(activity?.replies, talksTo(attention.head, activity?.replies), attention.seenSeq)
+      ? unreadReply(activity?.replies, talksTo(attention.head, activity?.replies, attention.marked === true), attention.seenSeq)
       : null;
   // A refused permission outranks a reply that is waiting to be read: the
   // reply keeps, and only the user can unblock the work.

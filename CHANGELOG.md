@@ -38,7 +38,8 @@ sidebar.
   that an agent started, and that then had a thread moved under it, became
   a group head, and a group head's every reply was yours: its final report
   sat in your queue and `bb cow archive` refused it. Now a thread that bb
-  has told a thread was moved under it, and that you have never written to,
+  has told a thread was moved under it, that you have never written to, and
+  that is not marked as a project,
   is read as the worker it is: idle, out of the queue. And the turn bb
   starts only to say a thread was moved under it or away ends in no reply
   for anyone.

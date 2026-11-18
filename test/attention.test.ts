@@ -272,6 +272,8 @@ test("a worker spawned by an agent, that hit a permission prompt, then was hande
   // "replied to you": a head's every reply was the person's.
   assert.notEqual(unreadReply(replies, true, null), null);
   assert.equal(talksTo(true, replies), false);
+  // Marked as a project, it is the person's all the same.
+  assert.equal(talksTo(true, replies, true), true);
   const d = state(child(), events, true);
   assert.notEqual(d.state, "wants");
   assert.equal(d.reply, undefined);

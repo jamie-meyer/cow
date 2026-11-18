@@ -122,7 +122,8 @@ reply is. It is addressed to you when:
   the turn. bb's own notice
   that a thread under it finished starts a turn too, and that turn ends in
   a reply for you. One exception: a thread that bb has told a thread was
-  moved under it, and that you have not written to in the turns cow reads,
+  moved under it, that you have not written to in the turns cow reads, and
+  that is not marked as a project,
   is a worker that was handed a thread, not one you talk to; its replies
   are yours only as a worker's are. It is still a project, so it reads idle
   rather than done; or

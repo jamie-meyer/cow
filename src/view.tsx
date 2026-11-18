@@ -2592,7 +2592,7 @@ export function CowPage() {
                 thread.id === mainId ? null : notes.get(thread.id),
                 parks.archives.get(thread.id)?.reason,
                 parks.dismissals.get(thread.id)?.throughSeq,
-                { head: projects.has(thread.id), project: projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
+                { head: projects.has(thread.id), project: projects.has(thread.id), marked: parks.projects.has(thread.id), seenSeq: parks.seen.get(thread.id)?.seq ?? null },
                 { asks: raised.asks.get(thread.id) ?? [], brief: raised.briefs.get(thread.id) ?? null, delivered: raised.delivered.get(thread.id), outside: caps.outside.get(thread.id) },
                 parks.waits.get(thread.id),
                 thread.id === mainId ? null : parks.keeps.get(thread.id),

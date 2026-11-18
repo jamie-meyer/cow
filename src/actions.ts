@@ -316,7 +316,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
         isRoot(thread.id) ? null : noted.parks[thread.id],
         noted.archives[thread.id]?.reason,
         noted.dismissals[thread.id]?.throughSeq,
-        { head: projects.has(thread.id), project: projects.has(thread.id) || isRoot(thread.id), seenSeq: noted.seen[thread.id]?.seq ?? null },
+        { head: projects.has(thread.id), project: projects.has(thread.id) || isRoot(thread.id), marked: noted.projects[thread.id] !== undefined, seenSeq: noted.seen[thread.id]?.seq ?? null },
         { asks: asks.get(thread.id) ?? [], brief: briefs.get(thread.id) ?? null, delivered: delivered.get(thread.id), outside: outside.get(thread.id) },
         noted.waits[thread.id],
         // The page's heading is never kept, as it is never parked.

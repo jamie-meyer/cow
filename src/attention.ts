@@ -124,9 +124,11 @@ export function findReplies(events: readonly unknown[]): Replies {
  * but one that bb has told a thread was moved under it, and that the person
  * has never written to in the turns read, is a worker that was handed a
  * thread: its replies go to whoever started its turns, as any worker's do.
+ * A thread marked as a project is never read that way.
  */
-export function talksTo(head: boolean, replies: Replies | undefined): boolean {
-  return head && !(replies?.adopted === true && replies.personSpokeSeq == null);
+export function talksTo(head: boolean, replies: Replies | undefined, marked = false): boolean {
+  // One marked as a project is the person's by their own word, whatever was moved under it.
+  return head && (marked || !(replies?.adopted === true && replies.personSpokeSeq == null));
 }
 
 /**
