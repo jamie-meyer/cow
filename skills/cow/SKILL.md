@@ -1,6 +1,6 @@
 ---
 name: cow
-description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), see or ask for a capability to write outside your workspace or run a command outside the sandbox (`bb cow caps`, `bb cow cap request`), record why a thread is parked or archived, say what is next for your thread or who other than the user it waits on (`bb cow wait`), and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when you need to write outside your workspace or run something bb's sandbox refuses, when cleaning up or setting aside threads you started, when you end a turn with work still planned or waiting on a reviewer, CI or someone else, or when asked what is waiting on the user.
+description: Ask the user a question so it stays in front of them (`bb cow ask`), report a finished job as a brief an independent checker audits (`bb cow brief submit`), see or ask for a capability to write outside your workspace or run a command outside the sandbox (`bb cow caps`, `bb cow cap request`), record why a thread is parked or archived and what a worker came to (`bb cow archive --outcome`, `bb cow outcome`), say what is next for your thread or who other than the user it waits on (`bb cow wait`), and read the overview of every thread under Main. Use whenever you have a question or decision for the user, when you finish a job, when you need to write outside your workspace or run something bb's sandbox refuses, when cleaning up or setting aside threads you started, when you end a turn with work still planned or waiting on a reviewer, CI or someone else, or when asked what is waiting on the user.
 ---
 
 # cow: notes on the threads you started
@@ -136,7 +136,9 @@ verified.
 
 ```sh
 bb cow status [--main <thread>] [--json]
-bb cow archive <thread> [--reason <text>]
+bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
+bb cow outcome <thread> done|partial|redone|dropped
+bb cow ledger [--days 14] [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -212,6 +214,41 @@ open ask: the user answers it, or the thread closes or withdraws it. Refused unl
 idle or failed (or blocked on a permission with no turn running), and refused
 while threads under it are still open: archive or park those first. bb
 archives the threads under it along with it.
+
+**When you archive a worker you dispatched, give its outcome, honestly**,
+with `--outcome`:
+
+| Outcome | Means |
+| --- | --- |
+| `done` | the work was used as it came back |
+| `partial` | some of it was used, or it needed a second worker |
+| `redone` | it was wrong, and you or another thread redid it |
+| `dropped` | it was not used |
+
+"done" means the work was used as it came back: not that the worker said it
+finished. If you had to steer it, fix its work or send another worker, it is
+`partial` or `redone`. The outcome goes in cow's ledger with the worker's
+model and effort, its time to first report and how often it was steered,
+which the user reads to choose models: a flattering outcome misleads them.
+A worker is a thread that finished a turn and is not a project, Main or an
+automation's run; for anything else `--outcome` is refused, and nothing is
+archived. If the user has already judged the outcome, yours is refused (and
+nothing is archived): archive without `--outcome`.
+
+### `bb cow outcome <thread> <outcome>`
+
+Sets or changes a worker's outcome, open or archived, under the same rule as
+archive. Use it when you learn later that work you called `done` had to be
+redone. Each change keeps who made it and when. An outcome the user set is
+never overwritten by a thread: you are refused, and told so.
+
+### `bb cow ledger [--days 14] [--json]`
+
+The rows of the workers archived through cow in that many days, and a summary
+by model and by dispatching thread: how many workers, how many of each
+outcome and how many unsaid, the median time to first report, the median
+steers before it, and how many the user judged. A group of fewer than 5 is
+counted, not compared. The ledger holds no titles, prompts or message text.
 
 ### `bb cow park <thread> --reason <text> [--pickup …]`
 

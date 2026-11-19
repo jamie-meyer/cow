@@ -231,7 +231,7 @@ const LEGEND: readonly { state: LineState; name?: string; short: string; long: s
   {
     state: "done",
     short: "finished, to settle",
-    long: "Finished: its newest turn was not one you started, so its reply went to the thread that started it. It waits under To settle for one decision of yours: archive it (e), park it (p), keep it (z), or carry on with it (Enter, then i). Lines with a reply you have not seen come first, marked unread, then the oldest. Its age turns warm after 3 days and red after 7; that never puts it in the queue. A finished member stays in its group, dimmed, for 2 days first. An archived line is listed under Archived for 2 days. A project is never done unless you archive it.",
+    long: "Finished: its newest turn was not one you started, so its reply went to the thread that started it. It waits under To settle for one decision of yours: archive it (e, which first asks what it came to: done, partial, redone or dropped, or Enter for unsaid), park it (p), keep it (z), or carry on with it (Enter, then i). o says what it came to without archiving it, and the line then reads “came to: …”; L shows the ledger of what workers came to. Lines with a reply you have not seen come first, marked unread, then the oldest. Its age turns warm after 3 days and red after 7; that never puts it in the queue. A finished member stays in its group, dimmed, for 2 days first. An archived line is listed under Archived for 2 days. A project is never done unless you archive it.",
   },
 ];
 

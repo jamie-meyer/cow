@@ -158,6 +158,20 @@ queue. Each line says what archiving it would leave behind: a reply you have
 not seen, an open ask, a brief not read. `h` on the heading folds the
 section, and the window remembers.
 
+**The ledger.** When you archive a finished worker, `e` first asks what it
+came to: `1` done (the work was used as it came back), `2` partial (some of
+it was used, or it needed a second worker), `3` redone (it was wrong, and
+you or another thread redid it), `4` dropped (it was not used), or `Enter`
+to leave it unsaid. `o` under Archived or To settle sets or changes it
+later, signed as yours; an agent that archives a worker it dispatched gives
+one with `bb cow archive --outcome`, and can never overwrite yours. Each
+worker archived through cow gets one row in cow's storage: its model and
+effort, its time to first report, how many times you and other threads
+steered it before that report, its turns, its outcome and who judged it.
+No titles, prompts or message text. `L` shows the last 14 days by model
+and by dispatching thread; `bb cow ledger` gives the same, and the rows.
+Details are under [The ledger](docs/reference.md#the-ledger).
+
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
 goes to the Kept section, folded by default, never coloured, with no
@@ -298,13 +312,20 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `p` | park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing |
 | `r` | resume a parked line: back into the tree |
-| `e` | archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back |
+| `e` | archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On a finished worker (done, waiting or kept; not a project, Main or an automation's run) it first asks what it came to: 1 done, 2 partial, 3 redone, 4 dropped, or Enter to leave it unsaid. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back |
 | `z` | keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept |
 | `x` | stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it |
 | `A` | on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn |
 | `u` | undo the last park, resume, archive, dismissal, mark as seen, project mark, wait, keep or move under Main (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone |
 | `P` | mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree |
 | `J` `K` | move a not-started item down, up its list |
+
+**What finished work came to**
+
+| Key | Does |
+| --- | --- |
+| `o` | on a line under Archived or To settle, say what the worker came to, or change it: 1 done (the work was used as it came back), 2 partial (some of it was used, or it needed a second worker), 3 redone (it was wrong, and you or another thread redid it), 4 dropped (it was not used); any other key cancels. Signed as yours: no thread can overwrite it |
+| `L` | the ledger over the page: for the last 14 days, by model and by dispatching thread, how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. j k scroll, q or Esc closes |
 
 **Capabilities and this page's key**
 
@@ -367,7 +388,9 @@ bb cow todo add|done|rm|list <thread> ...        # work not started
 bb cow project <thread> [--clear]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
-bb cow archive <thread> [--reason <text>]
+bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
+bb cow outcome <thread> done|partial|redone|dropped   # what a worker came to, open or archived
+bb cow ledger [--days 14] [--json]               # what finished workers came to
 bb cow help
 ```
 
@@ -395,7 +418,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, and when and by whom it was archived; and each judgement of its outcome. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
 | the same database, table `plugin_settings` | the four settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -524,7 +547,12 @@ An agent **can**, through cow:
 - order a new check of a brief, which costs a model run. Since 0.2.1 that
   cannot take a brief out of your queue: disputes you have not read keep it
   there whatever the new check says;
-- read everything: the overview, asks, briefs, capabilities and the log;
+- say what a worker came to, for the ledger (`bb cow archive --outcome`,
+  `bb cow outcome`). The ledger records that thread as the judge, and an
+  outcome you set is refused. Run with the variable that names its thread
+  cleared, it is taken for you, as every command is: only an outcome set on
+  the page is certainly yours (it is signed, and in the log);
+- read everything: the overview, asks, briefs, capabilities, the ledger and the log;
 - ask for a key to be enrolled, which shows in your queue under whatever
   name the caller gave and does nothing until an enrolled page approves it;
 - do the unsigned things above to any thread, not only its own, by calling
@@ -539,7 +567,7 @@ An agent **cannot**, through cow: make, delete, restore or acknowledge a
 capability; decide a permission request; answer an ask or close one as you;
 send a message as you; mark a reply as seen, dismiss a refused permission
 or mark a brief as read, or take any of those back; record which thread is
-Main; approve, refuse or remove a key. Those are one method, `signed`, which
+Main; judge a worker's outcome on the page; approve, refuse or remove a key. Those are one method, `signed`, which
 acts only on a call signed by an enrolled key over the action, all of its
 arguments, a time and a nonce. A call signed more than two minutes ago,
 signed before cow last started, or already used, is refused. Each one done

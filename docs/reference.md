@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -208,9 +208,10 @@ age, and none is in the queue for being old.
   open ask; a brief you have not read. cow does not look at git for this:
   whether its branch is merged is not shown, because bb does not give a
   plugin a thread's branch state.
-- **Verbs.** `e` archives it with a reason, `p` parks it, `z` keeps it,
-  `Enter` opens its chat and `i` types in it to carry on; `Space` marks it
-  seen. The verb bar shows them.
+- **Verbs.** `e` archives it with a reason (a worker is first asked what it
+  came to: see "The ledger"), `p` parks it, `z` keeps it, `Enter` opens its
+  chat and `i` types in it to carry on; `Space` marks it seen; `o` says what
+  a worker came to without archiving it. The verb bar shows them.
 - **Folding.** The heading is a cursor stop: `h` on it folds the section,
   `l` unfolds it, and `h` on a line in it goes to the heading. Folded, it
   still shows its count. The window remembers, as it does a group's fold.
@@ -1205,6 +1206,16 @@ not signed: see "What is not signed, method by method".
 empty line it archives without a reason. `Esc` cancels. Dropping parked work
 that came back (`x`) asks the same way before it stops and archives it.
 
+On a finished worker, `e` first asks what it came to, one key: `1` done,
+`2` partial, `3` redone, `4` dropped, each with its meaning on the status
+line, or `Enter` to leave it unsaid; `Esc` cancels. Then the reason, as
+above. A finished worker is a line that is done, waiting or kept, and not a
+project, Main or an automation's run; a failed line, a project, an idle
+line and a line in Outside Main are not asked (`o` under Archived still
+sets one for a worker). The outcome is saved after the archive, as a
+signed call: on a page that is not enrolled the thread is archived and the
+status line says the outcome was not saved. See "The ledger".
+
 The reason is cow's note on the thread. It shows on the thread's line under
 Archived ("archived: …"), where an archived line is listed for two days,
 and then leaves the page. An archived thread waits on you for nothing, an open ask
@@ -1218,6 +1229,83 @@ permission ("bb is asking it a question"). A thread outside Main is archived
 by the person or by Main only (see "Outside Main"). If you undo the archive the note stays on the thread,
 so archiving it again offers the same reason; clear the line to archive
 without one.
+
+## The ledger
+
+When a worker is archived through cow, cow writes one row for it in its own
+storage, so the row outlives the thread. That makes a ledger of what
+finished work came to, for choosing models and seeing what keeps needing
+help.
+
+**Outcomes.** One of four, each with one line of meaning wherever it is
+chosen:
+
+| Outcome | Means |
+| --- | --- |
+| `done` | the work was used as it came back |
+| `partial` | some of it was used, or it needed a second worker |
+| `redone` | it was wrong, and you or another thread redid it |
+| `dropped` | it was not used |
+
+It is never required. It is given by you, on the page (`e` on a finished
+worker, or `o` on a line under Archived or To settle, which sets or changes
+it; any other key cancels), or by an agent: `bb cow archive <thread>
+--outcome <one>`, or `bb cow outcome <thread> <one>`, which works on an
+open thread and an archived one, under the same rule of who may as
+`archive`. The skill tells an agent that archives a worker it dispatched to
+give the outcome honestly, and that "done" means the work was used as it
+came back. An outcome can be changed later, since "redone" is often only
+known afterwards; each change keeps who made it and when, and the row shows
+the latest.
+
+**Who judged.** Each outcome records who judged it: you (a signed call from
+the page, or a command run outside any thread) or a thread, by its id. An
+outcome you set is never overwritten by a thread: a thread that tries is
+refused, and told that you judged it. `archive --outcome` is then refused
+as a whole, and nothing is archived. You can change anyone's. On the page
+it is a signed call (`outcome_set`), written to cow's log under the key
+that signed it.
+
+**A worker** is a thread that finished a turn and is not a project, a Main
+or an automation's run. Anything else gets no row, and an outcome for it
+is refused.
+
+**The row.** Written when the worker is archived through cow (`e`, `x` on
+parked work that came back, `bb cow archive`), whether or not an outcome was
+given, and updated when the outcome changes. It holds, and only holds:
+
+- the thread's id, its bb project's id, and the id of the thread that
+  dispatched it (its parent when it was archived);
+- the model and the reasoning effort its first prompt asked for, as bb
+  records them on that prompt (`execution.model` and
+  `execution.reasoningLevel` of its first `client/turn/requested` event);
+  null when bb recorded none;
+- when its first turn started and when its first report ended (the end of
+  its first turn that finished normally), and the time between;
+- the steers before that report: messages sent into the thread after its
+  first prompt and before the report ended, counted apart for you and for
+  other threads (bb's own notices are not steers);
+- how many turns it ran in all;
+- the outcome, who judged it, when, and how many times it was changed after
+  it was first given;
+- when it was archived, and by whom: you or a thread's id.
+
+**It holds no title, no prompt, no message text and no reason.** Threads
+archived before 0.2.11, or with bb's own `bb thread archive`, have no row.
+Undoing an archive leaves the row; archiving the thread again writes it
+anew. The threads bb archives along with a worker get no row of their own.
+
+**Reading it.** `bb cow ledger [--days 14] [--json]` lists the rows archived
+in the window and a summary, by model and by dispatching thread: how many
+workers, how many of each outcome and how many unsaid, the median time to
+first report, the median steers before it, and how many you judged. A group
+of fewer than 5 workers shows its counts and says it is too small to
+compare, with no percentages. `L` on the page opens the same summary for
+the last 14 days over the page, with the latest 20 rows (the page adds each
+thread's title as bb has it now; the row holds none). `j` `k` scroll it, `q`
+or `Esc` closes it. `bb cow status` shows an archived worker's outcome at
+the end of its line: `[outcome: done, judged by the person]`; the page
+shows "came to: done" on a line under Archived or To settle.
 
 ## Undo
 
@@ -1534,7 +1622,8 @@ The page proves it is yours with a signature.
   marking a reply as seen and taking that back; dismissing what bb refused
   a thread and taking that back; marking a brief as read; recording which
   thread is a project's Main, which is where a new window starts; deleting
-  one of bb's automations; and approving, refusing or removing a key. Opening a chat or a brief on the
+  one of bb's automations; saying what a worker came to, for the ledger;
+  and approving, refusing or removing a key. Opening a chat or a brief on the
   page, which marks a reply seen or a brief read as a side effect, signs
   that mark the same way. The list is `PERSON_ACTIONS` in
   `src/signing/envelope.ts`. None of these is a method of cow's interface.
@@ -1610,13 +1699,13 @@ agent and stop no other.
 
 | Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
 | --- | --- | --- | --- |
-| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read`, `ledger_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card, the ledger | yes: `bb cow status`, `asks`, `brief show`, `caps`, `ledger` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
 | `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, except their open asks. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask, and those of threads under it, stay in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. This method leaves no trace in the queue or the log, unlike `bb cow park`. Removing a note only puts a line back |
 | `keep_set` | writes or removes a thread's keep note, with none of the page's checks | the page's `z`; there is no command for it | **keeping takes a line out of your queue** as parking does, and with no date to bring it back. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does what threads under it waited on you for, except their open asks. Still visible: the line is in the Kept section with the words given and how long it has been kept, `bb cow status` lists it under Kept, its own open ask stays in the queue, and it comes off the shelf when the thread starts a new turn. Keeping also takes a park note off. Removing a note only puts a line back |
 | bb's own `threads.update` (no method of cow's) | moves a thread under another, or out from under it | the page's `A`, which moves a thread from Outside Main under Main; an agent uses `bb thread update --parent-thread` | **moving a thread out from under Main takes it, and everything under it, out of your queue**, and off the tree. Still visible: a thread left with no parent is listed under Outside Main, on the page and in `bb cow status`, and one moved under such a thread is counted on its line there. Moving one under Main only adds to the page; bb starts a turn of Main's to tell it. cow cannot sign this: it is bb's |
-| `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Archived with its reason for two days. cow could not stop this by signing it: `bb thread archive` is bb's and does the same |
+| `thread_archive` | archives a thread in bb with a reason, and stops its turn first when asked to; a worker gets its ledger row, archived by you | the page's `e` and `x`; an agent uses `bb cow archive`, or bb's own `bb thread archive` | **archiving takes a line out of your queue**, with whatever it waited on you for, an open ask included, and bb archives the threads under it too. Still visible: the line is listed under Archived with its reason for two days. cow could not stop this by signing it: `bb thread archive` is bb's and does the same. The ledger row it writes says you archived it; it sets no outcome |
 | `archive_note_set` | sets or forgets the reason kept for an archived thread | the page, when an archive is undone or redone | the reason shown under Archived can be changed or removed. It archives nothing and moves nothing |
 | `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
 | `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it moves it, once finished, from idle in the tree to done under To settle. Whose its replies are does not change: that is decided by who started each turn, for a project as for any thread |
@@ -1644,7 +1733,9 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `next`, `todo add`, `todo done`, `todo rm` | the thread's own line of what is next, and its list of work not started | the next-move column of a line that waits on nothing shows the agent's words, marked as its own. A line with a note or a list stays in the tree instead of going to To settle. Nothing leaves the queue |
 | `project`, `project --clear` | as `project_set` above | as `project_set` |
 | `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date. Run in a thread on a thread that was waiting on you, a notice says which thread parked it, why and when until you acknowledge it, and the log keeps it |
-| `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
+| `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main. With `--outcome`, also as `outcome` below | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
+| `outcome` | says what a worker came to, open or archived, under `archive`'s rule of who may | nothing leaves the queue. Run in a thread, the ledger records that thread as the judge, and an outcome you set is refused. A caller that names no thread is taken for you, as everywhere here: its outcome is recorded as yours, and only the signed `outcome_set` is certainly yours |
+| `ledger` | reads the ledger | nothing |
 
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked, kept or archived.** Nothing else of cow's that is
@@ -1745,7 +1836,9 @@ code, and the page shows what they change at once.
 
 ```sh
 bb cow status [--main <thread>] [--json]
-bb cow archive <thread> [--reason <text>]
+bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
+bb cow outcome <thread> done|partial|redone|dropped
+bb cow ledger [--days 14] [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -1761,7 +1854,9 @@ bb cow help
 | Command | Does |
 | --- | --- |
 | `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, bb's automations with their recent runs (40 listed), and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue. An ask of a thread under a parked or kept thread is in the queue, ending "under parked “…”". After the queue, when there are any, "Taken out of the user's queue by an agent, not yet acknowledged by the user" lists the traces about threads under this Main (see "What an agent took out of your queue") |
-| `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open |
+| `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open. `--outcome` says what a worker came to (see "The ledger") |
+| `outcome` | sets or changes what a worker came to, open or archived; never over an outcome you set |
+| `ledger` | the ledger's rows and its summary by model and by dispatching thread, for `--days` (14 by default) |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
 | `next` | sets, or with `--clear` removes, the one line that says what happens next for a thread |

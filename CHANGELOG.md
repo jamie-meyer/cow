@@ -4,6 +4,42 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.11
+
+What each finished worker came to, and a ledger of it.
+
+- **An outcome when you archive a worker.** `e` on a finished worker (a line
+  that is done, waiting or kept, and not a project, Main or an automation's
+  run) first asks what it came to: `1` done (the work was used as it came
+  back), `2` partial (some of it was used, or it needed a second worker),
+  `3` redone (it was wrong, and you or another thread redid it), `4`
+  dropped (it was not used). `Enter` leaves it unsaid; then the reason, as
+  before. One extra key, never required.
+- **Changing it later.** "Redone" is often only known afterwards: `o` on a
+  line under Archived or To settle sets or changes the outcome, and the line
+  reads "came to: …". It is signed by your page's key and written to cow's
+  log, like everything else only you may do.
+- **Agents give one too.** `bb cow archive <thread> --outcome <one>` when a
+  thread archives a worker it dispatched, and `bb cow outcome <thread>
+  <one>` to change it, on an open or an archived thread. The skill tells
+  agents to be honest, and that "done" means the work was used as it came
+  back. Every outcome records who judged it, you or a thread, and each
+  change keeps who made it and when. A thread can never overwrite an outcome
+  you set: it is refused, and told so.
+- **A ledger.** Each worker archived through cow gets one row in cow's own
+  storage, kept after the thread is gone: its model and reasoning effort,
+  its time to first report, how many times you and other threads steered it
+  before that report, how many turns it ran, its outcome and who judged it,
+  and who archived it. No titles, prompts, message text or reasons.
+  Threads archived before this version have no row.
+- **Reading it.** `L` opens a sheet with the last 14 days by model and by
+  dispatching thread: how many workers, how many of each outcome and how
+  many unsaid, the median time to first report and steers before it, and how
+  many you judged; then the latest rows. `q` or `Esc` closes it. `bb cow
+  ledger [--days 14] [--json]` gives the same with every row. A group of
+  fewer than 5 workers is counted, and said to be too small to compare.
+  `bb cow status` shows an archived worker's outcome at the end of its line.
+
 ## 0.2.10
 
 A card with what bb and other plugins know about a thread, a way to delete
