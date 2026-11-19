@@ -88,7 +88,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
       { keys: "r", does: "resume a parked line: back into the tree" },
-      { keys: "e", does: "archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter" },
+      { keys: "e", does: "archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back" },
       { keys: "z", does: "keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept" },
       { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
       { keys: "A", does: "on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn" },

@@ -193,6 +193,16 @@ export function nextRunText(automation: AutomationRecord, now: number, timeZone?
   return `${then.date} ${then.time}`;
 }
 
+/**
+ * What `e` asks before it deletes an automation: its name, whether it is
+ * enabled and when it would run next, that its past runs stay, and that it
+ * cannot be undone.
+ */
+export function deleteConfirmText(automation: AutomationRecord, now: number, timeZone?: string): string {
+  const state = !automation.enabled ? "it is paused" : automation.nextRunAt === null ? `it is enabled, ${nextRunText(automation, now, timeZone)}` : `it is enabled and would next run ${nextRunText(automation, now, timeZone)}`;
+  return `delete the automation “${automation.name}”? ${state} · its past run threads are not deleted · this cannot be undone · y deletes it, any other key cancels`;
+}
+
 /** What an automation's last run came to. */
 export interface LastResult {
   kind: "never" | "running" | "done" | "succeeded" | "wants" | "failed" | "skipped";

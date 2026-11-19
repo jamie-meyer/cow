@@ -79,8 +79,9 @@
 //                       line and fails, and two agent ones on the fixture
 //                       model, one that asks a question. Each is run once,
 //                       and deleted when the run finishes or fails; their two
-//                       run threads are archived with the fixtures. It never
-//                       changes, runs or deletes any other automation
+//                       run threads are archived with the fixtures. A fourth,
+//                       never run, is deleted through the page with e. It
+//                       never changes, runs or deletes any other automation
 //   --only-traces       only what an agent takes out of the queue (parking
 //                       what waits on the person, withdrawing an ask,
 //                       closing one as answered) and asks under a parked
@@ -2056,6 +2057,62 @@ async function automationChecks(page, ids, shot, chooseMain) {
   await waitForThread(quietRun, (t) => t.archivedAt !== null, "archived", 20_000);
   await page.waitFor(`!${runLine(quietRun)}`, { label: "the archived run gone from the section", timeout: 10_000 });
   check("e archives a run, and it leaves the section", true);
+
+  // -- e on an automation's row deletes it, after a confirmation, as a signed call --
+  let doomed;
+  try {
+    doomed = await make("to delete", ["--prompt", QUIET, "--provider", "claude-code", "--model", MODEL]);
+  } catch (cause) {
+    check("bb lets the check make an automation to delete", false, String(cause).slice(0, 300));
+    return;
+  }
+  const exists = async (id) => {
+    const answer = await bb("automation", "list", "--project", PROJECT);
+    const list = answer?.automations ?? answer ?? [];
+    return list.some((entry) => entry.id === id);
+  };
+  // The page reads automations as their threads change, or once a minute: a reload reads them now.
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!${heading}`, { label: "the page again", timeout: 60_000 });
+  await page.send("Page.bringToFront");
+  if (!(await page.eval(`!!${row(doomed)}`))) {
+    await page.eval(`${heading}.click(); true`);
+    await sleep(200);
+    await page.key("l");
+  }
+  await page.waitFor(`!!${row(doomed)}`, { label: "the automation to delete", timeout: 20_000 });
+  await page.eval(`${row(doomed)}.click(); true`);
+  await sleep(200);
+  check("the verb bar shows e delete on an automation's row", await page.eval(`(document.querySelector('[data-cow-verb="delete"]')?.textContent ?? "").replace(/\\s+/g, " ").includes("delete")`));
+  const confirmText = `(document.querySelector("[data-cow-confirm]")?.textContent ?? "")`;
+  await page.key("e");
+  await page.waitFor(`${confirmText}.length > 0`, { label: "the confirmation" });
+  const asked = await page.eval(confirmText);
+  check(
+    "e asks first: it names the automation, says it is enabled and when it would next run, that its past runs stay, and that it cannot be undone",
+    asked.includes(`“${NAME}: to delete”`) && /enabled and would next run (in \d+[mh]|today|tomorrow)/.test(asked) && asked.includes("past run threads are not deleted") && asked.includes("cannot be undone"),
+    asked,
+  );
+  await page.key("n");
+  await sleep(1500);
+  check("any other key than y cancels, and it is still there", (await page.eval(`!document.querySelector("[data-cow-confirm]")`)) && (await exists(doomed)) && (await page.eval(`!!${row(doomed)}`)));
+  await page.key("e");
+  await page.waitFor(`${confirmText}.length > 0`, { label: "the confirmation again" });
+  await page.key("y");
+  await waitUntil(async () => !(await exists(doomed)), "the automation to be deleted");
+  check("y deletes it, through the automations plugin", true);
+  madeAutomations.splice(madeAutomations.indexOf(doomed), 1);
+  await page.waitFor(`!${row(doomed)}`, { label: "its row gone", timeout: 20_000 });
+  check("its row leaves the section", true);
+  const message = await page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
+  check("the message line says it is deleted and that u cannot bring it back", message.includes("deleted the automation") && message.includes("u cannot bring it back"), message);
+  const logged = await rpc("caps_log", { limit: 20 });
+  const entries = logged?.entries ?? logged ?? [];
+  check("the delete is in cow's log, under the key that signed it", JSON.stringify(entries).includes(doomed) && JSON.stringify(entries).includes("automation-deleted"));
+  const unsigned = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/automation_delete`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: PROJECT, automationId: quiet, name: "x" }) }).then((r) => r.json());
+  check("there is no unsigned method for it", unsigned.ok === false && (await exists(quiet)));
+  const forged = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "automation_delete", args: { projectId: PROJECT, automationId: quiet, name: "x" }, at: Date.now(), nonce: "x".repeat(20), key: "0000-0000-0000-0000", sig: "AAAA" }) }).then((r) => r.json());
+  check("an unsigned call to delete one is refused, and nothing is deleted", forged.ok === false && (await exists(quiet)));
 }
 
 async function outsideChecks(page, ids, shot, chooseMain) {

@@ -24,6 +24,7 @@ export interface ActionResult {
   dismissal_set: null;
   brief_read: null;
   main_choose: { mains: Record<string, string>; currentProjectId: string | null };
+  automation_delete: null;
   key_approve: EnrolledKey;
   key_refuse: null;
   key_remove: null;

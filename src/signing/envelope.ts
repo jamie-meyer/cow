@@ -44,6 +44,8 @@ export const PERSON_ACTIONS = [
    * does, or a new window could be opened on a tree that is not the person's.
    */
   "main_choose",
+  /** Delete one of bb's automations, through the automations plugin. Its past run threads stay; nothing undoes it. */
+  "automation_delete",
   /** Approve or refuse a page that asks for its key to be enrolled; remove an enrolled key. */
   "key_approve",
   "key_refuse",

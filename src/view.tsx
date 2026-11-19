@@ -1455,8 +1455,11 @@ function OverviewScreen({
   stay,
   projectNames,
   onAutomationsOpen,
+  onAutomationsChanged,
   chat,
 }: {
+  /** Read bb's automations again now: after one was deleted here. */
+  onAutomationsChanged: () => void;
   /** The thread whose chat the page's address says is open beside the list, or null. */
   chat: string | null;
   /** bb's projects by id, for a line outside Main in another project. */
@@ -1868,6 +1871,11 @@ function OverviewScreen({
     sendAs: async (threadId, text) => {
       await signer.call("send", { threadId, text });
     },
+    deleteAutomation: async (group) => {
+      const { automation } = group;
+      await signer.call("automation_delete", { projectId: automation.projectId, automationId: automation.id, name: automation.name });
+      onAutomationsChanged();
+    },
     startCap: (origin, proposal) => capSteps.start(origin, proposal),
     openBrief: (id) => sheetRef.current?.open(id),
     now,
@@ -2141,6 +2149,8 @@ function OverviewScreen({
           if (command.verb === "stop") return verbs.removeTodo(selectedTodo);
           return setMessage("that is work not started yet, not a thread: x removes it, J and K move it");
         }
+        // On an automation's row, e deletes the automation; its runs' lines are archived as any thread's.
+        if (selectedAutomation && command.verb === "archive") return verbs.startDeleteAutomation(selectedAutomation);
         if (selectedOutside) {
           if (command.verb === "archive") return verbs.startArchiveOutside(selectedOutside);
           return setMessage(`cannot ${command.verb}: it is outside Main · A brings it under Main, and e archives it`);
@@ -2809,7 +2819,10 @@ function OverviewScreen({
                     })()}
                   </>
                 ) : selectedAutomation ? (
-                  <Verb keys="l" label={selectedAutomation.runs.length === 0 ? "no runs to show" : "its runs"} off={selectedAutomation.runs.length === 0} onRun={() => run({ kind: "fold", key: "l" })} />
+                  <>
+                    <Verb keys="l" label={selectedAutomation.runs.length === 0 ? "no runs to show" : "its runs"} off={selectedAutomation.runs.length === 0} onRun={() => run({ kind: "fold", key: "l" })} />
+                    <Verb keys="e" label="delete" name="delete" why="delete this automation: y confirms; its past runs stay, and it cannot be undone" onRun={() => verbs.startDeleteAutomation(selectedAutomation)} />
+                  </>
                 ) : (
                   (["answer", "brief", "park", "resume", "stop", "archive"] as const).filter((verb) => !(capabilityFirst && verb === "answer")).map(verbButton)
                 )}
@@ -2917,7 +2930,7 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
   const mainId = mainGone ? null : storedMainId;
   // bb's automations: read once, then again as their threads change and while their section is open.
   const [automationsOpen, setAutomationsOpen] = useState(false);
-  const automations = useAutomations(snapshot.threads, automationsOpen);
+  const { read: automations, reload: reloadAutomations } = useAutomations(snapshot.threads, automationsOpen);
   const runIds = useMemo(() => runThreadIds(automations), [automations]);
 
   const underMain = useMemo(
@@ -3079,6 +3092,7 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
       stay={stay}
       projectNames={projectNames}
       onAutomationsOpen={setAutomationsOpen}
+      onAutomationsChanged={reloadAutomations}
       chat={chatOf(subPath)}
     />
   );

@@ -183,9 +183,10 @@ when that is not Main's, when it runs next ("in 3h", "tomorrow 09:00",
 "paused") and what its last run came to, with the first line of the error
 when it failed. Its recent run threads fold under it as ordinary lines. A
 run that asks you something is in your queue like any thread; a finished
-one is not, and is never coloured. `e` archives a run. It is a view: cow
-does not pause, run or change automations. Without bb's automations plugin
-there is no section.
+one is not, and is never coloured. `e` archives a run. On an automation's
+row, `e` deletes the automation, once you confirm it with `y`; its past run
+threads stay, and nothing undoes it. cow does not pause, run or change
+automations. Without bb's automations plugin there is no section.
 
 **Waiting on someone else.** A thread whose next move is a reviewer's, CI's
 or anyone's but yours says so with `bb cow wait`, or you do with `w`. Its
@@ -231,7 +232,8 @@ new one sits in your queue until you acknowledge it.
 plugin's interface to any local process. So everything only you may do
 (answering an ask, deciding a permission request, sending a message as you,
 making or deleting a capability, approving a key, and taking a line out of
-your queue by marking a reply seen, dismissing a refusal or reading a brief)
+your queue by marking a reply seen, dismissing a refusal or reading a brief,
+and deleting an automation)
 is accepted only when it is signed by a key your browser holds. The first page to open cow is enrolled;
 any other browser asks and is approved from an enrolled one. This has limits,
 stated in [What cow stores and sends](#what-cow-stores-and-sends).
@@ -296,7 +298,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | `p` | park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing |
 | `r` | resume a parked line: back into the tree |
-| `e` | archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter |
+| `e` | archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back |
 | `z` | keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept |
 | `x` | stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it |
 | `A` | on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn |
@@ -460,10 +462,17 @@ show its two one-time notes. Those are requests to bb.
 cow's server reads bb's automations through the methods of bb's own
 automations plugin, `automations_overview` and `automations_runs`: each
 automation and the latest 20 runs of each enabled one, including what a
-script run printed. That is a request to bb too. It only reads: cow never
-pauses, runs, changes or deletes an automation. When the plugin is absent,
-disabled, or does not answer within a few seconds, the page has no
-Automations section and nothing else changes.
+script run printed. That is a request to bb too. cow never pauses, runs or
+changes an automation; it deletes one only when you press `e` on its row
+and confirm, through the plugin's `automations_delete`, as a signed call.
+When the plugin is absent, disabled, or does not answer within a few
+seconds, the page has no Automations section and nothing else changes.
+
+For the context card, cow's server asks bb's own git and pull-request
+plugins about the selected thread's environment, and asks each plugin that
+offers `cow_card` about the selected thread, by its id. Those are requests
+to bb and to plugins running in it; what a plugin does with the thread's id
+is up to that plugin.
 
 ### What an agent can and cannot do through cow
 
@@ -674,7 +683,8 @@ uses one that is not listed.
 
 **Another plugin's methods.** The Automations section reads bb's bundled
 automations plugin through `automations_overview` and `automations_runs`,
-as that plugin answers in bb 0.49. Its answers are read without trusting
+and deletes one through `automations_delete`, as that plugin answers in bb
+0.49. Its answers are read without trusting
 their shape; if a newer bb changes them, the section shows less or
 disappears, and the rest of the page is unaffected. The context card reads
 bb's bundled git plugin (`status`) and GitHub pull-request plugin

@@ -23,7 +23,7 @@ export function runThreadsKey(threads: readonly ThreadFacts[]): string {
     .join(" ");
 }
 
-export function useAutomations(threads: readonly ThreadFacts[], open: boolean): AutomationsRead {
+export function useAutomations(threads: readonly ThreadFacts[], open: boolean): { read: AutomationsRead; reload: () => void } {
   const rpc = useRpc<typeof automationsRpcContract>();
   const [read, setRead] = useState<AutomationsRead>(NO_AUTOMATIONS);
   const request = useRef(0);
@@ -58,5 +58,5 @@ export function useAutomations(threads: readonly ThreadFacts[], open: boolean): 
     return () => clearInterval(timer);
   }, [reload, open]);
 
-  return read;
+  return { read, reload };
 }

@@ -52,6 +52,8 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("brief-read"), threadId: z.string(), version: z.number(), read: z.boolean() }),
   /** A thread was recorded as its project's Main, where a new window starts; a null thread: the record was forgotten. */
   z.object({ kind: z.literal("main-chosen"), projectId: z.string(), threadId: z.string().nullable() }),
+  /** One of bb's automations was deleted from cow's page, through the automations plugin. `name` is what the confirmation named. */
+  z.object({ kind: z.literal("automation-deleted"), projectId: z.string(), automationId: z.string(), name: z.string() }),
   /** A page's key was enrolled: the first one by itself, any later one by a page already enrolled. */
   z.object({ kind: z.literal("key-enrolled"), fingerprint: z.string(), how: z.enum(["first", "approved"]), label: z.string() }),
   /** A page asked for its key to be enrolled. Anyone can ask; only an enrolled page can approve. */
@@ -100,7 +102,7 @@ export function nextEntry(last: Pick<LogEntry, "seq" | "hash"> | null, event: Lo
 }
 
 /** What an entry needs a signature for: these kinds are written only for a call a key signed. */
-export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "key-refused", "key-removed"];
+export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "automation-deleted", "key-refused", "key-removed"];
 
 /**
  * The marks: light things the page signs many times a day, often as a side
@@ -202,6 +204,8 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return event.read ? `opened the brief of ${on(event.threadId)}, version ${event.version}: it no longer waits` : `marked the brief of ${on(event.threadId)}, version ${event.version}, as not read: it waits again`;
     case "main-chosen":
       return event.threadId === null ? "forgot which thread is Main for a project: a new window asks" : `chose ${on(event.threadId)} as Main: a new window starts there`;
+    case "automation-deleted":
+      return `deleted the automation “${event.name}” (${event.automationId}); its past run threads stay`;
     case "key-enrolled":
       return event.how === "first" ? `key ${event.fingerprint} enrolled by first use: ${event.label}` : `key ${event.fingerprint} enrolled, approved from an enrolled page: ${event.label}`;
     case "key-requested":

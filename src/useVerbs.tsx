@@ -37,6 +37,7 @@ import { findReplies } from "./attention.ts";
 import type { ThreadReader } from "./activity.ts";
 import { type OutsideLine, moveRecord, outsideArchiveBlocked, moveRefusal, moveText, moveUpdate, undoUpdates } from "./outside.ts";
 import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type Seen, type WaitNote } from "./shared.ts";
+import { type AutomationGroup, deleteConfirmText } from "./automations.ts";
 import { isBusy } from "./state.ts";
 import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
@@ -82,6 +83,8 @@ export interface VerbHost {
   caps: CapsData;
   /** For each refusal of a thread, the name of the capability that would cover it when asked again, or null. */
   coverage: (threadId: string, refusals: readonly Refusal[]) => (string | null)[];
+  /** Delete one of bb's automations: a signed call, so only an enrolled page can. */
+  deleteAutomation: (group: AutomationGroup) => Promise<void>;
   /** Send a thread a message as the person: a signed call, so only an enrolled page can. */
   sendAs: (threadId: string, text: string) => Promise<void>;
   /** Start the steps that make a capability. */
@@ -122,6 +125,8 @@ export interface Verbs {
   startBring: (line: OutsideLine) => void;
   /** Ask for a reason, then archive a thread from Outside Main. `u` takes it back. */
   startArchiveOutside: (line: OutsideLine) => void;
+  /** Ask, naming it, then delete an automation. Nothing undoes it. */
+  startDeleteAutomation: (group: AutomationGroup) => void;
   /** Ask, then take a not-started item off its list. */
   removeTodo: (row: TodoRow) => void;
   moveTodo: (row: TodoRow, by: 1 | -1) => void;
@@ -377,6 +382,24 @@ export function useVerbs(host: VerbHost): Verbs {
     }
     say("");
     setModal({ kind: "archive-reason", threadId: main.thread.id, dropped: false, value: parks.archives.get(line.thread.id)?.reason ?? "", error: "", outside: line });
+  };
+
+  const startDeleteAutomation = (group: AutomationGroup) => {
+    const { automation } = group;
+    say("");
+    setModal({
+      kind: "confirm",
+      mode: "DELETE",
+      // An automation's row is no thread: the prompt is held by Main, as a move's is.
+      threadId: main.thread.id,
+      label: deleteConfirmText(automation, Date.now()),
+      cancelled: "not deleted",
+      run: () =>
+        void host.deleteAutomation(group).then(
+          () => say(`deleted the automation “${automation.name}”; its past run threads stay · u cannot bring it back`),
+          (cause: unknown) => say(`not deleted: ${errorText(cause)}`),
+        ),
+    });
   };
 
   const startBring = (line: OutsideLine) =>
@@ -800,7 +823,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, startDeleteAutomation, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -816,7 +839,7 @@ export function useVerbs(host: VerbHost): Verbs {
         close();
         modal.run();
       },
-      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" || modal.mode === "REMOVE" || modal.mode === "MOVE" ? "" : title} label={modal.label} />,
+      footer: <ConfirmPrompt mode={modal.mode} name={modal.mode === "UNDO" || modal.mode === "REMOVE" || modal.mode === "MOVE" || modal.mode === "DELETE" ? "" : title} label={modal.label} />,
       card: null,
     };
   }

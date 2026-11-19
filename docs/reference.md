@@ -304,6 +304,18 @@ runs.
   it and it leaves the section. A run is not parked, kept, marked as a
   project or waited on. There are no keys to pause, resume or run an
   automation, and cow never moves a run under Main.
+- **Deleting one.** `e` on an automation's row deletes the automation, for
+  one that was only ever a reminder, say. It asks first, naming it, saying
+  whether it is enabled and when it would next run, that its past run
+  threads are not deleted, and that it cannot be undone: `y` deletes, any
+  other key cancels. The verb bar shows `e delete` on the row. Deleting is
+  yours alone: it is a signed call (`automation_delete`), which cow's
+  server carries out through the automations plugin's own
+  `automations_delete`, and writes to cow's log under the key that signed
+  it. There is no command and no unsigned method for it. `u` does not bring
+  it back, and the message line says so. A run's threads stay where they
+  are, and age out of the section as any archived line would once
+  archived.
 - **Filtering.** `/` finds automations by name and runs by title or what
   they said, while folded.
 - **Agents.** `bb cow status` has an "Automations" heading with the same
@@ -1517,8 +1529,8 @@ The page proves it is yours with a signature.
   `i`); answering an ask, or closing one as already answered in chat;
   marking a reply as seen and taking that back; dismissing what bb refused
   a thread and taking that back; marking a brief as read; recording which
-  thread is a project's Main, which is where a new window starts; and
-  approving, refusing or removing a key. Opening a chat or a brief on the
+  thread is a project's Main, which is where a new window starts; deleting
+  one of bb's automations; and approving, refusing or removing a key. Opening a chat or a brief on the
   page, which marks a reply seen or a brief read as a side effect, signs
   that mark the same way. The list is `PERSON_ACTIONS` in
   `src/signing/envelope.ts`. None of these is a method of cow's interface.
@@ -1594,7 +1606,7 @@ agent and stop no other.
 
 | Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
 | --- | --- | --- | --- |
-| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card | yes: `bb cow status`, `asks`, `brief show`, `caps` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
 | `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, except their open asks. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask, and those of threads under it, stay in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. This method leaves no trace in the queue or the log, unlike `bb cow park`. Removing a note only puts a line back |

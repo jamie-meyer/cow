@@ -18,6 +18,7 @@ import type { LogStore } from "../caps/logstore.ts";
 import type { Caps } from "../caps/service.ts";
 import { Refusal } from "../kv.ts";
 import { type Dismissal, type Seen, dismissalSchema, seenSchema } from "../shared.ts";
+import { AUTOMATIONS_PLUGIN } from "../automations.ts";
 import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
 
@@ -59,6 +60,8 @@ export const ACTION_ARGS = {
   dismissal_set: z.object({ threadId: id, dismissal: dismissalSchema.nullable() }),
   brief_read: z.object({ threadId: id, version: z.number().int().min(1), read: z.boolean() }),
   main_choose: z.object({ projectId: id, threadId: id.nullable() }),
+  /** `name` is what the confirmation named, for the log. */
+  automation_delete: z.object({ projectId: id, automationId: id, name: z.string().max(400) }),
   key_approve: z.object({ fingerprint }),
   key_refuse: z.object({ fingerprint }),
   key_remove: z.object({ fingerprint }),
@@ -232,6 +235,19 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
       return closed;
     },
     ...queueDispatch(log, marks, changed),
+    automation_delete: async (args, by) => {
+      // The automations plugin decides whether it exists; a refusal of its reaches the page as it is, and nothing is logged.
+      await bb.sdk.plugins.callRpc({
+        pluginId: AUTOMATIONS_PLUGIN,
+        method: "automations_delete",
+        input: { projectId: args.projectId, automationId: args.automationId },
+        outputSchema: z.unknown(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      await log.append({ kind: "automation-deleted", projectId: args.projectId, automationId: args.automationId, name: args.name.slice(0, 200) }, by);
+      changed();
+      return null;
+    },
     key_approve: (args, by) => keys.approve(args.fingerprint, by),
     key_refuse: async (args, by) => {
       await keys.refuse(args.fingerprint, by);

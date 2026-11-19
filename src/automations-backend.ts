@@ -1,6 +1,7 @@
 // cow's server reads bb's automations for the page and the CLI, through the
 // automations plugin's own methods. It only reads: nothing here pauses,
-// runs or changes an automation.
+// runs or changes an automation. Deleting one is the person's alone, and is
+// a signed action (`automation_delete`, in `signing/backend.ts`).
 //
 // The plugin may be absent, disabled or slow. Every call is bounded in time
 // and every failure is contained: the answer is then "not available", and

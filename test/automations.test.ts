@@ -335,3 +335,20 @@ test("a run bb refused a permission without asking is blocked and in the queue, 
   const dismissed = buildOverview(threads, "main", blockedDerive(7), NOW, { note: () => null, todos: () => [], automations: read });
   assert.ok(!dismissed.queue.some((other) => other.thread.id === "refused"));
 });
+
+test("deleting an automation asks first, naming it, its state and its next run, and saying what stays and that it cannot be undone", async () => {
+  const { deleteConfirmText } = await import("../src/automations.ts");
+  const base = {
+    id: "a1", projectId: "p", projectName: null, name: "Remind me", enabled: true,
+    trigger: { kind: "once", runAt: null }, mode: "agent", targetThreadId: null,
+    nextRunAt: 3 * 3_600_000 + 60_000, lastRunAt: null, runCount: 0, lastRunStatus: null, lastRunThreadId: null, lastError: null,
+  } as const;
+  const enabled = deleteConfirmText({ ...base }, 0, "UTC");
+  assert.match(enabled, /“Remind me”/);
+  assert.match(enabled, /enabled and would next run in 3h/);
+  assert.match(enabled, /past run threads are not deleted/);
+  assert.match(enabled, /cannot be undone/);
+  assert.match(enabled, /y deletes it/);
+  assert.match(deleteConfirmText({ ...base, enabled: false }, 0, "UTC"), /it is paused/);
+  assert.match(deleteConfirmText({ ...base, nextRunAt: null, runCount: 1 }, 0, "UTC"), /it is enabled, ran once/);
+});
