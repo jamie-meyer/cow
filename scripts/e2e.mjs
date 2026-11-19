@@ -2055,7 +2055,8 @@ async function automationChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the archive prompt" });
   await page.key("Enter");
   await waitForThread(quietRun, (t) => t.archivedAt !== null, "archived", 20_000);
-  await page.waitFor(`!${runLine(quietRun)}`, { label: "the archived run gone from the section", timeout: 10_000 });
+  // Archived, a run with no parent is listed under Archived (since 0.2.9): it is the section's run line that goes.
+  await page.waitFor(`!document.querySelector('.cow-main [data-cow-line="${quietRun}"][data-cow-run]')`, { label: "the archived run gone from the section", timeout: 10_000 });
   check("e archives a run, and it leaves the section", true);
 
   // -- e on an automation's row deletes it, after a confirmation, as a signed call --
@@ -3940,70 +3941,110 @@ async function capsChecks(page, ids, shot, chooseMain) {
   writeFileSync(join(probeDir, "light.sh"), `${lightRoutes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-130; echo`).join("\n")}\n`);
   writeFileSync(join(probeDir, "run.sh"), `${routes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-240; echo`).join("\n")}\n`);
   const keysBefore = (await signer.state()).keys.map((key) => key.fingerprint).sort().join(" ");
-  await sayTo(ckid, `run: sh ${probeDir}/run.sh`);
-  await sleep(3000);
-  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the probe done", 180_000);
-  const probeRows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(".cow-e2e-probe/run.sh"));
-  const probeOutput = String(probeRows.at(-1)?.output ?? "");
-  const got = Object.fromEntries(routes.map(([name]) => [name, (new RegExp(`ROUTE ${name}: (.*)`).exec(probeOutput)?.[1] ?? "(no output)").trim()]));
-  await sayTo(ckid, `run: sh ${probeDir}/light.sh`);
-  await sleep(3000);
-  await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, "the second probe done", 180_000);
-  const lightRows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(".cow-e2e-probe/light.sh"));
-  const lightOutput = String(lightRows.at(-1)?.output ?? "");
-  for (const [name] of lightRoutes) got[name] = (new RegExp(`ROUTE ${name}: (.*)`).exec(lightOutput)?.[1] ?? "(no output)").trim();
+  /**
+   * Have the fixture run one probe script, and read what it printed. A turn
+   * may wait for a free slot before it starts, so "idle" a moment after the
+   * message is not "done": this waits for a turn that ended after the
+   * message was sent. A fixture that ends its turn without running the
+   * script is asked again, twice at most; one that ran it is not asked again. What a route gave is null when the
+   * probe never printed it: the checks then fail as "probe did not run",
+   * never on missing output.
+   */
+  const lastTurn = async () => (await api(`/threads/${ckid}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq ?? 0;
+  const runProbe = async (script, names, label) => {
+    let rows = [];
+    let output = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const before = await lastTurn();
+      await sayTo(ckid, `run: sh ${probeDir}/${script}`);
+      await waitUntil(async () => (await lastTurn()) > before, `${label}: a turn that ends after it was asked`, 300_000);
+      await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, `${label} done`, 180_000);
+      rows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(`.cow-e2e-probe/${script}`));
+      output = String(rows.at(-1)?.output ?? "");
+      // Run once, it is not run again: a route such as bb's approve must not be tried twice. Routes it did not print fail below.
+      if (rows.length > 0) break;
+      console.log(`note: the fixture ended its turn without running ${label} (attempt ${attempt} of 3)`);
+    }
+    const said = Object.fromEntries(names.map((name) => [name, new RegExp(`ROUTE ${name}: (.*)`).exec(output)?.[1]?.trim() ?? null]));
+    return { rows, output, said };
+  };
+  const firstProbe = await runProbe("run.sh", routes.map(([name]) => name), "the probe");
+  const probeRows = firstProbe.rows;
+  const probeOutput = firstProbe.output;
+  const secondProbe = await runProbe("light.sh", lightRoutes.map(([name]) => name), "the second probe");
+  const lightRows = secondProbe.rows;
+  const lightOutput = secondProbe.output;
+  const got = { ...firstProbe.said, ...secondProbe.said };
   console.log("what each route gave a sandboxed fixture:");
-  for (const [name] of [...routes, ...lightRoutes]) console.log(`  ${name.padEnd(22)} ${got[name].slice(0, 200)}`);
+  for (const [name] of [...routes, ...lightRoutes]) console.log(`  ${name.padEnd(22)} ${got[name] === null ? "PROBE DID NOT RUN" : got[name].slice(0, 200)}`);
+  /** A check on what the probe saw: when a route it needs printed nothing, it fails as such. */
+  const probeCheck = (name, needs, ok, detail) => {
+    const missing = needs.filter((route) => got[route] === null);
+    if (missing.length > 0) return check(name, false, `probe did not run: no output for ${missing.join(", ")}`);
+    return check(name, ok(), detail());
+  };
   rmSync(probeDir, { recursive: true, force: true });
   await sleep(2500);
   const afterProbe = await capState();
   const keysAfter = await signer.state();
   const only = /only the person may do/;
-  check("the probe ran, inside the fixture's sandbox", probeRows.length >= 1 && routes.every(([name]) => got[name] !== "(no output)"), probeOutput.slice(0, 200));
-  check(
+  check("the probe ran, inside the fixture's sandbox", probeRows.length >= 1 && routes.every(([name]) => got[name] !== null), probeRows.length === 0 ? "probe did not run: the fixture never ran it" : `no output for ${routes.filter(([name]) => got[name] === null).map(([name]) => name).join(", ") || "none"} · ${probeOutput.slice(0, 160)}`);
+  const plantedAfter = await byName("cow test planted");
+  const asksAfterProbe = await openAsksOf(ckid);
+  const decidedAfterProbe = (await capLog(40)).some((entry) => entry.event.kind === "decided" && entry.event.interactionId === probeRequest.id);
+  probeCheck(
     "a sandboxed agent can no longer make a capability: the old method is gone, by HTTP and by bb plugin rpc call, and an unsigned or forged signed call is refused",
-    (await byName("cow test planted")) === null && !/"ok":true/.test(got["old-create"]) && !/cap_[0-9a-f]{6}/.test(got["bb-rpc-create"]) && only.test(got["bb-rpc-signed-create"]) && only.test(got["unsigned-create"]) && /signature does not match/.test(got["forged-create"]),
-    [got["old-create"], got["bb-rpc-create"], got["unsigned-create"], got["forged-create"]].map((line) => line.slice(0, 90)).join(" | "),
+    ["old-create", "bb-rpc-create", "bb-rpc-signed-create", "unsigned-create", "forged-create"],
+    () => plantedAfter === null && !/"ok":true/.test(got["old-create"]) && !/cap_[0-9a-f]{6}/.test(got["bb-rpc-create"]) && only.test(got["bb-rpc-signed-create"]) && only.test(got["unsigned-create"]) && /signature does not match/.test(got["forged-create"]),
+    () => [got["old-create"], got["bb-rpc-create"], got["unsigned-create"], got["forged-create"]].map((line) => line.slice(0, 90)).join(" | "),
   );
-  check(
+  probeCheck(
     "nor acknowledge a notice or delete a capability: the notice still waits and the capability is still in force",
-    only.test(got["unsigned-ack"]) && !/"ok":true/.test(got["old-ack"]) && only.test(got["unsigned-delete"]) && afterProbe.notices.some((notice) => notice.id === probeNotice.id) && afterProbe.capabilities.some((capability) => capability.id === probeCap.id && capability.deletedAt === null),
-    [got["unsigned-ack"], got["old-ack"], got["unsigned-delete"]].map((line) => line.slice(0, 90)).join(" | "),
+    ["unsigned-ack", "old-ack", "unsigned-delete"],
+    () => only.test(got["unsigned-ack"]) && !/"ok":true/.test(got["old-ack"]) && only.test(got["unsigned-delete"]) && afterProbe.notices.some((notice) => notice.id === probeNotice.id) && afterProbe.capabilities.some((capability) => capability.id === probeCap.id && capability.deletedAt === null),
+    () => [got["unsigned-ack"], got["old-ack"], got["unsigned-delete"]].map((line) => line.slice(0, 90)).join(" | "),
   );
-  check(
+  probeCheck(
     "nor decide a permission request through cow, nor answer an ask as the person: the ask is still open",
-    only.test(got["unsigned-decide"]) && !/"ok":true/.test(got["old-decide"]) && only.test(got["unsigned-answer"]) && !/"ok":true/.test(got["old-answer"]) && (await openAsksOf(ckid)).some((ask) => ask.id === probeAsk.id) && !(await capLog(40)).some((entry) => entry.event.kind === "decided" && entry.event.interactionId === probeRequest.id),
-    [got["unsigned-decide"], got["old-decide"], got["unsigned-answer"], got["old-answer"]].map((line) => line.slice(0, 90)).join(" | "),
+    ["unsigned-decide", "old-decide", "unsigned-answer", "old-answer"],
+    () => only.test(got["unsigned-decide"]) && !/"ok":true/.test(got["old-decide"]) && only.test(got["unsigned-answer"]) && !/"ok":true/.test(got["old-answer"]) && asksAfterProbe.some((ask) => ask.id === probeAsk.id) && !decidedAfterProbe,
+    () => [got["unsigned-decide"], got["old-decide"], got["unsigned-answer"], got["old-answer"]].map((line) => line.slice(0, 90)).join(" | "),
   );
-  check(
+  probeCheck(
     "it can ask for a key to be enrolled, which only puts a request in front of the person; it cannot approve it, and the enrolled keys are as they were",
-    /pending/.test(got["enrol-key"]) && only.test(got["unsigned-approve"]) && keysAfter.keys.map((key) => key.fingerprint).sort().join(" ") === keysBefore && keysAfter.requests.some((request) => request.fingerprint === agentKey.fingerprint && request.status === "pending"),
-    `${got["enrol-key"].slice(0, 80)} | ${got["unsigned-approve"].slice(0, 90)}`,
+    ["enrol-key", "unsigned-approve"],
+    () => /pending/.test(got["enrol-key"]) && only.test(got["unsigned-approve"]) && keysAfter.keys.map((key) => key.fingerprint).sort().join(" ") === keysBefore && keysAfter.requests.some((request) => request.fingerprint === agentKey.fingerprint && request.status === "pending"),
+    () => `${got["enrol-key"].slice(0, 80)} | ${got["unsigned-approve"].slice(0, 90)}`,
   );
   const lightAfter = await lightState();
   const lightLogged = (await fullLog(300)).filter((entry) => (entry.event.kind === "seen" && entry.event.seq === 999999999) || (entry.event.kind === "refusals-dismissed" && entry.event.throughSeq === 999999999));
   for (const [name, what] of [["seen", "mark a reply as seen"], ["dismiss", "dismiss what bb refused a thread"], ["read", "mark a brief as read"]]) {
-    check(
+    probeCheck(
       `nor ${what}: the method is gone, by HTTP and by bb plugin rpc call, and through the signed method an unsigned or forged call is refused`,
-      !/"ok":true/.test(got[`old-${name}`]) && /error|unknown|not found/i.test(got[`bb-rpc-${name}`]) && only.test(got[`unsigned-${name}`]) && only.test(got[`bb-rpc-signed-${name}`]) && /signature does not match/.test(got[`forged-${name}`]),
-      [got[`old-${name}`], got[`bb-rpc-${name}`], got[`unsigned-${name}`], got[`forged-${name}`]].map((line) => line.slice(0, 80)).join(" | "),
+      [`old-${name}`, `bb-rpc-${name}`, `unsigned-${name}`, `bb-rpc-signed-${name}`, `forged-${name}`],
+      () => !/"ok":true/.test(got[`old-${name}`]) && /error|unknown|not found/i.test(got[`bb-rpc-${name}`]) && only.test(got[`unsigned-${name}`]) && only.test(got[`bb-rpc-signed-${name}`]) && /signature does not match/.test(got[`forged-${name}`]),
+      () => [got[`old-${name}`], got[`bb-rpc-${name}`], got[`unsigned-${name}`], got[`forged-${name}`]].map((line) => line.slice(0, 80)).join(" | "),
     );
   }
-  check("the second probe ran too, inside the fixture's sandbox", lightRows.length >= 1 && lightRoutes.every(([name]) => got[name] !== "(no output)"), lightOutput.slice(0, 200));
+  check("the second probe ran too, inside the fixture's sandbox", lightRows.length >= 1 && lightRoutes.every(([name]) => got[name] !== null), lightRows.length === 0 ? "probe did not run: the fixture never ran it" : `no output for ${lightRoutes.filter(([name]) => got[name] === null).map(([name]) => name).join(", ") || "none"} · ${lightOutput.slice(0, 160)}`);
   check("nothing it tried took a line out of the queue: what is seen, dismissed and read is as it was, and nothing was logged", lightAfter === lightBefore && lightLogged.length === 0, `${lightBefore} -> ${lightAfter}`);
   await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"]')`, { label: "the fixture's request in the queue" });
   check("that request is in the person's queue, under the name the fixture gave it", (await page.eval(`document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"] p').textContent`)).includes("made by a fixture"));
   await shot("keys-agent-request");
-  check(
+  probeCheck(
     "it cannot create the reset file: the sandbox stops it, and enrollment stands",
-    !got["reset-file"].includes("CREATED-THE-RESET-FILE") && /not permitted|denied|read-only/i.test(got["reset-file"]) && !existsSync(resetPath) && keysAfter.keys.length > 0,
-    got["reset-file"].slice(0, 160),
+    ["reset-file"],
+    () => !got["reset-file"].includes("CREATED-THE-RESET-FILE") && /not permitted|denied|read-only/i.test(got["reset-file"]) && !existsSync(resetPath) && keysAfter.keys.length > 0,
+    () => got["reset-file"].slice(0, 160),
   );
-  await page.waitFor(`${lineEl(chead)}?.dataset.cowOutside === "1"`, { label: "bb's own approve, flagged", timeout: 40_000 });
-  check(
+  if (got["bb-approve"] !== null) await page.waitFor(`${lineEl(chead)}?.dataset.cowOutside === "1"`, { label: "bb's own approve, flagged", timeout: 40_000 });
+  const doingAfter = await page.eval(doing(chead));
+  const outsideLogged = (await capLog(40)).some((entry) => entry.event.kind === "outside" && entry.event.interactionId === probeRequest.id && entry.by === null);
+  probeCheck(
     "bb's own approve command still works for it, because that is bb's: and the approval is flagged on the line as made outside cow",
-    /approved/.test(got["bb-approve"]) && (await page.eval(doing(chead))).includes("approved outside cow: run: echo cow probe pending") && (await capLog(40)).some((entry) => entry.event.kind === "outside" && entry.event.interactionId === probeRequest.id && entry.by === null),
-    got["bb-approve"].slice(0, 120),
+    ["bb-approve"],
+    () => /approved/.test(got["bb-approve"]) && doingAfter.includes("approved outside cow: run: echo cow probe pending") && outsideLogged,
+    () => got["bb-approve"].slice(0, 120),
   );
   await shot("keys-probe-outside");
   // Put away what the probe was given to try.
