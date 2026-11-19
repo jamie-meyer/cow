@@ -4,6 +4,39 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.10
+
+A card with what bb and other plugins know about a thread, a way to delete
+an automation, and the sections in the order you look at them.
+
+- **A context card for the selected thread.** At the bottom of the right
+  column, just above the legend, the selected line's thread shows its pull
+  request (number, title, state, checks and review, with a link), its
+  changed files (how many, the first five opening in the reader), and any
+  section another plugin adds for it, such as a whole stack of pull
+  requests with each one's CI and review state. It follows the cursor, so
+  you can check stacks by walking the queue. With a chat open, the same
+  card is at the top of the pane, folded to its section titles when it is
+  long; a click or a hint on a title unfolds it. A thread with nothing to
+  show has no card. `v` hides it in the window, and the window remembers.
+  Plugin authors: any plugin can add sections by offering one discoverable
+  method, `cow_card`; the contract, its limits and an example are in
+  [docs/reference.md](docs/reference.md#the-context-card). It is cow's own
+  and may change before 1.0.
+- **Delete an automation with `e`.** On an automation's row, `e` now
+  deletes it, for the one-time reminders you no longer need. It asks first,
+  naming it, saying whether it is enabled and when it would next run, that
+  its past run threads stay, and that it cannot be undone: `y` deletes, any
+  other key cancels. Only you can do it: it is signed by your page's key,
+  and written to cow's log. `e` on a run still archives the run.
+- **A new order of sections.** The tree, Parked, To settle, Kept,
+  Automations, Outside Main, and Archived last, on the page, for `j`, `k`
+  and `/`, and in `bb cow status`.
+- **More room for the list on a narrow page.** Below 900 pixels wide, the
+  verb bar keeps to two rows, each scrolling sideways instead of wrapping
+  (every verb keeps its key), and a notice about this page's key is shorter
+  and scrolls inside itself.
+
 ## 0.2.9
 
 Two things that were harder than they should have been.
