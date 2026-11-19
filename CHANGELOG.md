@@ -4,6 +4,34 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.9
+
+Two things that were harder than they should have been.
+
+- **A request for a capability says how to decide it.** When an agent asks
+  for a capability (`bb cow cap request`), its line and its queue entry now
+  read "asks for a capability to write under /srv/reports: press a to allow
+  or refuse" (or "to run “npm test”"), and the next move says "press a to
+  allow or refuse". With the line selected, `a` comes first in the verb bar,
+  as "allow or refuse". Its card says "Capability request", which thread it
+  is for, what it asks for, and why in the agent's words, and shows both
+  choices at once: `1` allow it, `2` refuse it. `1` now opens the steps
+  straight away, without `Enter`: you can still narrow or widen what it
+  covers, and nothing is granted until you confirm the last step. The card
+  says the capability lasts until you delete it, not for this once only.
+  `2`, then `Enter`, tells the agent no.
+- **Threads outside Main can be archived with a reason.** `e` on a line in
+  Outside Main asks for a reason, as on any line, and archives it; `u` takes
+  it back. The archived thread is listed under Archived with its reason for
+  two days, like any other. For agents, `bb cow archive` took every thread
+  with no parent for Main and refused it ("Main cannot be archived from
+  here"). Now only the thread that is Main gets that refusal. The thread
+  that is Main may archive a thread outside Main with a reason; any other
+  thread is refused, and told that only Main, or you, archive those. A
+  running thread, or one bb is asking a question, is still not archived,
+  and the refusal now says which. `bb cow park` on a thread outside Main
+  says to bring it under Main first, instead of calling it Main.
+
 ## 0.2.8
 
 Agents may set things aside that were waiting on you. Until now some of that

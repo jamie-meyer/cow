@@ -28,9 +28,16 @@ export type ParkRecord = z.infer<typeof parkRecordSchema>;
 
 /** cow's note on why a thread was archived. It stays if the archive is undone. */
 export const archiveNoteSchema = z.object({
-  reason: z.string().min(1).max(300),
+  /** Absent when it was archived without one: the note is then kept only for `outside`. */
+  reason: z.string().min(1).max(300).optional(),
   /** When the reason was given. */
   at: z.number(),
+  /**
+   * It had no parent and was no Main when it was archived: listed under
+   * Outside Main. Archived, it is under no Main, so this is what lists it
+   * under Archived for two days.
+   */
+  outside: z.literal(true).optional(),
 });
 export type ArchiveNote = z.infer<typeof archiveNoteSchema>;
 

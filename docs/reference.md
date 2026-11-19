@@ -337,8 +337,21 @@ the parent of a thread's open children to none when it archives it).
   events are read for this section. It is plain: never coloured, never in
   the queue, and not counted in the legend's states.
 - **Verbs.** `Enter` opens its chat in the pane, which says "not under this
-  Main"; `I` says something to it. `/` finds its lines even while the
-  section is folded. The other verbs need the thread under Main first.
+  Main"; `I` says something to it; `e` archives it (see "Archiving one").
+  `/` finds its lines even while the section is folded. The other verbs
+  need the thread under Main first, and say so.
+- **Archiving one.** `e` asks for a reason, as on any line, and `Enter`
+  archives it in bb, with the threads under it. It is refused, with the
+  reason, while its turn is running ("its turn is still running"), while bb
+  is asking it a question or a permission ("bb is asking it a question"),
+  while it has an open ask, or while threads under it are still open. A
+  reason given before is not offered again here, as it is on a line under
+  Main: cow reads no notes of an open thread outside Main. Archived, the
+  thread is under no Main, so cow marks its note "outside" (kept even when
+  no reason is given), and every Main's page lists it under Archived with
+  its reason for two days, as `bb cow status` does. `u` unarchives it and it
+  is back in Outside Main. Another project's Main, which this section only
+  counts, is never archived from it.
 - **Bringing one under Main.** `A` on its line, then `y`. The confirmation
   says what happens: bb makes the thread a child of Main and tells Main
   with a short notice ("… is now a child of this thread"), so **Main starts
@@ -360,8 +373,15 @@ the parent of a thread's open children to none when it archives it).
   levels deep (a thread with threads under it adds their depth), one under
   an archived or deleted Main, and one that would make a loop. The page
   says which, in plain words, and nothing changes.
-- **Agents.** There is no command for it: an agent uses bb's own
-  `bb thread update <thread> --parent-thread <main>`. `bb cow status` lists
+- **Agents.** There is no command for moving: an agent uses bb's own
+  `bb thread update <thread> --parent-thread <main>`. Nothing owns a thread
+  outside Main, so only the thread that is Main (the one recorded for its
+  own project) archives one with `bb cow archive <thread> --reason <text>`,
+  under the rules above; the person may too, at a terminal. Any other thread
+  is refused: "it is outside Main, and a thread archives only itself and
+  what is under it: outside Main, Main archives it". `bb cow park` refuses a
+  thread outside Main ("it is outside Main") and says to bring it under Main
+  first. `bb cow status` lists
   the section under its own heading, "Outside Main", and `--json` has it as
   `outside`, with `outsideNotListed` counting what is left out. Moving is
   not signed: see "What is not signed, method by method".
@@ -730,7 +750,9 @@ bb cow ask close <id> --answered <the answer you were given>
   was made with `--options-only`. `--proof` names files in the thread's
   storage for you to look at.
 - A thread with an open ask reads "asks you: …" with its oldest question,
-  and "(and 2 more)" when it has several. It is in the queue, on the page and
+  and "(and 2 more)" when it has several; a request for a capability reads
+  "asks for a capability to …: press a to allow or refuse" instead (see
+  "From an agent's request"). It is in the queue, on the page and
   in `bb cow status`, whatever else it is doing: still running, finished, or
   parked. Only an archived thread's asks are left out.
 - **Under a parked or kept thread.** A thread under a parked or kept thread
@@ -1065,7 +1087,13 @@ The reason is cow's note on the thread. It shows on the thread's line under
 Archived ("archived: …"), where an archived line is listed for two days,
 and then leaves the page. An archived thread waits on you for nothing, an open ask
 included. An agent can archive a thread too, with `bb cow archive` or with
-bb's own `bb thread archive`; neither is signed. If you undo the archive the note stays on the thread,
+bb's own `bb thread archive`; neither is signed. `bb cow archive` refuses
+the Main recorded for the caller's project ("Main cannot be archived from
+here"), another project's Main ("it is the Main chosen for another
+project"), a thread a Main is under ("a Main is under it"), a running thread
+("its turn is still running"), and one bb is asking a question or a
+permission ("bb is asking it a question"). A thread outside Main is archived
+by the person or by Main only (see "Outside Main"). If you undo the archive the note stays on the thread,
 so archiving it again offers the same reason; clear the line to archive
 without one.
 
@@ -1186,10 +1214,19 @@ bb cow caps log [--limit <n>] [--json]           # the log, newest first: capabi
 bb cow cap request --kind dir|command --rule <text> --why <text> [--thread <id>]
 ```
 
-`cap request` raises an ask on the page ("asks for a capability: write under
-/srv/reports") with two answers, grant it and refuse. Granting opens the same
-steps, starting from what was asked for, which you can narrow or widen; when
-you save, the thread is told what was granted. A rule that could never be
+`cap request` raises an ask on the page. Its line and its queue entry say
+what it asks for and how it is decided: "asks for a capability to write
+under /srv/reports: press a to allow or refuse" (for a command: "asks for a
+capability to run “npm test”: …"), and the next move reads "press a to allow
+or refuse". With the line selected, the verb bar shows `a` first, as "allow
+or refuse". `a` opens its card: "Capability request · for <thread>", the
+request ("“<thread>” asks for a capability to write under /srv/reports"),
+"Why, in its words: …", and both choices at once: `1` allow it, `2` refuse
+it. `1` opens the steps at once, starting from what was asked for, which you
+can narrow or widen, and nothing is granted until you confirm their last
+sentence; the capability then lasts until you delete it, and the thread is
+told what was granted. `2`, then `Enter`, tells it no, as a message from
+you. A rule that could never be
 granted is refused when the agent asks, with the reason, and no ask is
 raised. `caps` and `caps log` only read.
 
@@ -1485,7 +1522,7 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `next`, `todo add`, `todo done`, `todo rm` | the thread's own line of what is next, and its list of work not started | the next-move column of a line that waits on nothing shows the agent's words, marked as its own. A line with a note or a list stays in the tree instead of going to To settle. Nothing leaves the queue |
 | `project`, `project --clear` | as `project_set` above | as `project_set` |
 | `park`, `resume` | as `park_set`, under the page's rules: not Main, not an archived thread, not one already parked unless it has come back; a running turn only with `--stop` | as `park_set`. An agent can park any thread it can name, itself included, and "keep parked" one that had come back to your queue, with a new date. Run in a thread on a thread that was waiting on you, a notice says which thread parked it, why and when until you acknowledge it, and the log keeps it |
-| `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
+| `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
 
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked, kept or archived.** Nothing else of cow's that is

@@ -236,6 +236,6 @@ test("a blocked line can be answered, and archived once its turn has ended", () 
   };
   assert.equal(verbBlocked("answer", line("idle"), false), null);
   assert.equal(verbBlocked("archive", line("idle"), false), null);
-  assert.equal(verbBlocked("archive", line("active"), false), "only done, idle, waiting, kept or failed lines can be archived");
+  assert.equal(verbBlocked("archive", line("active"), false), "its turn is still running");
   assert.equal(verbBlocked("park", line("idle"), false), null);
 });

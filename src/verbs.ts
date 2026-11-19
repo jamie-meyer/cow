@@ -3,6 +3,7 @@
 
 import { isBusy } from "./state.ts";
 import type { Line } from "./tree.ts";
+import { ABOVE_MAIN_REFUSAL, ARCHIVE_ASKING, ARCHIVE_RUNNING, MAIN_ARCHIVE_REFUSAL, OTHER_MAIN_REFUSAL, OUTSIDE_REFUSAL } from "./outside.ts";
 
 export type Verb = "answer" | "park" | "resume" | "stop" | "archive" | "brief" | "keep";
 
@@ -56,7 +57,7 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       if (parked) return returned ? null : "it is parked: resume it, or wait until it comes back";
       return isBusy(thread) && !archived ? null : "no turn is running";
     case "archive":
-      if (isMain) return "Main cannot be archived from here";
+      if (isMain) return MAIN_ARCHIVE_REFUSAL;
       if (archived) return "it is already archived";
       // bb archives a thread's descendants with it.
       if (line.openUnder > 0) return "threads under it are still open";
@@ -65,6 +66,8 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
       // So is one that waits only for its brief to be read: archiving it is a way of dealing with it.
       if (derived.briefWaits) return null;
       if (derived.asks) return "it has an open ask: answer it, or have it withdrawn";
+      if (isBusy(thread)) return ARCHIVE_RUNNING;
+      if (thread.hasPendingInteraction) return ARCHIVE_ASKING;
       // An idle project is at rest too: archiving it is the person saying it is finished.
       // Waiting on someone else is at rest too: archiving it ends the wait. So is a kept line.
       return derived.state === "done" || derived.state === "idle" || derived.state === "failed" || derived.state === "waiting" || derived.state === "kept"
@@ -72,6 +75,9 @@ export function verbBlocked(verb: Verb, line: Line | null, isMain: boolean): str
         : "only done, idle, waiting, kept or failed lines can be archived";
   }
 }
+
+/** Why a thread outside Main is not parked: the shelf is a Main's. */
+export const NOT_UNDER_MAIN = "it is outside Main";
 
 /** Why a run of an automation is not parked, kept, marked as a project, or waited on. */
 export const RUN_REFUSAL = "it is a run of an automation";
@@ -91,7 +97,13 @@ const INSTEAD: Record<string, { page: string; cli: string }> = {
   "it is not parked": { page: "p parks it", cli: "`bb cow park <thread> --reason <text>` parks it." },
   "it is parked: resume it, or wait until it comes back": { page: "r resumes it", cli: "" },
   "no turn is running": { page: "there is nothing to stop", cli: "" },
-  "Main cannot be archived from here": { page: "archive it in bb, then choose another Main with M", cli: "Archive it with `bb thread archive <thread>` if you mean to; cow then asks for another Main." },
+  [ARCHIVE_RUNNING]: { page: "x stops it, and p sets it aside as it is", cli: "Wait for its turn to end, or park it: `bb cow park <thread> --reason <text> --stop`." },
+  [ARCHIVE_ASKING]: { page: "a answers it", cli: "The user answers it, in bb or with a on cow's page; then it can be archived." },
+  [OTHER_MAIN_REFUSAL]: { page: "", cli: "Nothing in cow archives another project's Main: the user does it in bb if they mean to." },
+  [ABOVE_MAIN_REFUSAL]: { page: "", cli: "bb archives a thread with what is under it, Main included: the user does it in bb if they mean to, and cow then asks for another Main." },
+  [NOT_UNDER_MAIN]: { page: "A brings it under Main", cli: "Bring it under Main first: `bb thread update <thread> --parent-thread <main>`. Outside Main, `bb cow archive` is what works." },
+  [OUTSIDE_REFUSAL]: { page: "", cli: "The user archives it with e on cow's page, or the thread that is Main runs `bb cow archive <thread> --reason <text>`." },
+  [MAIN_ARCHIVE_REFUSAL]: { page: "archive it in bb, then choose another Main with M", cli: "Archive it with `bb thread archive <thread>` if you mean to; cow then asks for another Main." },
   "it is already archived": { page: "u takes back an archive made on this page", cli: "`bb thread unarchive <thread>` brings it back." },
   "threads under it are still open": { page: "archive or park those first", cli: "Archive or park those first: `bb cow status` lists them." },
   "it has an open ask: answer it, or have it withdrawn": { page: "a answers it", cli: "The user answers it on cow's page, or its thread runs `bb cow ask withdraw <id>` or `bb cow ask close <id> --answered <text>`." },
@@ -107,8 +119,18 @@ export function insteadOnPage(why: string): string {
 /** The same for a refused command; empty when there is nothing to add. */
 export const insteadFromCli = (why: string): string => INSTEAD[why]?.cli ?? "";
 
+/**
+ * Whether `a` on this line opens a thread's request for a capability: its
+ * oldest open ask is one, and no request of bb's own or reminder comes first.
+ */
+export function decidesCapability(line: Line | null): boolean {
+  if (line === null || line.thread.archivedAt !== null || line.thread.hasPendingInteraction || line.derived.wait?.due) return false;
+  return line.derived.asks?.[0]?.capability != null;
+}
+
 /** What each verb is called on this line; parked work that came back reads differently. */
 export function verbLabel(verb: Verb, line: Line | null): string {
+  if (verb === "answer" && decidesCapability(line)) return "allow or refuse";
   const returned = line?.derived.park?.due != null;
   if (verb === "park") return returned ? "keep parked" : "park";
   if (verb === "stop") return returned ? "drop" : "stop";

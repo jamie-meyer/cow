@@ -219,11 +219,17 @@ test("a line says when you have messaged the thread since it asked, and what to 
 
 test("an ask for a capability says so on its line, instead of asks you", () => {
   const wants = ask("a", 5, { question: "asks for a capability: write under /srv/reports", capability: { kind: "dir", rule: "/srv/reports" } });
-  assert.equal(asksText([wants]), "asks for a capability: write under /srv/reports");
-  assert.equal(asksText([wants, ask("b", 2)]), "asks for a capability: write under /srv/reports (and 1 more)");
+  assert.equal(asksText([wants]), "asks for a capability to write under /srv/reports: press a to allow or refuse");
+  assert.equal(asksText([wants, ask("b", 2)]), "asks for a capability to write under /srv/reports: press a to allow or refuse (and 1 more)");
   const line = of(child({ status: "active" }), raised([wants]));
   assert.equal(line.state, "wants");
-  assert.equal(line.doing, "asks for a capability: write under /srv/reports");
+  assert.equal(line.doing, "asks for a capability to write under /srv/reports: press a to allow or refuse");
+  assert.equal(line.next, "press a to allow or refuse");
+  // A command is quoted, and what is said comes from the request, not the words stored with it.
+  const run = ask("c", 5, { question: "asks for a capability: run npm test", capability: { kind: "command", rule: "npm test" } });
+  assert.equal(asksText([run]), "asks for a capability to run “npm test”: press a to allow or refuse");
+  const late = ask("d", 8 * 24 * 60, { capability: { kind: "dir", rule: "/srv/reports" } });
+  assert.match(of(child({ status: "idle" }), raised([late])).next, /^it has waited .* on you: press a to allow or refuse$/);
 });
 
 test("a request decided outside cow waits on the person until acknowledged, whatever the thread goes on to do", () => {

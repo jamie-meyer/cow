@@ -92,6 +92,8 @@ export interface Plans {
   otherMains?: ReadonlySet<string>;
   /** bb's automations, as cow's server read them: the Automations section. */
   automations?: AutomationsRead;
+  /** Whether cow's archive note says the thread was outside Main when it was archived: then it is listed under Archived. */
+  archivedOutside?(threadId: string): boolean;
 }
 const NO_PLANS: Plans = { note: () => null, todos: () => [] };
 
@@ -372,6 +374,17 @@ export function buildOverview(
   for (const kid of main.kids) place(kid, 0, null);
   // What Main itself has not started comes last, under no line.
   todoRows(mainId, 0);
+  // A thread archived from Outside Main is under no Main once archived: cow's note on it lists it under Archived, as any other.
+  const fromOutside: Node[] = [];
+  if (plans.archivedOutside) {
+    for (const id of archivedOutsideIds(threads, mainId, now - LIMITS.archivedListedMs)) {
+      const thread = threads.find((other) => other.id === id);
+      if (!thread || seen.has(id) || plans.otherMains?.has(id) || !plans.archivedOutside(id)) continue;
+      const node = read(thread);
+      fromOutside.push(node);
+      file(node);
+    }
+  }
 
   const latest = new Map<string, number>();
   const stamp = (node: Node) => {
@@ -379,6 +392,7 @@ export function buildOverview(
     node.kids.forEach(stamp);
   };
   stamp(main);
+  fromOutside.forEach(stamp);
   overview.archived.sort(
     (a, b) => (latest.get(b.thread.id) ?? 0) - (latest.get(a.thread.id) ?? 0) || a.thread.id.localeCompare(b.thread.id),
   );
@@ -491,6 +505,21 @@ export function descendantIds(
     }
   }
   return ids.sort();
+}
+
+/**
+ * The threads with no parent archived at or after `since` that are not
+ * `mainId` or above it: the ones that may have been archived from Outside
+ * Main, whose notes say whether they were.
+ */
+export function archivedOutsideIds(threads: readonly ThreadFacts[], mainId: string, since: number): string[] {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const above = new Set<string>();
+  for (let id: string | null = mainId; id !== null && !above.has(id); id = byId.get(id)?.parentThreadId ?? null) above.add(id);
+  return threads
+    .filter((thread) => thread.parentThreadId === null && thread.archivedAt !== null && thread.archivedAt >= since && !above.has(thread.id))
+    .map((thread) => thread.id)
+    .sort();
 }
 
 /** Whether a line to settle has something unseen: its own reply, or one under it. */

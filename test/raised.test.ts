@@ -117,7 +117,7 @@ function cli(caller: string | null = "child") {
     },
   };
   const actions: CliActions = {
-    archiveChecked: async () => ({ title: "T", under: 0 }),
+    archiveChecked: async () => ({ title: "T", under: 0, outside: false }),
     parkChecked: async () => {
       throw new Error("unused");
     },

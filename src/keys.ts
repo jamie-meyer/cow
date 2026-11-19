@@ -75,7 +75,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
   {
     title: "Dealing with what waits on you",
     keys: [
-      { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card" },
+      { keys: "a", does: "answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card. On a thread's request for a capability (its line says press a to allow or refuse), 1 allows it: the steps open at once and end in a confirmation; 2, then Enter, refuses it" },
       { keys: "b", does: "open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes" },
       { keys: "Space", does: "mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line to settle, or a project or Main marked with the unread dot, it is no longer unread; on a line whose request was decided outside cow, acknowledge that" },
       { keys: "w", does: "say the line is waiting on someone else: who or what, then a reminder (19 Nov, +3d, +2w) or nothing. On a waiting line, w clears it (y confirms); when its reminder comes, a keeps it waiting or takes it back" },
@@ -86,7 +86,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
       { keys: "r", does: "resume a parked line: back into the tree" },
-      { keys: "e", does: "archive a done, idle, waiting, kept or failed line: a reason or nothing, then Enter" },
+      { keys: "e", does: "archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter" },
       { keys: "z", does: "keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept" },
       { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
       { keys: "A", does: "on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn" },

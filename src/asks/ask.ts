@@ -124,7 +124,7 @@ export interface AskDraft {
 }
 
 /** The two answers an ask for a capability offers. Granting is the first. */
-export const CAPABILITY_OPTIONS = ["grant it::you choose the rule, the name and who it applies to, and confirm", "refuse::it is told no"] as const;
+export const CAPABILITY_OPTIONS = ["allow it::you check what it covers, name it, choose who it applies to, and confirm", "refuse it::it is told no"] as const;
 
 /** Check a question as the CLI received it and make the record. */
 export function draftAsk(draft: AskDraft, id: string, now: number, storageRoot: string | null): Result<Ask> {

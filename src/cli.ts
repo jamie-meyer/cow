@@ -246,21 +246,22 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
         summary: "Archive a done, idle or failed thread, recording why",
         description:
           "Archives the thread in bb, and the threads under it with it. Refused while it is not done, idle or failed, " +
-          "or while threads under it are still open. The reason shows on cow's page under Archived for two days.",
+          "or while threads under it are still open. The reason shows on cow's page under Archived for two days. " +
+          "A thread with no parent that is not Main is listed under Outside Main: only the thread that is Main archives one of those.",
         positionals: [thread],
         options: {
           reason: { type: "string", aliases: ["why"], description: `Why it is archived, up to ${MAX_REASON} characters` },
           json,
         },
-        async run(input) {
+        async run(input, ctx) {
           const id = threadId(input.positionals.thread);
           const reason = reasonText(input.options.reason ?? "", false);
-          const done = await acting(() => actions.archiveChecked(id, reason));
+          const done = await acting(() => actions.archiveChecked({ callerId: ctx.threadId ?? null, threadId: id, reason }));
           const with_ = done.under === 0 ? "" : ` with the ${done.under === 1 ? "thread" : `${done.under} threads`} under it`;
           return print(
             input.options.json,
-            { threadId: id, title: done.title, reason, archivedUnder: done.under },
-            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}`,
+            { threadId: id, title: done.title, reason, archivedUnder: done.under, outside: done.outside },
+            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}${done.outside ? " · it was outside Main: it is listed under Archived for two days" : ""}`,
           );
         },
       }),

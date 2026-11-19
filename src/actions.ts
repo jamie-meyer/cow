@@ -4,7 +4,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { type Ask, asksByThread } from "./asks/ask.ts";
 import type { BriefMark } from "./briefs/review.ts";
-import { type ThreadReader, listThreads, readActivity } from "./activity.ts";
+import { type ThreadReader, listThreads, readActivity, toFacts } from "./activity.ts";
 import { parkNow, reparkNow } from "./park.ts";
 import { parsePickUp } from "./pickup.ts";
 import { waitNote } from "./waiting.ts";
@@ -41,8 +41,9 @@ import {
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
 import { type StatusReport, statusReport } from "./status.ts";
-import { type Line, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
-import { insteadFromCli, verbBlocked } from "./verbs.ts";
+import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
+import { NOT_UNDER_MAIN, insteadFromCli, verbBlocked } from "./verbs.ts";
+import { archivePlace } from "./outside.ts";
 import { type TraceAction, type TraceInput, parkWaitedOn } from "./traces.ts";
 
 /** bb reads plugin metadata for at most this many threads per request. */
@@ -124,7 +125,8 @@ export interface Actions {
   /** Record the reason (or forget an earlier one), stop it when dropped, and archive it in bb. */
   archive(args: { threadId: string; reason: string | null; dropped: boolean; at: number }): Promise<void>;
   /** The verbs as the CLI runs them: the page's rules first, then the same action. */
-  archiveChecked(threadId: string, reason: string | null): Promise<{ title: string; under: number }>;
+  /** `callerId`: the thread that ran the command, or null for the person. Outside Main, only Main, the person, or the thread itself archives. */
+  archiveChecked(args: { callerId: string | null; threadId: string; reason: string | null }): Promise<{ title: string; under: number; outside: boolean }>;
   /** `callerId`: the thread that ran the command, or null for one run outside any thread (the person). An agent that parks what waited on the person leaves a trace. */
   parkChecked(args: { callerId: string | null; threadId: string; reason: string; pickUp: string; stop: boolean }): Promise<{ title: string; record: ParkRecord; kept: boolean; traced: boolean }>;
   resumeChecked(threadId: string): Promise<{ title: string }>;
@@ -279,9 +281,19 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     return target;
   };
 
+  /** Whether the thread has no parent and is no Main: a line of Outside Main. */
+  const isOutside = async (threadId: string): Promise<boolean> => {
+    const [raw] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+    const found = raw === undefined ? null : toFacts(raw);
+    if (found === null || found.parentThreadId !== null) return false;
+    return !Object.values((await readMains()).mains).includes(threadId);
+  };
+
   const archive: Actions["archive"] = async ({ threadId, reason, dropped, at }) => {
     // The reason is cow's note on the thread; archiving without one forgets an earlier reason.
-    if (reason !== null) await setArchiveNote(threadId, { reason, at });
+    // A thread outside Main keeps a note either way: under no Main once archived, the note is what lists it under Archived.
+    const outside = await isOutside(threadId);
+    if (reason !== null || outside) await setArchiveNote(threadId, { ...(reason === null ? {} : { reason }), at, ...(outside ? { outside: true as const } : {}) });
     else if ((await notes([threadId])).archives[threadId]) await setArchiveNote(threadId, null);
     // Dropping ends whatever the thread still runs; a thread at rest has
     // nothing to stop, which is not a reason to keep it.
@@ -317,7 +329,8 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     const root = threads.find((thread) => thread.id === rootId);
     if (!root) throw new CowError("thread_not_found", `there is no thread ${rootId}`, "Run `bb thread list` to see thread ids.");
     // With the overview, the threads of the automations' runs are read as the ones under Main are.
-    const under = [...new Set([...descendantIds(threads, rootId, now - LIMITS.archivedListedMs), ...extra])].filter((id) => id !== rootId);
+    const since = now - LIMITS.archivedListedMs;
+    const under = [...new Set([...descendantIds(threads, rootId, since), ...archivedOutsideIds(threads, rootId, since), ...extra])].filter((id) => id !== rootId);
     const noted = await notes([rootId, ...under]);
     // The root is Main when the overview is asked for; a thread named to a verb is read as it would be on a page.
     const projects = projectIds(threads, Object.keys(noted.projects), null);
@@ -346,18 +359,20 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       note: (id: string) => noted.nexts[id]?.text ?? null,
       todos: (id: string) => noted.todos[id] ?? [],
       marked: (id: string) => noted.projects[id] !== undefined,
+      archivedOutside: (id: string) => noted.archives[id]?.outside === true,
     };
     return { threads, truncated, now, root, noted, deriveThread, plans };
   };
 
   /** The thread as a line, for a verb's rule; and whether it is a Main. */
-  const lineFor = async (threadId: string): Promise<{ line: Line; isMain: boolean; threads: readonly ThreadFacts[]; now: number }> => {
+  const lineFor = async (threadId: string): Promise<{ line: Line; isMain: boolean; threads: readonly ThreadFacts[]; now: number; mains: MainRecord }> => {
     const seen = await look(threadId);
     const line = lineOf(seen.threads, threadId, seen.deriveThread(() => false), seen.now);
     if (!line) throw new CowError("thread_not_found", `there is no thread ${threadId}`);
     const mains = await readMains();
-    const isMain = line.thread.parentThreadId === null || mains.mains[line.thread.projectId] === threadId;
-    return { line, isMain, threads: seen.threads, now: seen.now };
+    // A Main is a thread chosen as one; a thread with no parent that is not is listed under Outside Main.
+    const isMain = Object.values(mains.mains).includes(threadId);
+    return { line, isMain, threads: seen.threads, now: seen.now, mains };
   };
 
   const refuse = (verb: string, line: Line, why: string): never => {
@@ -424,17 +439,23 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       return { title: target.title, ...(await todo(threadId, checked)) };
     },
 
-    async archiveChecked(threadId, reason) {
-      const { line, isMain, threads, now } = await lineFor(threadId);
+    async archiveChecked({ callerId, threadId, reason }) {
+      const { line, isMain, threads, now, mains } = await lineFor(threadId);
+      const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
+      const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
+      const place = archivePlace(threads, mains.mains, callerId, ownProject, threadId);
+      if (place.why !== null) refuse("archive", line, place.why);
       const why = verbBlocked("archive", line, isMain);
       if (why !== null) refuse("archive", line, why);
       const under = descendantIds(threads, threadId).length;
       await archive({ threadId, reason, dropped: false, at: now });
-      return { title: line.thread.title, under };
+      return { title: line.thread.title, under, outside: place.outside };
     },
 
     async parkChecked({ callerId, threadId, reason, pickUp, stop }) {
       const { line, isMain, now } = await lineFor(threadId);
+      // A thread outside Main has no place on the shelf of a Main's page.
+      if (!isMain && line.thread.parentThreadId === null) refuse("park", line, NOT_UNDER_MAIN);
       const why = verbBlocked("park", line, isMain);
       if (why !== null) refuse("park", line, why);
       const parsed = parsePickUp(pickUp, now);

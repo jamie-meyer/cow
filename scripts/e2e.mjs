@@ -1724,6 +1724,8 @@ async function prepareOutside(ids) {
   for (const name of OUTSIDE) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
   for (const name of ["ostray", "ohead"]) {
     const [thread] = await api(`/threads?threadIds=${ids[name]}&limit=1`);
+    // A run that stopped half way may have left one archived.
+    if (thread.archivedAt) await bb("thread", "unarchive", ids[name]);
     if (thread.parentThreadId !== null) await bb("thread", "update", ids[name], "--clear-parent-thread");
   }
   const [kid] = await api(`/threads?threadIds=${ids.okid}&limit=1`);
@@ -2027,6 +2029,56 @@ async function outsideChecks(page, ids, shot, chooseMain) {
   const plain = moveRefusal(new Error(refused));
   check("bb refuses a parent that is archived, and cow says so in plain words", refused !== "" && plain === "bb refused: Main cannot take a thread under it, as it is archived or deleted" && (await facts(ostray)).parentThreadId === null, refused.slice(0, 200));
   await bb("thread", "unarchive", okid);
+
+  // -- archiving a thread outside Main, with a reason --
+  const { OUTSIDE_REFUSAL } = await import("../src/outside.ts");
+  const archivedLine = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const reasonOf = (id) => `(${archivedLine(id)}?.querySelector("[data-cow-archive-reason]")?.textContent ?? "")`;
+  // The command resolves Main from what is recorded for the caller's project: the fixtures' Main, for this part only.
+  await signer.must("main_choose", { projectId: (await facts(omain)).projectId, threadId: omain });
+  const byOther = await cowAs(okid, "archive", ostray, "--reason", "cow test: not mine");
+  check(
+    "another thread is refused archiving a thread outside Main, and told who does it",
+    byOther.code !== 0 && `${byOther.stderr}${byOther.stdout}`.includes(OUTSIDE_REFUSAL) && /the thread that is Main runs `bb cow archive/.test(byOther.stderr + byOther.stdout) && (await facts(ostray)).archivedAt == null,
+    (byOther.stderr + byOther.stdout).slice(0, 300),
+  );
+  const ownMain = await cowAs(omain, "archive", omain, "--reason", "cow test: never");
+  check("the chosen Main is refused as Main, by name", ownMain.code !== 0 && `${ownMain.stderr}${ownMain.stdout}`.includes(`(${omain}): Main cannot be archived from here`) && (await facts(omain)).archivedAt == null, (ownMain.stderr + ownMain.stdout).slice(0, 300));
+  const byMain = await cowAs(omain, "archive", ostray, "--reason", "cow test: old work");
+  check(
+    "the thread that is Main archives a thread outside Main with a reason, and is not taken for Main",
+    byMain.code === 0 && byMain.stdout.includes("cow test: old work") && byMain.stdout.includes("it was outside Main") && (await facts(ostray)).archivedAt != null,
+    (byMain.stderr + byMain.stdout).slice(0, 300),
+  );
+  await page.waitFor(`${reasonOf(ostray)}.includes("cow test: old work") && !${outLine(ostray)}`, { label: "under Archived with its reason", timeout: 20_000 });
+  check("archived, it leaves Outside Main and is listed under Archived with its reason", await page.eval(`!!document.querySelector("[data-cow-archived]")`));
+  const statusArchived = (await cow("status", "--main", omain)).stdout;
+  check("bb cow status lists it under Archived too", new RegExp(`\\(${ostray}\\)[^\\n]*cow test: old work`).test(statusArchived), statusArchived.split("\n").filter((l) => l.includes(ostray)).join(" / "));
+  await restoreStored();
+  await bb("thread", "unarchive", ostray);
+  await page.waitFor(`!!${outLine(ostray)}`, { label: "back outside Main, unarchived", timeout: 20_000 });
+
+  // -- on the page: e asks for a reason, as on any line; u takes it back --
+  await page.eval(`${outLine(ostray)}.click(); true`);
+  await sleep(200);
+  if (!(await page.eval(isCur(ostray)))) throw new Error("the cursor is not on the fixture; nothing is archived");
+  check("the bar offers e on a line outside Main", await page.eval(`document.querySelector('[data-cow-verb="archive"]')?.classList.contains("cow-off") === false`));
+  await page.key("e");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the archive prompt on a line outside Main" });
+  // An open thread outside Main has no notes read for it, so a reason given before is not offered again here.
+  check("e asks for a reason, as on any line", await page.eval(`!!document.querySelector('[data-cow-input="archive-reason"]')`));
+  await page.eval(`(() => { const input = document.activeElement; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(input, ""); input.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+  await page.type("cow test: from the page");
+  await page.key("Enter");
+  await waitForThread(ostray, (t) => t.archivedAt != null, "archived from the page", 20_000);
+  await page.waitFor(`${reasonOf(ostray)}.includes("cow test: from the page")`, { label: "under Archived, from the page", timeout: 20_000 });
+  check("Enter archives it, and it is listed under Archived with that reason", (await page.eval(message)).includes("archived: cow test: from the page"), await page.eval(message));
+  await page.key("u");
+  await page.waitFor(`${confirm}.length > 0`, { label: "undo's confirmation" });
+  await page.key("y");
+  await waitForThread(ostray, (t) => t.archivedAt == null, "unarchived by u", 20_000);
+  await page.waitFor(`!!${outLine(ostray)}`, { label: "back outside Main after u", timeout: 20_000 });
+  check("u takes it back: it is open again, outside Main", (await facts(ostray)).parentThreadId === null);
 
   // -- bb cow status --
   const status = (await cow("status", "--main", omain)).stdout;
@@ -3515,17 +3567,35 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const requested = await cowAs(ckid, "cap", "request", "--kind", "dir", "--rule", `${scratch}/req`, "--why", "to write the report there", "--json");
   const requestedAsk = requested.code === 0 ? JSON.parse(requested.stdout).ask : null;
   check("bb cow cap request raises an ask to the person", requestedAsk?.capability?.rule === `${scratch}/req` && requestedAsk.status === "open", requested.stdout + requested.stderr);
-  await page.waitFor(`${doing(ckid)}.startsWith("asks for a capability: write under ${scratch}/req")`, { label: "the request for a capability on its line" });
-  check("its line and its queue entry say it asks for a capability, and what", (await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)) === `asks for a capability: write under ${scratch}/req` && (await capLog())[0].event.kind === "requested");
+  const wantedText = `asks for a capability to write under ${scratch}/req: press a to allow or refuse`;
+  await page.waitFor(`${doing(ckid)}.startsWith(${JSON.stringify(wantedText)})`, { label: "the request for a capability on its line" });
+  check(
+    "its line and its queue entry say what it asks for and the key that decides it; the next move says it too",
+    (await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)) === wantedText && (await page.eval(nextOf(ckid))) === "press a to allow or refuse" && (await capLog())[0].event.kind === "requested",
+    `${await page.eval(`document.querySelector('[data-cow-queue="${ckid}"] p')?.textContent ?? ""`)} / ${await page.eval(nextOf(ckid))}`,
+  );
   check("asking makes nothing: there is no capability, and no command that makes one", (await byName("cow test requested")) === null && (await cowAs(ckid, "cap", "create", "--name", "x")).code !== 0 && (await cowAs(ckid, "caps", "add")).code !== 0);
   await select(ckid);
+  const firstVerb = await page.eval(`(() => { const verb = document.querySelector(".cow-verbs .cow-vb"); return verb ? (verb.dataset.cowVerb ?? "") + "|" + verb.textContent : ""; })()`);
+  check("with its line selected, the verb bar shows a first, as allow or refuse", /^answer\|a\s*allow or refuse$/.test(firstVerb), firstVerb);
   await page.key("a");
   await page.waitFor(`document.querySelector("[data-cow-ask-card]")?.dataset.cowAsk === "${requestedAsk?.id}"`, { label: "its ask card" });
   await shot("caps-ask-card");
+  const card = await page.eval(`(() => { const card = document.querySelector("[data-cow-ask-card]"); return { kind: card.querySelector(".cow-perm-kind")?.textContent ?? "", q: card.querySelector("[data-cow-answer-prompt]")?.textContent ?? "", why: card.querySelector("[data-cow-ask-context]")?.textContent ?? "", allow: card.querySelector('[data-cow-capability-choice="allow"]')?.textContent ?? "", refuse: card.querySelector('[data-cow-capability-choice="refuse"]')?.textContent ?? "", keys: card.querySelector(".cow-ans-keys")?.textContent ?? "" }; })()`);
+  check(
+    "its card says what is asked, for which thread and why, shows allowing and refusing at once with their keys, and what happens next",
+    card.kind.startsWith("Capability request · for ") &&
+      /^“.+” asks for a capability to write under /.test(card.q) && card.q.endsWith(` ${scratch}/req`) &&
+      card.why === "Why, in its words: to write the report there" &&
+      card.allow.startsWith("1○allow it") && /confirm the one sentence/.test(card.allow) && /lasts until you delete it/.test(card.allow) &&
+      card.refuse.startsWith("2○refuse it") && /it is told no/.test(card.refuse) &&
+      /1 allow: the steps open, and you confirm at the end · 2 then ⏎ refuse/.test(card.keys),
+    JSON.stringify(card),
+  );
+  // One key opens the steps: they end in a confirmation of their own.
   await page.key("1");
-  await page.key("Enter");
   await page.waitFor(`${stage} === "rule"`, { label: "the steps, from the ask" });
-  check("granting from the ask card goes through the same steps, starting from what was asked for", (await page.eval(`${field("cap-rule")}?.value`)) === `${scratch}/req` && (await openAsksOf(ckid)).length === 1);
+  check("1 on the card opens the same steps at once, starting from what was asked for; nothing is granted yet", (await page.eval(`${field("cap-rule")}?.value`)) === `${scratch}/req` && (await openAsksOf(ckid)).length === 1);
   await page.key("Enter");
   await fill("cap-name", "cow test requested");
   await page.key("Enter");

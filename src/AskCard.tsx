@@ -6,7 +6,7 @@
 import { type RefObject } from "react";
 import type { Ask } from "./asks/ask.ts";
 import { type AskDraft, CONFIRM_WORD, chatDigit, draftAnswer } from "./asks/card.ts";
-import { MESSAGED_SINCE } from "./state.ts";
+import { MESSAGED_SINCE, capabilityWanted } from "./state.ts";
 import { fileAttribute } from "./reader/trigger.ts";
 import { formatAge } from "./text.ts";
 
@@ -23,6 +23,19 @@ export interface AskState {
   /** Opened for this one ask only: the card closes once it is answered. */
   single: boolean;
 }
+
+/**
+ * A request for a capability reads as one, whatever words were stored with
+ * it: what it asks for, and both choices with what each does next.
+ */
+const CAPABILITY_CHOICES = [
+  {
+    label: "allow it",
+    detail:
+      "1 opens the steps at once: check what it covers (you can narrow or widen it), name it, choose who it applies to, then confirm the one sentence that says exactly what is allowed. Nothing is granted before that confirmation. It is a capability: it lasts until you delete it with C, not for this once only",
+  },
+  { label: "refuse it", detail: "2, then ⏎: it is told no, as a message from you. It cannot be undone, and it can ask again" },
+] as const;
 
 const RISK_TEXT = { low: "low risk", medium: "medium risk · the answer is shown back to you before it is sent", high: `high risk · the answer is sent only after you type ${CONFIRM_WORD}` } as const;
 
@@ -96,7 +109,9 @@ export function AskCard({
     >
       {sent}
       <p className="cow-perm-kind">
-        {asks.length > 1 ? `Ask ${at + 1} of ${asks.length}` : "Ask"} · from {title} · {formatAge(Math.max(0, now - ask.createdAt))} ago
+        {ask.capability ? "Capability request" : asks.length > 1 ? `Ask ${at + 1} of ${asks.length}` : "Ask"}
+        {ask.capability && asks.length > 1 ? ` · ${at + 1} of ${asks.length}` : ""} · {ask.capability ? "for" : "from"} {title} · {formatAge(Math.max(0, now - ask.createdAt))} ago
+        {ask.capability && ask.askedBy !== null && ask.askedBy !== ask.threadId ? " · asked for it by a thread above it" : ""}
         {ask.risk ? (
           <b className={`cow-risk cow-risk-${ask.risk}`} data-cow-ask-risk={ask.risk}>
             {" "}
@@ -105,10 +120,17 @@ export function AskCard({
         ) : null}
       </p>
       <p className="cow-ans-q" data-cow-answer-prompt="">
-        {ask.question}
+        {ask.capability ? (
+          <>
+            “{title}” {capabilityWanted(ask.capability)}
+          </>
+        ) : (
+          ask.question
+        )}
       </p>
       {ask.context ? (
         <p className="cow-ans-why cow-ask-context" data-cow-ask-context="">
+          {ask.capability ? "Why, in its words: " : ""}
           {ask.context}
         </p>
       ) : null}
@@ -131,7 +153,8 @@ export function AskCard({
           </span>
         </p>
       ) : null}
-      {ask.options.map((option, index) => {
+      {ask.options.map((stored, index) => {
+        const option = (ask.capability ? CAPABILITY_CHOICES[index] : undefined) ?? stored;
         const chosen = draft.option === index + 1;
         return (
           <div
@@ -139,6 +162,7 @@ export function AskCard({
             className={chosen ? "cow-ans-o cow-chosen" : "cow-ans-o"}
             data-cow-answer-option={index + 1}
             data-cow-chosen={chosen || undefined}
+            data-cow-capability-choice={ask.capability ? (index === 0 ? "allow" : index === 1 ? "refuse" : undefined) : undefined}
           >
             <kbd>{index + 1}</kbd>
             <span className="cow-ans-mark">{chosen ? "◉" : "○"}</span>
@@ -228,6 +252,17 @@ export function AskCard({
         ) : draft.stage === "word" ? (
           <>
             type <b>{CONFIRM_WORD}</b>, then <kbd>⏎</kbd> sends it · <kbd>Esc</kbd> back to the choices · an answer cannot be undone
+          </>
+        ) : ask.capability && !draft.chat && draft.option !== 2 && draft.text.trim() === "" ? (
+          <>
+            <kbd>1</kbd> allow: the steps open, and you confirm at the end · <kbd>2</kbd> then <kbd>⏎</kbd> refuse
+            {others.length > 0 && !state.single ? (
+              <>
+                {" "}
+                · <kbd>⇥</kbd> next ask
+              </>
+            ) : null}{" "}
+            · <kbd>Esc</kbd> decide later
           </>
         ) : (
           <>

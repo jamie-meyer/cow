@@ -10,6 +10,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { AnswerCard, type AnswerState } from "./AnswerCard.tsx";
 import { AskCard, type AskState } from "./AskCard.tsx";
+import type { Ask } from "./asks/ask.ts";
 import { backOut, chatDigit, confirmAsk, emptyAskDraft, markChat, markOption, nextAsk, writeAnswer, writeWord } from "./asks/card.ts";
 import type { RaisedData } from "./raisedData.ts";
 import { choose, confirm, emptyDraft, oldestAsk, writeText } from "./answer.ts";
@@ -34,7 +35,7 @@ import { BLOCKED_OPTIONS, type Refusal, chooseBlocked, confirmBlocked, emptyBloc
 import { keepNote } from "./keep.ts";
 import { findReplies } from "./attention.ts";
 import type { ThreadReader } from "./activity.ts";
-import { type OutsideLine, moveRecord, moveRefusal, moveText, moveUpdate, undoUpdates } from "./outside.ts";
+import { type OutsideLine, moveRecord, outsideArchiveBlocked, moveRefusal, moveText, moveUpdate, undoUpdates } from "./outside.ts";
 import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type Seen, type WaitNote } from "./shared.ts";
 import { isBusy } from "./state.ts";
 import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
@@ -52,7 +53,8 @@ type Modal =
   /** `reason` is null when parked work is kept parked: its reason stays. */
   | { kind: "park-pickup"; threadId: string; reason: string | null; value: string; error: string }
   /** Why it is archived, or dropped: one optional line, then it happens. */
-  | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string }
+  /** `outside`: a line of Outside Main, which is not in the tree; the prompt is then held by Main, as a move's is. */
+  | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string; outside?: OutsideLine }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
   /** Who or what it waits on, then an optional reminder. */
   | { kind: "wait-on"; threadId: string; value: string; error: string }
@@ -118,6 +120,8 @@ export interface Verbs {
   startWait: (line: Line | null) => void;
   /** Ask, then bring a thread from Outside Main under Main. `u` takes it back. */
   startBring: (line: OutsideLine) => void;
+  /** Ask for a reason, then archive a thread from Outside Main. `u` takes it back. */
+  startArchiveOutside: (line: OutsideLine) => void;
   /** Ask, then take a not-started item off its list. */
   removeTodo: (row: TodoRow) => void;
   moveTodo: (row: TodoRow, by: 1 | -1) => void;
@@ -279,7 +283,7 @@ export function useVerbs(host: VerbHost): Verbs {
     }
   };
 
-  const archive = async (line: Line, dropped: boolean, reason: string | null) => {
+  const archive = async (line: Pick<Line, "thread">, dropped: boolean, reason: string | null) => {
     const id = line.thread.id;
     const next = afterLeaving(id);
     const under = host.under(id);
@@ -362,6 +366,17 @@ export function useVerbs(host: VerbHost): Verbs {
     remember({ kind: "move", threadId: id, title: thread.title, before, ...(seen ? { seen } : {}) });
     host.follow(id, OUTSIDE_SECTION);
     say(`brought under Main: Main gets bb's notice, and the thread tells Main only when it is stuck · u takes it back${note}`);
+  };
+
+  /** `e` on a line of Outside Main: the same prompt as on any line, under the rules a thread outside the tree can be read by. */
+  const startArchiveOutside = (line: OutsideLine) => {
+    const blocked = outsideArchiveBlocked(line, host.raised.asks.get(line.thread.id)?.length ?? 0);
+    if (blocked !== null) {
+      const instead = insteadOnPage(blocked);
+      return say(`cannot archive: ${blocked}${instead ? ` · ${instead}` : ""}`);
+    }
+    say("");
+    setModal({ kind: "archive-reason", threadId: main.thread.id, dropped: false, value: parks.archives.get(line.thread.id)?.reason ?? "", error: "", outside: line });
   };
 
   const startBring = (line: OutsideLine) =>
@@ -624,14 +639,17 @@ export function useVerbs(host: VerbHost): Verbs {
     setModal({ kind: "ask", threadId, askId, draft: emptyAskDraft, sending: false, note: "", sent: [], single });
   };
 
+  /** The steps that make a capability, from what a thread asked for; saving them answers its ask. */
+  const grantRequested = (threadId: string, ask: Ask) => {
+    if (!ask.capability) return;
+    setModal(null);
+    host.startCap({ via: "ask", threadId, where: "line", askId: ask.id }, { kind: ask.capability.kind, text: ask.capability.rule });
+  };
+
   const confirmAskAnswer = () => {
     if (modal?.kind !== "ask" || modal.sending || currentAsk === null) return;
     // Granting a capability a thread asked for is not an answer in one key: it goes through the steps, and they answer the ask.
-    if (currentAsk.capability && modal.draft.option === 1 && !modal.draft.chat) {
-      const { capability } = currentAsk;
-      setModal(null);
-      return host.startCap({ via: "ask", threadId: modal.threadId, where: "line", askId: currentAsk.id }, { kind: capability.kind, text: capability.rule });
-    }
+    if (currentAsk.capability && modal.draft.option === 1 && !modal.draft.chat) return grantRequested(modal.threadId, currentAsk);
     const step = confirmAsk(modal.draft, currentAsk);
     if (step.kind === "incomplete") return setModal({ ...modal, note: step.why });
     if (step.kind === "stage") return setModal({ ...modal, draft: step.draft, note: "" });
@@ -782,7 +800,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -895,6 +913,8 @@ export function useVerbs(host: VerbHost): Verbs {
         const number = Number(key);
         if (askMessaged && number === chatDigit(currentAsk)) return setModal({ ...modal, draft: markChat(modal.draft), note: "" });
         if (!currentAsk.optionsOnly && number === currentAsk.options.length + 1) return answerRef.current?.focus();
+        // Allowing a capability opens its steps at once: they end in a confirmation of their own, so a digit here sends nothing.
+        if (currentAsk.capability && number === 1) return grantRequested(modal.threadId, currentAsk);
         setModal({ ...modal, draft: markOption(modal.draft, currentAsk, number), note: "" });
       },
       footer: (
@@ -1080,18 +1100,19 @@ export function useVerbs(host: VerbHost): Verbs {
   }
   if (modal.kind === "archive-reason") {
     const { dropped } = modal;
-    const under = host.under(modal.threadId).length;
+    const subject = modal.outside?.thread ?? target?.thread ?? null;
+    const under = host.under(subject?.id ?? modal.threadId).length;
     const withUnder = under === 0 ? "" : ` and the ${under === 1 ? "thread" : `${under} threads`} under it`;
     const cancelled = dropped ? "not dropped" : "not archived";
     const submitReason = () => {
-      if (target === null) return;
+      if (subject === null) return;
       const value = modal.value.trim();
       if (value.length > MAX_REASON) {
         return setModal({ ...modal, error: `keep the reason under ${MAX_REASON} characters` });
       }
       // Closed before it runs, so a second Enter cannot run it twice.
       close();
-      void archive(target, dropped, value === "" ? null : value);
+      void archive({ thread: subject }, dropped, value === "" ? null : value);
     };
     return {
       mode: dropped ? "DROP" : "ARCHIVE",
@@ -1103,7 +1124,7 @@ export function useVerbs(host: VerbHost): Verbs {
           name="archive-reason"
           label={
             <>
-              {dropped ? "drop" : "archive"} · <b>{title}</b>
+              {dropped ? "drop" : "archive"} · <b>{subject?.title ?? title}</b>
               {withUnder} · reason:
             </>
           }

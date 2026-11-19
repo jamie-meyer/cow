@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { filterOverview } from "../src/filter.ts";
-import { moveRecord, moveRefusal, moveText, moveUpdate, notListedText, outsideMain, undoUpdates } from "../src/outside.ts";
+import {
+  ABOVE_MAIN_REFUSAL,
+  MAIN_ARCHIVE_REFUSAL,
+  OTHER_MAIN_REFUSAL,
+  OUTSIDE_REFUSAL,
+  archivePlace,
+  moveRecord,
+  moveRefusal,
+  moveText,
+  moveUpdate,
+  notListedText,
+  outsideArchiveBlocked,
+  outsideMain,
+  undoUpdates,
+} from "../src/outside.ts";
+import { insteadFromCli, insteadOnPage } from "../src/verbs.ts";
 import { type ThreadFacts, derive } from "../src/state.ts";
 import { statusReport, statusText } from "../src/status.ts";
-import { OUTSIDE_SECTION, afterLeaving, buildOverview, cursorOrder, foldMove, keepFolds, sectionFolded, sectionOf, unfoldAround } from "../src/tree.ts";
+import { OUTSIDE_SECTION, afterLeaving, archivedOutsideIds, buildOverview, cursorOrder, foldMove, keepFolds, sectionFolded, sectionOf, unfoldAround } from "../src/tree.ts";
 import { undoShort, undoText } from "../src/undo.ts";
 import { DAY, HOUR, NOW, activity, thread } from "./fixtures.ts";
 
@@ -151,4 +166,64 @@ test("bb cow status lists Outside Main, naming another project, and --json has i
   assert.match(text, /\nOutside Main: open, with no parent, not under Main \(6; 2 started by plugins, 1 is another project's Main, not listed\)\n/);
   assert.match(text, / {4}at rest · 4w {2}Elsewhere \(elsewhere\) {2}\[project: Billing\]\n/);
   assert.match(text, / {4}at rest · 5d {2}head \(head\) {2}\[2 under it\]\n/);
+});
+
+// ---- archiving a thread outside Main ----------------------------------------
+
+const MAINS = { proj_test: "main", proj_other: "otherMain" };
+
+test("who archives a thread outside Main: the person, Main, or the thread itself", () => {
+  const threads = world();
+  assert.deepEqual(archivePlace(threads, MAINS, null, "proj_test", "old"), { outside: true, why: null });
+  assert.deepEqual(archivePlace(threads, MAINS, "main", "proj_test", "old"), { outside: true, why: null });
+  assert.deepEqual(archivePlace(threads, MAINS, "old", "proj_test", "old"), { outside: true, why: null });
+  // Another thread, under Main or outside it, is refused, and told who does it.
+  assert.deepEqual(archivePlace(threads, MAINS, "kid", "proj_test", "old"), { outside: true, why: OUTSIDE_REFUSAL });
+  assert.deepEqual(archivePlace(threads, MAINS, "fork", "proj_test", "old"), { outside: true, why: OUTSIDE_REFUSAL });
+  assert.match(insteadFromCli(OUTSIDE_REFUSAL), /the thread that is Main runs `bb cow archive/);
+  // Another project's Main may archive a thread with no parent: Outside Main lists threads of every project.
+  assert.deepEqual(archivePlace(threads, MAINS, "otherMain", "proj_other", "old"), { outside: true, why: null });
+});
+
+test("only the chosen Main is refused as Main; another project's Main, and what is above a Main, are never archived here", () => {
+  const threads = world();
+  assert.equal(archivePlace(threads, MAINS, null, "proj_test", "main").why, MAIN_ARCHIVE_REFUSAL);
+  assert.equal(archivePlace(threads, MAINS, "main", "proj_test", "main").why, MAIN_ARCHIVE_REFUSAL);
+  assert.equal(archivePlace(threads, MAINS, "main", "proj_test", "otherMain").why, OTHER_MAIN_REFUSAL);
+  assert.equal(archivePlace(threads, MAINS, null, "proj_test", "otherMain").why, OTHER_MAIN_REFUSAL);
+  assert.equal(archivePlace(threads, MAINS, "otherMain", "proj_other", "otherMain").why, MAIN_ARCHIVE_REFUSAL);
+  assert.equal(archivePlace(threads, MAINS, null, "proj_test", "root").why, ABOVE_MAIN_REFUSAL);
+  assert.equal(OTHER_MAIN_REFUSAL, "it is the Main chosen for another project");
+  // A thread under a parent is left to the rules every line has.
+  assert.deepEqual(archivePlace(threads, MAINS, "kid", "proj_test", "w1"), { outside: false, why: null });
+  assert.deepEqual(archivePlace(threads, MAINS, "kid", "proj_test", "kid"), { outside: false, why: null });
+});
+
+test("e on a line outside Main: refused while it runs, bb asks it something, it has an open ask, or threads under it are open", () => {
+  const lines = new Map(outsideMain(world(), "main").lines.map((line) => [line.thread.id, line]));
+  assert.equal(outsideArchiveBlocked(lines.get("old")!, 0), null);
+  assert.equal(outsideArchiveBlocked(lines.get("old")!, 1), "it has an open ask: answer it, or have it withdrawn");
+  assert.equal(outsideArchiveBlocked(lines.get("busy")!, 0), "its turn is still running");
+  assert.equal(outsideArchiveBlocked(lines.get("asking")!, 0), "bb is asking it a question");
+  assert.equal(outsideArchiveBlocked(lines.get("head")!, 0), "threads under it are still open");
+  assert.equal(insteadOnPage("its turn is still running"), "x stops it, and p sets it aside as it is");
+  assert.match(insteadFromCli("bb is asking it a question"), /The user answers it/);
+});
+
+test("a thread archived from Outside Main is listed under Archived with its reason for two days, then leaves", () => {
+  const notes = new Set(["was"]);
+  const threads = (archivedAt: number) => [...world(), thread({ id: "was", archivedAt, latestAttentionAt: archivedAt - HOUR }), thread({ id: "plain", archivedAt })];
+  const overview = (archivedAt: number) =>
+    buildOverview(threads(archivedAt), "main", (t) => derive(t, activity(), NOW, null, t.id === "was" ? "old work" : null), NOW, {
+      note: () => null,
+      todos: () => [],
+      otherMains: new Set(["otherMain"]),
+      archivedOutside: (id) => notes.has(id),
+    });
+  const listed = overview(NOW - HOUR).archived;
+  // Only the one cow's note marks: a thread archived some other way is not known to have been outside Main.
+  assert.deepEqual(listed.map((line) => line.thread.id), ["was"]);
+  assert.equal(listed[0]!.derived.archivedWhy, "old work");
+  assert.deepEqual(overview(NOW - 3 * DAY).archived, []);
+  assert.deepEqual(archivedOutsideIds(threads(NOW - HOUR), "main", NOW - 2 * DAY), ["gone", "plain", "was"]);
 });

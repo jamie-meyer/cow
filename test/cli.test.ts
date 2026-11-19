@@ -27,7 +27,7 @@ const EMPTY_REPORT: StatusReport = {
 function recorder(overrides: Partial<CliActions> = {}) {
   const calls: unknown[][] = [];
   const actions: CliActions = {
-    archiveChecked: async (...args) => (calls.push(["archive", ...args]), { title: "T", under: 0 }),
+    archiveChecked: async (...args) => (calls.push(["archive", ...args]), { title: "T", under: 0, outside: false }),
     parkChecked: async (args) => (
       calls.push(["park", args]),
       { title: "T", kept: false, traced: false, record: { at: NOW, reason: args.reason, pickUp: { kind: "none" }, checkedAt: NOW } }
@@ -62,13 +62,18 @@ test("archive takes a thread and an optional reason", async () => {
   const reasoned = await run("archive", "thr_a", "--reason", "merged  and done");
   assert.equal(reasoned.stdout, "archived “T” (thr_a): merged and done\n");
   assert.deepEqual(calls, [
-    ["archive", "thr_a", null],
-    ["archive", "thr_a", "merged and done"],
+    ["archive", { callerId: "thr_me", threadId: "thr_a", reason: null }],
+    ["archive", { callerId: "thr_me", threadId: "thr_a", reason: "merged and done" }],
   ]);
 });
 
+test("archive says when the thread was outside Main", async () => {
+  const { run } = recorder({ archiveChecked: async () => ({ title: "T", under: 0, outside: true }) });
+  assert.equal((await run("archive", "thr_a", "--reason", "old")).stdout, "archived “T” (thr_a): old · it was outside Main: it is listed under Archived for two days\n");
+});
+
 test("archive says how many threads went with it", async () => {
-  const { run } = recorder({ archiveChecked: async () => ({ title: "T", under: 2 }) });
+  const { run } = recorder({ archiveChecked: async () => ({ title: "T", under: 2, outside: false }) });
   assert.equal((await run("archive", "thr_a")).stdout, "archived “T” (thr_a) with the 2 threads under it\n");
 });
 

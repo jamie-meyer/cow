@@ -212,7 +212,7 @@ export function useCapSteps(host: CapStepsHost): CapStepsControl {
           "saving…"
         ) : draft.stage === "restate" ? (
           <>
-            <kbd>⏎</kbd> save the capability{origin.interactionId ? ", and allow this request once" : ""} · <kbd>Esc</kbd> back
+            <kbd>⏎</kbd> save the capability{origin.interactionId ? ", and allow this request once" : origin.askId ? ", and tell the thread it is granted" : ""} · <kbd>Esc</kbd> back
           </>
         ) : draft.stage === "kind" || draft.stage === "scope" ? (
           <>

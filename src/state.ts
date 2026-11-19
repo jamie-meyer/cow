@@ -267,13 +267,21 @@ export function waitingSince(derived: Derived): number {
 /** What a line says when the person has messaged the thread since it asked. */
 export const MESSAGED_SINCE = "you have messaged this thread since it asked";
 
+/** What a request for a capability asks for, from the request itself rather than the words stored with it. */
+export function capabilityWanted(capability: NonNullable<Ask["capability"]>): string {
+  return capability.kind === "dir" ? `asks for a capability to write under ${capability.rule}` : `asks for a capability to run “${capability.rule}”`;
+}
+
+/** How a request for a capability is decided: one key, both ways. */
+export const CAPABILITY_KEY = "press a to allow or refuse";
+
 /** One question in a line: the oldest ask, and how many more there are. `messaged` when the person has written to the thread since it was asked. */
 export function asksText(asks: readonly Ask[], messaged = false): string {
   const first = asks[0];
   if (!first) return "";
-  // An ask for a capability says so: it is a grant the thread wants, not a question about the work.
-  const lead = first.capability ? "" : "asks you: ";
-  return `${lead}${first.question.replace(/\s+/g, " ")}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}${messaged ? ` · ${MESSAGED_SINCE}` : ""}`;
+  // An ask for a capability says so: it is a grant the thread wants, not a question about the work, and says how it is decided.
+  const said = first.capability ? `${capabilityWanted(first.capability)}: ${CAPABILITY_KEY}` : `asks you: ${first.question.replace(/\s+/g, " ")}`;
+  return `${said}${asks.length > 1 ? ` (and ${asks.length - 1} more)` : ""}${messaged ? ` · ${MESSAGED_SINCE}` : ""}`;
 }
 
 /**
@@ -417,7 +425,15 @@ function deriveLine(
       state: stuck ? "stuck" : "wants",
       since,
       doing: asksText(asks, firstMessaged),
-      next: stuck ? `it has waited ${formatAge(now - since)} on you: press a` : firstMessaged ? "answer it, or say it was answered in chat: press a" : "answer it: press a",
+      next: asks[0]!.capability
+        ? stuck
+          ? `it has waited ${formatAge(now - since)} on you: ${CAPABILITY_KEY}`
+          : CAPABILITY_KEY
+        : stuck
+          ? `it has waited ${formatAge(now - since)} on you: press a`
+          : firstMessaged
+            ? "answer it, or say it was answered in chat: press a"
+            : "answer it: press a",
       waitingOnYou: true,
       ...(blocked ? { blocked: { refusals } } : {}),
     };

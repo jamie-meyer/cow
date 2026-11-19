@@ -79,6 +79,7 @@ import {
   type TodoRow,
   buildOverview,
   cursorOrder,
+  archivedOutsideIds,
   descendantIds,
   KEPT_SECTION,
   AUTOMATIONS_SECTION,
@@ -102,7 +103,7 @@ import {
   visibleRows,
   waitingInside,
 } from "./tree.ts";
-import { OUTSIDE_STATE_TEXT, type OutsideLine, notListedText } from "./outside.ts";
+import { OUTSIDE_STATE_TEXT, type OutsideLine, notListedText, outsideArchiveBlocked } from "./outside.ts";
 import { type AutomationGroup, isAutomationRow, lastResultText, nextRunText, olderText, runThreadIds, scriptOutput } from "./automations.ts";
 import { useAutomations } from "./automationsData.ts";
 import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
@@ -114,7 +115,7 @@ import { useVerbs } from "./useVerbs.tsx";
 import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
 import { pickAction, pickChoice } from "./plugins.ts";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
-import { VERB_KEYS, type Verb as VerbName, verbBlocked, verbLabel } from "./verbs.ts";
+import { VERB_KEYS, type Verb as VerbName, decidesCapability, verbBlocked, verbLabel } from "./verbs.ts";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -2131,6 +2132,10 @@ function OverviewScreen({
           if (command.verb === "stop") return verbs.removeTodo(selectedTodo);
           return setMessage("that is work not started yet, not a thread: x removes it, J and K move it");
         }
+        if (selectedOutside) {
+          if (command.verb === "archive") return verbs.startArchiveOutside(selectedOutside);
+          return setMessage(`cannot ${command.verb}: it is outside Main · A brings it under Main, and e archives it`);
+        }
         return verbs.start(command.verb);
       case "undo":
         return verbs.startUndo();
@@ -2237,6 +2242,7 @@ function OverviewScreen({
   const nothingListed = listedCount === 0 && overview.rows.length === 0;
   const returnedCount = overview.parked.filter((line) => line.derived.park?.due != null).length;
   const onHeading = selectedLine === main;
+  const capabilityFirst = !selectedTodo && decidesCapability(selectedLine);
   const verbButton = (verb: VerbName) => {
     const why = verbBlocked(verb, selectedLine, onHeading);
     return (
@@ -2523,7 +2529,7 @@ function OverviewScreen({
               title="Outside Main"
               count={overview.outside.lines.length}
               words={[
-                overview.outside.lines.length === 0 ? "every open thread is under a Main" : "open, with no parent, not under this Main: A brings one under it",
+                overview.outside.lines.length === 0 ? "every open thread is under a Main" : "open, with no parent, not under this Main: A brings one under it, e archives it",
                 notListedText(overview.outside),
               ]
                 .filter(Boolean)
@@ -2762,6 +2768,8 @@ function OverviewScreen({
               <span className="cow-noun">{selectedLine?.thread.title ?? selectedTodo?.item.title ?? selectedOutside?.thread.title ?? selectedAutomation?.automation.name ?? (selected === SETTLE_SECTION ? "To settle" : selected === KEPT_SECTION ? "Kept" : selected === AUTOMATIONS_SECTION ? "Automations" : selected === OUTSIDE_SECTION ? "Outside Main" : "")}</span>
               <span className="cow-sep">▸</span>
               <span className="cow-verbs">
+                {/* A request for a capability is decided with a: that comes first. */}
+                {capabilityFirst ? verbButton("answer") : null}
                 <Verb keys="⏎" label="open chat" off={selected === null} onRun={() => openChat(selected)} />
                 <Verb keys="I" label="say to it" off={selected === null} onRun={() => startSay(selected)} />
                 {isSection(selected) ? (
@@ -2776,11 +2784,17 @@ function OverviewScreen({
                     <Verb keys="J" label="down" off={selectedTodo.number === selectedTodo.of} onRun={() => verbs.moveTodo(selectedTodo, 1)} />
                   </>
                 ) : selectedOutside ? (
-                  <Verb keys="A" label="bring under Main" name="bring" onRun={() => verbs.startBring(selectedOutside)} />
+                  <>
+                    <Verb keys="A" label="bring under Main" name="bring" onRun={() => verbs.startBring(selectedOutside)} />
+                    {(() => {
+                      const why = outsideArchiveBlocked(selectedOutside, raised.asks.get(selectedOutside.thread.id)?.length ?? 0);
+                      return <Verb keys="e" label="archive" name="archive" off={why !== null} why={why ?? undefined} onRun={() => verbs.startArchiveOutside(selectedOutside)} />;
+                    })()}
+                  </>
                 ) : selectedAutomation ? (
                   <Verb keys="l" label={selectedAutomation.runs.length === 0 ? "no runs to show" : "its runs"} off={selectedAutomation.runs.length === 0} onRun={() => run({ kind: "fold", key: "l" })} />
                 ) : (
-                  (["answer", "brief", "park", "resume", "stop", "archive"] as const).map(verbButton)
+                  (["answer", "brief", "park", "resume", "stop", "archive"] as const).filter((verb) => !(capabilityFirst && verb === "answer")).map(verbButton)
                 )}
                 {selectedLine && !selectedTodo && selectedLine !== main && selectedLine.run === undefined ? verbButton("keep") : null}
                 {selectedLine?.derived.reply || selectedLine?.derived.unseen ? (
@@ -2896,7 +2910,8 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
         : // A note may be on any open thread, or on one archived recently enough to be listed.
           // Main's own are its note of what is next and what it has not started.
           // An automation's runs are read as the threads under Main are: an open ask of one's is the person's.
-          [...new Set([mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs), ...runIds])],
+          // So may a thread archived from Outside Main: its note says whether it was.
+          [...new Set([mainId, ...descendantIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs), ...archivedOutsideIds(snapshot.threads, mainId, now - LIMITS.archivedListedMs), ...runIds])],
     [snapshot.threads, snapshot.status, mainId, now, runIds],
   );
   const parks = useParks(underMain, signer);
@@ -2945,6 +2960,7 @@ export function CowPage({ subPath }: PluginNavPanelProps) {
               stays: (id) => staying.has(id),
               otherMains: mains.otherMains,
               automations,
+              archivedOutside: (id) => parks.archives.get(id)?.outside === true,
             },
           ),
     [snapshot, mainId, projects, notes, parks.archives, parks.dismissals, parks.seen, parks.nexts, parks.todos, parks.waits, parks.keeps, staying, raised.asks, raised.briefs, raised.delivered, caps.outside, mains.otherMains, automations, now],
