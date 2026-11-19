@@ -1213,6 +1213,23 @@
   .cow-app {
     padding: 0 10px;
   }
+  /* Narrow, the list keeps its room: the verb bar is two rows at most, each
+     group of verbs on one row that scrolls sideways (every verb still has its
+     key), and a notice above the list is shorter, scrolling inside itself. */
+  .cow-foot .cow-verbs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .cow-foot .cow-verbs > * {
+    flex: none;
+  }
+  .cow-app > .cow-keybanner,
+  .cow-app > .cow-aside {
+    max-height: min(13%, 96px);
+  }
   .cow-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
