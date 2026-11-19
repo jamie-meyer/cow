@@ -236,6 +236,15 @@ is accepted only when it is signed by a key your browser holds. The first page t
 any other browser asks and is approved from an enrolled one. This has limits,
 stated in [What cow stores and sends](#what-cow-stores-and-sends).
 
+**The context card.** Under the queue, just above the legend, the selected
+line's thread shows what bb's own plugins know of it (its pull request with
+its checks and review, and its changed files) and whatever other plugins add
+for it, such as a stack of pull requests. With a chat open, the same card is
+at the top of the pane. A thread with nothing to show has no card; `v` hides
+it in the window. Any plugin can add sections by offering one method,
+`cow_card`: the contract is cow's own and may change before 1.0, see
+[The context card](docs/reference.md#the-context-card).
+
 **The reader, and links.** A file named in a chat, a brief or an ask opens
 over the page, read-only, with vim's keys for moving and searching. A link to
 a thread in the chat opens that thread in the pane instead of bb's chat page;
@@ -313,9 +322,12 @@ says why, and what to press instead. `?` shows this map on the page.
 Other plugins can put a short badge at the end of a thread's line, and offer
 actions for a thread, through bb. They draw and run these, not cow: see
 [Other plugins on a line](docs/reference.md#other-plugins-on-a-line).
+The selected thread's context card shows what bb and other plugins know
+about it: see [The context card](docs/reference.md#the-context-card).
 
 | Key | Does |
 | --- | --- |
+| `v` | hide or show the context card in this window, which remembers it across a reload: what bb and other plugins know about the selected line's thread (its pull request, its changed files, and any section another plugin adds), at the bottom of the right column above the legend, or at the top of the chat pane for the open chat, folded there to its section titles when it is long. It is no stop for j and k; f hints its links, files and folded titles |
 | `.` | list what other plugins offer for the line's thread, such as a pull request's checks or a restack: a digit or letter runs one, in that plugin's own code and under its authority, not cow's; one with choices shows them next, and Esc goes back. A dimmed one is turned off by its plugin. Esc closes the list. The verb bar shows . more only when there is something to list |
 
 **The page itself**
@@ -647,6 +659,7 @@ uses one that is not listed.
 | `experimental_dataDir` (backend) | where bb keeps its data: the reset file's place, and a place no capability may cover |
 | `experimental_listAncestors` (backend) | which threads are above a thread: who may act for whom, and which capabilities apply |
 | `experimental_listPluginMetadata` (backend) | finding cow's notes on threads that bb has since deleted |
+| `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
 | `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5 |
 | `experimental_Diff` (page) | the reader: a file change drawn as a diff |
 | `experimental_SourceCode` (page) | the reader: a file drawn with highlighting and line numbers |
@@ -663,7 +676,9 @@ uses one that is not listed.
 automations plugin through `automations_overview` and `automations_runs`,
 as that plugin answers in bb 0.49. Its answers are read without trusting
 their shape; if a newer bb changes them, the section shows less or
-disappears, and the rest of the page is unaffected.
+disappears, and the rest of the page is unaffected. The context card reads
+bb's bundled git plugin (`status`) and GitHub pull-request plugin
+(`pullRequests`) the same way, and leaves out what either does not give.
 
 **Nothing tells cow that a thread waits on something other than you.** A
 thread waiting on a build, a person or another service reads as running, then

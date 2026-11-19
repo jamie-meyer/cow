@@ -44,7 +44,9 @@ export type Command =
   /** Bring the selected thread from Outside Main under Main. */
   | { kind: "bring" }
   /** The actions other plugins offer for the selected thread. */
-  | { kind: "more" };
+  | { kind: "more" }
+  /** Hide or show the context card in this window. */
+  | { kind: "card" };
 
 /** The key map as the legend shows it: grouped by what the person is doing. */
 export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
@@ -111,6 +113,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
   {
     title: "Other plugins",
     keys: [
+      { keys: "v", does: "hide or show the context card in this window, which remembers it across a reload: what bb and other plugins know about the selected line's thread (its pull request, its changed files, and any section another plugin adds), at the bottom of the right column above the legend, or at the top of the chat pane for the open chat, folded there to its section titles when it is long. It is no stop for j and k; f hints its links, files and folded titles" },
       { keys: ".", does: "list what other plugins offer for the line's thread, such as a pull request's checks or a restack: a digit or letter runs one, in that plugin's own code and under its authority, not cow's; one with choices shows them next, and Esc goes back. A dimmed one is turned off by its plugin. Esc closes the list. The verb bar shows . more only when there is something to list" },
     ],
   },
@@ -201,6 +204,8 @@ export class KeyReader {
         return { kind: "bring" };
       case ".":
         return { kind: "more" };
+      case "v":
+        return { kind: "card" };
       case "w":
         return { kind: "wait" };
       case ";":

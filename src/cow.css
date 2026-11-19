@@ -600,6 +600,118 @@
   text-overflow: ellipsis;
 }
 
+/* the context card: what bb and other plugins know about a thread, one line per row */
+.cow-ctx {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 34%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  border-top: 1px solid var(--cow-rule);
+  margin-top: 6px;
+  padding: 4px 4px 2px 0;
+  font: 11.5px/17px var(--cow-sans);
+  color: var(--cow-muted);
+}
+.cow-ctx-pane {
+  flex: none;
+  max-height: 28%;
+  margin: 0;
+  padding: 3px 8px 3px 12px;
+  border-top: 0;
+  border-bottom: 1px solid var(--cow-rule);
+}
+.cow-ctx-sec + .cow-ctx-sec,
+.cow-ctx-src + .cow-ctx-src {
+  margin-top: 3px;
+}
+.cow-ctx-h {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin: 0;
+  font: 600 10px/16px var(--cow-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cow-faint);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.cow-ctx-fold {
+  cursor: pointer;
+}
+.cow-ctx-t {
+  color: var(--cow-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cow-ctx-from {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.cow-ctx-n {
+  font: 10px var(--cow-mono);
+}
+.cow-ctx-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding-left: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: 3px;
+}
+.cow-ctx-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cow-ink);
+}
+.cow-ctx-detail {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cow-faint);
+}
+.cow-ctx-go {
+  cursor: pointer;
+}
+.cow-ctx-go:hover .cow-ctx-text {
+  text-decoration: underline;
+}
+.cow-ctx-cur {
+  box-shadow: inset 2px 0 0 var(--cow-faint);
+  background: var(--cow-paper2);
+}
+.cow-ctx-cur .cow-ctx-text {
+  font-weight: 600;
+}
+.cow-ctx-b {
+  flex: none;
+  font: 10px/14px var(--cow-mono);
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.cow-ctx-b-ok {
+  color: var(--cow-run);
+}
+.cow-ctx-b-warn {
+  color: var(--cow-needs);
+}
+.cow-ctx-b-bad {
+  color: var(--cow-fail);
+}
+.cow-ctx-b-info {
+  color: var(--cow-unread);
+}
+.cow-ctx-b-muted {
+  color: var(--cow-faint);
+}
+
 /* the chat pane: bb's own chat, drawn from the same theme tokens */
 .cow-pane {
   min-height: 0;
@@ -1113,6 +1225,7 @@
   }
   .cow-sub,
   .cow-legend,
+  .cow-ctx-side,
   .cow-q small {
     display: none;
   }

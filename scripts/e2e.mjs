@@ -88,6 +88,13 @@
 //                       threads, one under another. It sends one fixture a
 //                       message as the user, and acknowledges every notice
 //                       about its fixtures when it finishes
+//   --only-card         only the context card: four fixtures, a stand-in
+//                       Main, two threads under it, and a thread under no
+//                       Main in a new folder that is not a git checkout
+//                       (the folder and the environment bb makes for it are
+//                       removed after), and the throwaway plugin
+//                       cow-check-badge, which answers cow_card for "cow
+//                       test" threads under another thread
 //   --only-plugins      only other plugins' badges and actions: two fixtures,
 //                       a stand-in Main and a thread under it, and a throwaway
 //                       plugin, cow-check-badge (scripts/cow-check-badge),
@@ -226,11 +233,11 @@ From then on every message is one instruction:
 A message may arrive from another bb thread, marked "[bb message from thread:…]": it is part of the test, so carry it out exactly like any other message.
 Never retry a denied call within the same message, and never use any other tool.`;
 
-async function spawn({ prompt, parent, model = MODEL, permissionMode }) {
+async function spawn({ prompt, parent, model = MODEL, permissionMode, environment = ENVIRONMENT }) {
   const thread = await bb(
     "thread", "spawn",
     "--project", PROJECT,
-    "--environment", ENVIRONMENT,
+    "--environment", environment,
     "--provider", "claude-code",
     "--model", model,
     "--title", TITLE,
@@ -264,6 +271,10 @@ const HISTORY = ["hmain", "ha", "hb", "hc"];
 const PLUGGED = ["bmain", "bkid"];
 /** The fixtures of the traces checks: a Main of their own; under it one to park with an ask, one idle, one that asks, and a head with a thread under it. */
 const TRACING = ["tmain", "tpark", "tidle", "task", "thead", "tkid"];
+/** The fixtures of the context card checks: a Main of their own, two threads under it, and a thread under no Main in a folder that is not a git checkout, which has nothing to show. */
+const CARDED = ["kmain", "kone", "ktwo", "knone"];
+/** That folder, made for the run and removed after it. */
+let cardFolder = null;
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
 const madeAutomations = [];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
@@ -288,7 +299,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -341,6 +352,13 @@ async function fixtures() {
   await make("task", { prompt: QUIET, parent: ids.tmain });
   await make("thead", { prompt: QUIET, parent: ids.tmain });
   await make("tkid", { prompt: QUIET, parent: ids.thead });
+  if (wanted.includes("kmain")) {
+    await make("kmain", { prompt: QUIET });
+    await make("kone", { prompt: QUIET, parent: ids.kmain });
+    await make("ktwo", { prompt: QUIET, parent: ids.kmain });
+    if (!ids.knone) cardFolder = mkdtempSync(join(tmpdir(), "cow-card-none-"));
+    await make("knone", { prompt: QUIET, environment: cardFolder ?? ENVIRONMENT });
+  }
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -359,7 +377,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1535,6 +1553,148 @@ async function prepareSettle(ids) {
   await signer.must("seen_set", { threadId: ids.sjob, seen: null });
 }
 
+
+// ---- The context card ------------------------------------------------------------
+
+/** The card for a thread: above the legend, its sections from bb, the test plugin's `cow_card`, and none for a thread with nothing. */
+async function cardChecks(page, ids, shot, chooseMain) {
+  const { kmain, kone, ktwo, knone } = ids;
+  for (const name of CARDED) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  // The test plugin's badge that always throws is meant to: bb logs it.
+  EXPECTED_ERRORS.push(/always throws/, /The above error occurred/);
+  await installBadgePlugin();
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.eval(`sessionStorage.removeItem("cow:card-hidden"); sessionStorage.removeItem("cow:folds"); true`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
+  await chooseMain(page, kmain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const card = `document.querySelector(".cow-side [data-cow-ctx]")`;
+  const ours = `${card}?.querySelector('[data-cow-ctx-source="${BADGE_PLUGIN}"]')`;
+  const section = (title) => `${ours}?.querySelector('[data-cow-ctx-section="${title}"]')`;
+  const tail = (id) => id.slice(-4);
+
+  // -- the card of a fixture's line, above the legend --
+  await page.eval(`${lineEl(kone)}.click(); true`);
+  await page.waitFor(`${card}?.dataset.cowCtx === "${kone}" && !!${ours}`, { label: "the card of the fixture's line", timeout: 20_000 });
+  await shot("card-side");
+  check("the selected line's card shows at the bottom of the right column, just above the legend", await page.eval(`${card}.nextElementSibling?.classList.contains("cow-legend") === true`));
+  check(
+    "the test plugin's stack: three rows, the middle one this thread's, marked current",
+    await page.eval(`(() => {
+      const rows = [...${section("Check stack")}.querySelectorAll("[data-cow-ctx-row]")];
+      const current = rows.filter((row) => row.hasAttribute("data-cow-ctx-current"));
+      return rows.length === 3 && current.length === 1 && current[0] === rows[1] && current[0].textContent.includes("${tail(kone)}");
+    })()`),
+  );
+  check(
+    "each stack row has its two badges, in the theme's state colours",
+    await page.eval(`(() => {
+      const rows = [...${section("Check stack")}.querySelectorAll("[data-cow-ctx-row]")];
+      const tones = rows.map((row) => [...row.querySelectorAll("[data-cow-ctx-badge]")].map((badge) => badge.dataset.cowCtxBadge).join(","));
+      const colours = new Set([...${section("Check stack")}.querySelectorAll("[data-cow-ctx-badge]")].map((badge) => getComputedStyle(badge).color));
+      return tones.join(" ") === "ok,ok info,warn muted,bad" && colours.size >= 4;
+    })()`),
+  );
+  check("the current row stands out", await page.eval(`(() => { const row = ${section("Check stack")}.querySelector("[data-cow-ctx-current]"); const other = ${section("Check stack")}.querySelector("[data-cow-ctx-row]:not([data-cow-ctx-current])"); return getComputedStyle(row).backgroundColor !== getComputedStyle(other).backgroundColor; })()`));
+  check("sections are shown under the plugin's name", await page.eval(`${section("Check stack")}.querySelector(".cow-ctx-from")?.textContent.length > 0`));
+  check("the row with a link keeps its https link and takes a hint", await page.eval(`(() => { const row = ${section("Check extras")}.querySelector('[data-cow-ctx-url="https://example.com/cow-check"]'); return !!row && row.hasAttribute("data-cow-hint"); })()`));
+  check(
+    "the oversized row is cut: its text, its detail and its badges are capped",
+    await page.eval(`(() => {
+      const row = [...${section("Check extras")}.querySelectorAll("[data-cow-ctx-row]")].find((el) => el.dataset.cowCtxRow.startsWith("check oversized"));
+      return !!row && [...row.dataset.cowCtxRow].length <= 160 && row.dataset.cowCtxRow.endsWith("…") && row.querySelectorAll("[data-cow-ctx-badge]").length === 4;
+    })()`),
+  );
+  check("the malformed row is dropped, and its javascript: link with it", await page.eval(`${section("Check extras")}.querySelectorAll("[data-cow-ctx-row]").length === 2 && !document.querySelector('[data-cow-ctx-url^="javascript"]')`));
+  check(
+    "every row is one line, cut with an ellipsis, never wrapping",
+    await page.eval(`[...${card}.querySelectorAll("[data-cow-ctx-row]")].every((row) => getComputedStyle(row).whiteSpace === "nowrap" && row.getBoundingClientRect().height <= 22)`),
+  );
+  check("the card's height is bounded, and it scrolls inside itself", await page.eval(`(() => { const style = getComputedStyle(${card}); return style.overflowY === "auto" && style.maxHeight !== "none"; })()`));
+  await page.key("f");
+  await page.waitFor(`!!document.querySelector("[data-cow-hints]")`, { label: "hints" });
+  check("f hints the card's link", await page.eval(`[...document.querySelectorAll("[data-cow-hints] [data-cow-hint-label]")].length >= ${card}.querySelectorAll("[data-cow-hint]").length && ${card}.querySelectorAll("[data-cow-hint]").length >= 1`));
+  await page.key("Escape");
+  await sleep(200);
+
+  // -- moving the cursor: never another thread's card --
+  const seen = [];
+  await page.key("j");
+  for (let n = 0; n < 15; n += 1) {
+    seen.push(await page.eval(`(${card}?.dataset.cowCtx ?? "") + "|" + (document.querySelector(".cow-main .cow-cur")?.dataset.cowLine ?? "")`));
+    await sleep(60);
+  }
+  await page.waitFor(`${card}?.dataset.cowCtx === "${ktwo}"`, { label: "the next line's card", timeout: 20_000 });
+  check("j moves to the next line, past the card: the card is not a stop", await page.eval(`${lineEl(ktwo)}.classList.contains("cow-cur")`));
+  check("moving the cursor changes the card to that line's", await page.eval(`${section("Check stack")}?.querySelector("[data-cow-ctx-current]")?.textContent.includes("${tail(ktwo)}") === true`));
+  check("while it loads, no line shows another thread's card", seen.every((entry) => { const [shown, cur] = entry.split("|"); return shown === "" || shown === cur; }), seen.filter((entry) => { const [shown, cur] = entry.split("|"); return shown !== "" && shown !== cur; }).join(" "));
+  await page.key("k");
+  await page.waitFor(`${card}?.dataset.cowCtx === "${kone}"`, { label: "the card again", timeout: 5000 });
+  check("going back shows the card kept for that line at once", true);
+
+  // -- a thread with nothing has no card --
+  await page.eval(`document.querySelector('[data-cow-section="section:outside"]').click(); true`);
+  await page.key("l");
+  await page.waitFor(`!!document.querySelector('[data-cow-outside-line="${knone}"]')`, { label: "the line outside Main", timeout: 10_000 });
+  await page.eval(`document.querySelector('[data-cow-outside-line="${knone}"]').click(); true`);
+  await sleep(3000);
+  check("a thread whose card would be empty shows no card: no box, no heading", !(await page.eval(`!!document.querySelector("[data-cow-ctx]")`)) && (await page.eval(`document.querySelector('[data-cow-outside-line="${knone}"]').classList.contains("cow-cur")`)));
+
+  // -- the chat pane --
+  await page.eval(`${lineEl(kone)}.click(); true`);
+  await page.key("Enter");
+  const paneCard = `document.querySelector('[data-cow-pane] [data-cow-ctx]')`;
+  await page.waitFor(`${paneCard}?.dataset.cowCtx === "${kone}"`, { label: "the card in the pane", timeout: 20_000 });
+  await shot("card-pane");
+  check("with the chat open, the same card shows in the pane, above the conversation", await page.eval(`${paneCard}.nextElementSibling?.hasAttribute("data-cow-chat") === true`));
+  check("it is folded there to its section titles", await page.eval(`${paneCard}.querySelectorAll('[data-cow-ctx-section][data-cow-ctx-folded]').length >= 2 && ${paneCard}.querySelectorAll("[data-cow-ctx-row]").length === 0`));
+  await page.eval(`${paneCard}.querySelector('[data-cow-ctx-section="Check stack"] h4').click(); true`);
+  await sleep(200);
+  check("a click on a title unfolds that section", await page.eval(`${paneCard}.querySelectorAll('[data-cow-ctx-section="Check stack"] [data-cow-ctx-row]').length === 3`));
+  await page.key("Escape");
+  await page.waitFor(`!document.querySelector("[data-cow-pane]")`, { label: "the pane closed" });
+
+  // -- v hides it, and the window remembers --
+  await page.waitFor(`${card}?.dataset.cowCtx === "${kone}"`, { label: "the card after the pane", timeout: 5000 });
+  await page.key("v");
+  await sleep(300);
+  check("v hides the card", !(await page.eval(`!!document.querySelector("[data-cow-ctx]")`)));
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!${lineEl(kone)}`, { label: "the page after a reload", timeout: 60_000 });
+  await page.send("Page.bringToFront");
+  await page.eval(`${lineEl(kone)}.click(); true`);
+  await sleep(2000);
+  check("after a reload the window still hides it", !(await page.eval(`!!document.querySelector("[data-cow-ctx]")`)));
+  await page.key("v");
+  await page.waitFor(`${card}?.dataset.cowCtx === "${kone}"`, { label: "the card shown again", timeout: 20_000 });
+  check("v shows it again", true);
+
+  // -- without the test plugin --
+  await removeBadgePlugin();
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`${screen} === "overview" && !!${lineEl(kone)}`, { label: "the page without the test plugin", timeout: 60_000 });
+  await page.send("Page.bringToFront");
+  await page.eval(`${lineEl(kone)}.click(); true`);
+  await sleep(4000);
+  check(
+    "with the test plugin removed, only bb's own sections remain, or nothing",
+    await page.eval(`[...document.querySelectorAll("[data-cow-ctx-source]")].every((el) => el.dataset.cowCtxSource === "bb")`),
+    await page.eval(`[...document.querySelectorAll("[data-cow-ctx-source]")].map((el) => el.dataset.cowCtxSource).join(",") || "no card"`),
+  );
+  await page.eval(`sessionStorage.removeItem("cow:card-hidden"); true`);
+}
+
+/** The folder the thread with nothing was made in, and the environment bb made for it. */
+async function removeCardFolder(ids) {
+  if (ids?.knone) {
+    const [thread] = await api(`/threads?threadIds=${ids.knone}&limit=1`).catch(() => []);
+    if (thread?.environmentId) await bb("environment", "delete", thread.environmentId).catch((cause) => console.error(`could not delete the environment ${thread.environmentId}`, cause.stderr ?? cause));
+  }
+  if (cardFolder) rmSync(cardFolder, { recursive: true, force: true });
+  cardFolder = null;
+}
 
 // ---- Other plugins' badges and actions ---------------------------------------
 
@@ -3887,7 +4047,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -3914,6 +4074,7 @@ async function main() {
     else if (flag("only-plugins")) await pluginChecks(page, ids, shot, chooseMain);
     else if (flag("only-history")) await historyChecks(page, ids, shot, chooseMain);
     else if (flag("only-traces")) await traceChecks(page, ids, shot, chooseMain);
+    else if (flag("only-card")) await cardChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }
@@ -6153,7 +6314,10 @@ async function main() {
   for (const name of [...RAISED, ...READING, ...CAPPED]) {
     if (ids[name]) for (const ask of await openAsksOf(ids[name])) await cow("ask", "withdraw", ask.id);
   }
-  if (!flag("keep")) await archiveFixtures(Object.values(ids));
+  if (!flag("keep")) {
+    await archiveFixtures(Object.values(ids));
+    await removeCardFolder(ids);
+  }
 
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length} of ${results.length} checks passed`);
@@ -6206,6 +6370,7 @@ main().catch(async (error) => {
       await signer?.must("seen_set", { threadId: id, seen: null }).catch(() => undefined);
     }
     await archiveFixtures(Object.values(inUse));
+    await removeCardFolder(inUse);
   }
   await signer?.resetEnrollment().catch((cause) => console.error("could not reset cow's enrollment", cause));
   process.exit(1);

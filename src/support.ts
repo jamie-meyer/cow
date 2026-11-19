@@ -23,6 +23,7 @@ export const EXPERIMENTAL_SURFACES: readonly { name: string; from: "backend" | "
   { name: "experimental_dataDir", from: "backend", for: "where bb keeps its data: the reset file's place, and a place no capability may cover" },
   { name: "experimental_listAncestors", from: "backend", for: "which threads are above a thread: who may act for whom, and which capabilities apply" },
   { name: "experimental_listPluginMetadata", from: "backend", for: "finding cow's notes on threads that bb has since deleted" },
+  { name: "experimental_discoverRpc", from: "backend", for: "the context card: finding the plugins that offer cow_card" },
   { name: "experimental_schema", from: "backend", for: "the checkerRuns setting as a number from 1 to 5" },
   { name: "experimental_Diff", from: "page", for: "the reader: a file change drawn as a diff" },
   { name: "experimental_SourceCode", from: "page", for: "the reader: a file drawn with highlighting and line numbers" },

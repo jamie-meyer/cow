@@ -108,6 +108,8 @@ import { type AutomationGroup, isAutomationRow, lastResultText, nextRunText, old
 import { useAutomations } from "./automationsData.ts";
 import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
 import { useReader } from "./reader/Reader.tsx";
+import { ContextCard, readCardHidden, rememberCardHidden, useCard } from "./ContextCard.tsx";
+import { cardThreadOf } from "./card.ts";
 import type { FileRef } from "./reader/link.ts";
 import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
@@ -1772,6 +1774,10 @@ function OverviewScreen({
   const selectedTodo = rows.find((row): row is TodoRow => row.kind === "todo" && row.id === selected) ?? null;
   const selectedOutside = overview.outside.lines.find((line) => line.thread.id === selected) ?? null;
   const selectedAutomation = isAutomationRow(selected) ? (overview.automations.groups.find((group) => group.id === selected) ?? null) : null;
+  // The context card: the selected line's, or with a chat open, that chat's. v hides it in this window.
+  const [cardHidden, setCardHidden] = useState(readCardHidden);
+  const cardThread = pane ?? cardThreadOf(selected, (id) => titles.has(id) || selectedOutside?.thread.id === id);
+  const ctxCard = useCard(cardThread, !cardHidden);
   const sheetRef = useRef<BriefSheetControl | null>(null);
 
   // Capabilities: what each thread holds, which are new, and what they would cover.
@@ -1921,6 +1927,9 @@ function OverviewScreen({
   });
   const readerRef = useRef(reader);
   readerRef.current = reader;
+  /** A changed file on the context card: in the reader, as a file link opens. */
+  const openCardFile = (shown: { threadId: string; environmentId: string | null }, path: string) =>
+    reader.open({ kind: "rooted", threadId: shown.threadId, environmentId: shown.environmentId, root: "workspace", relPath: path, lines: null });
   /** Enter on an automation's row: a script's last output in the reader, or an agent's latest run in the pane. */
   const openAutomation = (group: AutomationGroup) => {
     const { automation } = group;
@@ -2141,6 +2150,12 @@ function OverviewScreen({
         return verbs.startUndo();
       case "help":
         return setHelp(true);
+      case "card": {
+        const hidden = !cardHidden;
+        rememberCardHidden(hidden);
+        setCardHidden(hidden);
+        return setMessage(hidden ? "context card hidden in this window · v shows it" : "context card shown · v hides it in this window");
+      }
       case "choose-main":
         return onChooseMain();
       case "bring":
@@ -2634,6 +2649,7 @@ function OverviewScreen({
                   ))
                 )}
               </ol>
+              {ctxCard ? <ContextCard card={ctxCard} where="side" onOpenFile={openCardFile} onOpenUrl={(url) => navigate.openUrl(url)} /> : null}
               <div className="cow-legend">
                 {LEGEND.map((entry) => (
                   <div className="cow-lg" key={entry.state}>
@@ -2669,6 +2685,7 @@ function OverviewScreen({
                   close
                 </button>
               </div>
+              {ctxCard ? <ContextCard card={ctxCard} where="pane" onOpenFile={openCardFile} onOpenUrl={(url) => navigate.openUrl(url)} /> : null}
               <div className="cow-chat" data-cow-chat="" data-cow-pane-back={paneBack.length || undefined} tabIndex={-1}>
                 <ThreadChat
                   key={pane}

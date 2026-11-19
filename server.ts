@@ -7,6 +7,7 @@ import { z } from "zod";
 import { createActions } from "./src/actions.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
+import { registerCard } from "./src/card-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
@@ -111,6 +112,8 @@ export default async function plugin(bb: BbPluginApi) {
   const attention = registerAttention(bb, traces);
   // A read-through of the automations plugin's own methods: never more than a few seconds, never an error.
   const automations = registerAutomations(bb);
+  // The context card: bb's own git and pull-request plugins, and every plugin that offers `cow_card`. Only reads.
+  registerCard(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   const caps = registerCaps(bb, log);

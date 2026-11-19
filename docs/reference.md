@@ -438,6 +438,112 @@ parent.
 - Main's heading has actions too; an Outside Main line, an automation's row
   and an item not yet started have none.
 
+## The context card
+
+bb's own thread view has a context card: what bb and other plugins know
+about the thread. bb gives a plugin's page no way to draw that card, so cow
+draws its own, from two sources: bb's bundled plugins, and any plugin that
+offers the method below.
+
+**Where it shows.** On the overview, the selected line's card is at the
+bottom of the right column, just above the legend, and follows the cursor:
+every thread line has one (the tree, Main's heading, Parked, To settle,
+Kept, an automation's runs, Outside Main), and section headings, an
+automation's own row and items not yet started have none. With a chat open,
+the card for that chat's thread is at the top of the pane, between its
+heading and the conversation; there it is folded to its section titles when
+it would take more than four lines, and a click or a hint on a title
+unfolds that section. On a page narrower than 900 pixels the overview's card
+is hidden with the legend; the pane's still shows.
+
+- A thread with nothing to show has no card at all: no box, no heading.
+- Each row is one line, cut with an ellipsis; it never wraps. The row a
+  plugin marks as this thread's own stands out quietly, and badges take the
+  theme's colours for passing, waiting, failing, information and quiet. The
+  card has a bounded height and scrolls inside itself.
+- It is not a stop for `j` and `k`. `f` hints its links, its changed files
+  and, in the pane, its folded titles. A link opens as any link outside bb
+  does; a changed file opens in the reader.
+- `v` hides the card in this window, and shows it again; the window
+  remembers across a reload. Other windows keep their own choice.
+- The card is read once the cursor has rested on a line for about 150
+  milliseconds, and each thread's is kept on the page for 30 seconds. While
+  a new one loads, the card kept for that thread shows, or nothing: never
+  another thread's.
+- `bb cow status` does not show it.
+
+**bb's own.** Read through cow's server, from bb's bundled plugins, with a
+time limit of a few seconds each; one that is absent, slow or failing leaves
+its section out.
+
+- *Pull request*, from the GitHub pull-request plugin (`pullRequests`, for
+  the thread's environment): number, title, the branch and its base, and
+  badges for its state, its checks and its review, linking to it.
+- *Changed files*, from the git plugin (`status`, for the thread's
+  environment): what is committed on the branch and not merged, and what is
+  not committed, each path once. The count is in the title; the first five
+  are named and open in the reader.
+
+A thread with no environment, or whose environment is not a git checkout,
+has neither.
+
+**Other plugins: `cow_card`.** Any plugin can add sections to cow's card by
+registering one RPC method, `cow_card`, as discoverable. cow finds it
+through bb's discovery of plugin methods; nothing is configured. This
+contract is cow's own, not bb's, and may change before cow 1.0.
+
+- Input: `{ threadId: string }`, one thread at a time.
+- Output: `{ sections: Section[] }`; an empty list means nothing for this
+  thread.
+
+```ts
+type Section = { title: string; rows: Row[] };
+type Row = {
+  text: string;
+  url?: string; // http or https only
+  detail?: string;
+  badges?: { text: string; tone: "ok" | "warn" | "bad" | "info" | "muted" }[];
+  current?: boolean; // this thread's own row in a list of several
+  indent?: 0 | 1 | 2;
+};
+```
+
+cow's server makes the call, so the other plugin sees cow as the caller,
+with a time limit of two seconds. The answer is not trusted:
+
+- What is not in this shape is dropped: a section without a title or rows,
+  a row without text, a badge with another tone. A section left with no
+  rows is dropped. Fields not listed above are ignored.
+- At most 4 sections per plugin, 20 rows per section and 4 badges per row;
+  the rest are left out. A title is cut to 60 characters, a row's text and
+  detail to 160, a badge to 24. Line breaks and control characters become
+  spaces.
+- Everything is drawn as plain text; nothing is read as markup. A `url`
+  that is not http or https, or longer than 2,000 characters, is dropped.
+- A plugin that fails, answers late or answers nonsense leaves out only its
+  own sections.
+
+Sections are shown under the plugin's name: bb's own first, then other
+plugins by name. Which plugins offer the method is looked up again every
+15 seconds or so.
+
+A plugin's server, in full:
+
+```ts
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+
+const contract = defineRpcContract({
+  cow_card: { input: z.object({ threadId: z.string() }), output: z.object({ sections: z.array(z.unknown()) }) },
+});
+
+export default async function plugin(bb: BbPluginApi) {
+  bb.rpc.register(contract, {
+    cow_card: async ({ threadId }) => ({ sections: [{ title: "Stack", rows: [{ text: `#12 for ${threadId}`, current: true, badges: [{ text: "ci ok", tone: "ok" }] }] }] }),
+  }, { experimental_discoverable: true });
+}
+```
+
 ## What is next
 
 The page shows what exists. A thread can also say what it intends:
