@@ -65,6 +65,11 @@
 //   --only-settle       only To settle, which replies enter the queue (a
 //                       project's and Main's included), and keeping a thread:
 //                       three fixtures
+//   --only-ledger       only the ledger: what a finished worker came to,
+//                       from the page (e, then o) and from bb cow archive,
+//                       outcome and ledger, the L sheet, and a project not
+//                       asked: four fixtures, a stand-in Main, two workers
+//                       under it and a project under it
 //   --only-history      only bb's back and forward between chats, a reload
 //                       with a chat open, and an address naming an unknown
 //                       or archived thread: four fixtures. Back and forward
@@ -263,6 +268,8 @@ const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "am
 const WAITING = ["wmain", "wkid", "wlink", "wother"];
 /** The fixtures of the To settle and Kept checks: a Main of their own, and two workers under it. */
 const SETTLING = ["smain", "sjob", "schat"];
+/** The fixtures of the ledger checks: a Main of their own, two workers under it, and a project under it. */
+const LEDGER = ["lmain", "lone", "ltwo", "lproj"];
 /** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
 const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
 const AUTOMATING = ["umain"];
@@ -300,7 +307,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -336,6 +343,10 @@ async function fixtures() {
   await make("smain", { prompt: QUIET });
   await make("sjob", { prompt: QUIET, parent: ids.smain });
   await make("schat", { prompt: QUIET, parent: ids.smain });
+  await make("lmain", { prompt: QUIET });
+  await make("lone", { prompt: QUIET, parent: ids.lmain });
+  await make("ltwo", { prompt: QUIET, parent: ids.lmain });
+  await make("lproj", { prompt: QUIET, parent: ids.lmain });
   await make("omain", { prompt: QUIET });
   await make("ostray", { prompt: QUIET });
   await make("ohead", { prompt: QUIET });
@@ -378,7 +389,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1554,6 +1565,114 @@ async function prepareSettle(ids) {
   await signer.must("seen_set", { threadId: ids.sjob, seen: null });
 }
 
+
+// ---- The ledger ------------------------------------------------------------------
+
+/** What finished workers came to: from the page and the CLI, who may overwrite whom, the rows, the sheet, and a project not asked. */
+async function ledgerChecks(page, ids, shot, chooseMain) {
+  const { lmain, lone, ltwo, lproj } = ids;
+  for (const name of LEDGER) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  // The project is marked by the Main that started it, before the page reads it.
+  check("bb cow project marks the stand-in project", (await cowAs(lmain, "project", lproj)).code === 0);
+  await page.eval(`sessionStorage.removeItem("cow:folds"); true`);
+  await chooseMain(page, lmain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const settled = (id) => `(${lineEl(id)}?.dataset.cowSettle === "")`;
+  const archivedLine = (id) => `(!!${lineEl(id)} && !!document.querySelector("[data-cow-archived]") && !!(document.querySelector("[data-cow-archived]").compareDocumentPosition(${lineEl(id)}) & Node.DOCUMENT_POSITION_FOLLOWING))`;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+  };
+  const ledger = async () => rpc("ledger_read", { days: 14 });
+  const rowOf = async (id) => (await ledger()).rows.find((row) => row.threadId === id) ?? null;
+  const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
+  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy"].sort();
+
+  // -- a project is not asked --
+  await page.waitFor(`!!${lineEl(lproj)} && !!${lineEl(lone)} && !!${lineEl(ltwo)}`, { label: "the three lines" });
+  await select(lproj);
+  await page.key("e");
+  await page.waitFor(`${mode} === "archive"`, { label: "the archive prompt" });
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the reason, focused" });
+  check("e on a project goes straight to the reason: no outcome is asked", !(await page.eval(`!!document.querySelector("[data-cow-outcome-prompt]")`)));
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal"`, { label: "cancelled" });
+  const projectRefused = await cowAs(lmain, "outcome", lproj, "done");
+  check("bb cow outcome refuses a project", projectRefused.code !== 0 && /project/.test(projectRefused.stdout + projectRefused.stderr), (projectRefused.stdout + projectRefused.stderr).trim());
+
+  // -- archived from the page, with an outcome and a reason --
+  await page.waitFor(settled(lone), { label: "the worker to settle" });
+  await select(lone);
+  await page.key("e");
+  await page.waitFor(`!!document.querySelector('[data-cow-outcome-prompt="archive"]')`, { label: "the outcome prompt" });
+  const choices = await page.eval(`[...document.querySelectorAll("[data-cow-outcome-choice]")].map((el) => el.textContent.trim()).join(" | ")`);
+  check("e on a finished worker first asks what it came to, each outcome with its meaning", /1\s*done: the work was used as it came back/.test(choices) && /2\s*partial: some of it was used/.test(choices) && /3\s*redone/.test(choices) && /4\s*dropped/.test(choices), choices);
+  await shot("ledger-outcome-prompt");
+  await page.key("2");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "then the reason" });
+  check("a digit chooses, then the reason is asked as before", (await page.eval(`document.querySelector(".cow-prompt")?.textContent ?? ""`)).includes("came to: partial"));
+  await page.type("used half of it");
+  await page.key("Enter");
+  await page.waitFor(archivedLine(lone), { label: "archived", timeout: 30_000 });
+  await page.waitFor(`!!${lineEl(lone)}?.querySelector('[data-cow-outcome="partial"]')`, { label: "came to: partial", timeout: 20_000 });
+  check("the message says it is archived and what it came to", (await message()).includes("came to: partial"), await message());
+  const one = await rowOf(lone);
+  check("its ledger row: the outcome, judged and archived by the person, dispatched by its Main, on the fixture model", one?.outcome === "partial" && one?.judgedBy === "person" && one?.archivedBy === "person" && one?.dispatchedBy === lmain && one?.model === MODEL && one?.turns >= 1 && one?.toFirstReportMs >= 0, JSON.stringify(one));
+  check("the row's keys are exactly the allowed set, and it holds no title", JSON.stringify(Object.keys(one ?? {}).sort()) === JSON.stringify(ALLOWED) && !JSON.stringify(one).includes(TITLE));
+  console.log(`note: effort recorded for the fixture: ${JSON.stringify(one?.effort ?? null)}`);
+  const logged = JSON.stringify((await rpc("caps_log", { limit: 20 })).entries ?? []);
+  check("the page's outcome is in cow's log, under the key that signed it", logged.includes("outcome-set") && logged.includes(lone));
+
+  // -- archived by its dispatcher, with an outcome --
+  const byCli = await cowAs(lmain, "archive", ltwo, "--reason", "merged", "--outcome", "done");
+  check("bb cow archive --outcome, run by the thread that dispatched it", byCli.code === 0 && byCli.stdout.includes("came to: done"), (byCli.stdout + byCli.stderr).trim());
+  const two = await rowOf(ltwo);
+  check("its row says the dispatcher judged and archived it", two?.outcome === "done" && two?.judgedBy === lmain && two?.archivedBy === lmain && two?.outcomeChanges === 0, JSON.stringify(two));
+
+  // -- changed later, from each side --
+  const threadChange = await cowAs(lmain, "outcome", ltwo, "redone");
+  check("the dispatcher changes its own outcome later with bb cow outcome", threadChange.code === 0 && (await rowOf(ltwo))?.outcome === "redone" && (await rowOf(ltwo))?.outcomeChanges === 1, (threadChange.stdout + threadChange.stderr).trim());
+  const overwrite = await cowAs(lmain, "outcome", lone, "done");
+  check("a thread cannot overwrite the person's outcome, and is told so", overwrite.code !== 0 && /the person judged it “partial”/.test(overwrite.stdout + overwrite.stderr) && (await rowOf(lone))?.outcome === "partial", (overwrite.stdout + overwrite.stderr).trim());
+  await page.waitFor(archivedLine(ltwo), { label: "the second worker under Archived", timeout: 30_000 });
+  await select(ltwo);
+  await page.key("o");
+  await page.waitFor(`!!document.querySelector('[data-cow-outcome-prompt="change"]')`, { label: "o's prompt" });
+  check("o on an archived line asks, and says what it came to now", (await page.eval(`document.querySelector('[data-cow-outcome-prompt]')?.textContent ?? ""`)).includes(`now: redone, judged by ${lmain}`));
+  await page.key("4");
+  await page.waitFor(`!!${lineEl(ltwo)}?.querySelector('[data-cow-outcome="dropped"]')`, { label: "came to: dropped", timeout: 20_000 });
+  const changed = await rowOf(ltwo);
+  check("the person changes it on the page: the row shows the latest, judged by the person, changed twice", changed?.outcome === "dropped" && changed?.judgedBy === "person" && changed?.outcomeChanges === 2, JSON.stringify(changed));
+  const again = await cowAs(lmain, "outcome", ltwo, "done");
+  check("after that the thread is refused there too", again.code !== 0 && (await rowOf(ltwo))?.outcome === "dropped");
+  const fromTerminal = await cow("outcome", lone, "redone");
+  check("bb cow outcome outside any thread is the person's", fromTerminal.code === 0 && (await rowOf(lone))?.judgedBy === "person" && (await rowOf(lone))?.outcome === "redone", (fromTerminal.stdout + fromTerminal.stderr).trim());
+  const unsigned = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/outcome_set`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: lone, outcome: "done" }) }).then((r) => r.json());
+  const forged = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "outcome_set", args: { threadId: lone, outcome: "done" }, at: Date.now(), nonce: "x".repeat(20), key: "0000-0000-0000-0000", sig: "AAAA" }) }).then((r) => r.json());
+  check("there is no unsigned way to set it as the person from the page's interface, and a forged one is refused", unsigned.ok === false && forged.ok === false && (await rowOf(lone))?.outcome === "redone");
+
+  // -- reading it --
+  const status = (await cow("status", "--main", lmain)).stdout;
+  check("bb cow status shows the outcome beside an archived line", status.includes(`(${ltwo})`) && status.includes("[outcome: dropped, judged by the person]"), status.split("\n").filter((l) => l.includes(ltwo)).join(" / "));
+  const text = (await cow("ledger")).stdout;
+  check("bb cow ledger summarises by model and by dispatcher, and calls a group of two too small to compare", text.includes("By model") && text.includes("By dispatching thread") && text.includes(`${lmain}:`) && /too small to compare/.test(text) && text.includes(lone) && text.includes(ltwo) && !text.includes(TITLE), text.split("\n").slice(0, 8).join(" / "));
+  const json = JSON.parse((await cow("ledger", "--days", "1", "--json")).stdout);
+  const dispatcher = json.summary.byDispatcher.find((group) => group.key === lmain);
+  check("--json gives the rows and the summary; the small group has counts and no percentages", json.ok === true && json.rows.some((row) => row.threadId === lone) && dispatcher?.workers === 2 && dispatcher?.small === true && dispatcher?.shares === null && dispatcher?.outcomes.redone === 1 && dispatcher?.outcomes.dropped === 1, JSON.stringify(dispatcher));
+  await page.key("L");
+  await page.waitFor(`${mode} === "ledger" && !!document.querySelector('[data-cow-ledger-row="${lone}"]')`, { label: "the ledger sheet", timeout: 20_000 });
+  check("L opens the ledger sheet with the latest rows and their outcomes", (await page.eval(`document.querySelector('[data-cow-ledger-row="${ltwo}"]')?.dataset.cowLedgerOutcome`)) === "dropped" && (await page.eval(`document.querySelector('[data-cow-ledger-row="${lone}"]')?.dataset.cowLedgerOutcome`)) === "redone");
+  check("the sheet's groups say a small one is too small to compare", await page.eval(`!!document.querySelector('[data-cow-ledger-group="${lmain}"][data-cow-ledger-small]')`));
+  await shot("ledger-sheet");
+  await page.key("q");
+  await page.waitFor(`${mode} === "normal" && !document.querySelector("[data-cow-ledger]")`, { label: "closed with q" });
+  await page.key("L");
+  await page.waitFor(`${mode} === "ledger"`, { label: "opened again" });
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal"`, { label: "closed with Escape" });
+  check("q and Escape close it", true);
+}
 
 // ---- The context card ------------------------------------------------------------
 
@@ -4160,7 +4279,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
+  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -4182,6 +4301,7 @@ async function main() {
     if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
     else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
     else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
+    else if (flag("only-ledger")) await ledgerChecks(page, ids, shot, chooseMain);
     else if (flag("only-outside")) await outsideChecks(page, ids, shot, chooseMain);
     else if (flag("only-automations")) await automationChecks(page, ids, shot, chooseMain);
     else if (flag("only-plugins")) await pluginChecks(page, ids, shot, chooseMain);
