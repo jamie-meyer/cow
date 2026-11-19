@@ -167,7 +167,7 @@ turn, as when you type to it; `z` on it takes it off too.
 
 **Outside Main.** Open threads with no parent are not under any Main, so the
 tree never reaches them: old work, threads started by hand, forks. The
-**Outside Main** section, last on the page and folded by default, lists
+**Outside Main** section, just above Archived and folded by default, lists
 them with their project when it is another one, how long since each did
 anything, and whether it is running, wants an answer or is at rest. Nothing
 in it is in the queue. Threads a plugin started are only counted, except
@@ -177,7 +177,7 @@ as on any line; it is then listed under Archived for two days, and `u`
 takes that back too.
 
 **Automations.** Each run of a bb automation is a new thread with no parent,
-so the tree never reaches it. The **Automations** section, after Archived
+so the tree never reaches it. The **Automations** section, after Kept
 and folded by default, has one row per automation: its name, its project
 when that is not Main's, when it runs next ("in 3h", "tomorrow 09:00",
 "paused") and what its last run came to, with the first line of the error
@@ -510,7 +510,7 @@ An agent **can**, through cow:
 - move a thread out from under Main, with bb's own `bb thread update
   --parent-thread`, which cow does not see or sign. **This takes the thread
   and everything under it out of your queue.** A thread left with no parent
-  is listed under Outside Main, at the bottom of the page and in
+  is listed under Outside Main, near the bottom of the page, and in
   `bb cow status`; one moved under another thread with no parent is counted
   on that thread's line there. Moving one under Main is the page's `A`,
   unsigned too;

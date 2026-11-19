@@ -98,14 +98,14 @@ export interface StatusReport {
   settle: StatusLine[];
   /** Kept around on purpose by the user, newest kept first. They ask for nothing. */
   kept: StatusLine[];
-  /** Archived in the last 2 days, with their reasons. */
-  archived: StatusLine[];
   /** bb's automations, enabled first; empty when the automations plugin is absent or did not answer. */
   automations: AutomationStatusRow[];
   /** Open threads with no parent that are not under Main, newest activity first. Never in the queue. */
   outside: OutsideStatusLine[];
   /** Open threads with no parent that are left out of `outside`: started by a plugin, or another project's Main. */
   outsideNotListed: { byPlugins: number; otherMains: number };
+  /** Archived in the last 2 days, with their reasons: last, as on the page. */
+  archived: StatusLine[];
   /** Lines left out to keep the answer bounded, by section. */
   omitted: { threads: number; parked: number; settle: number; kept: number; archived: number; automations: number; outside: number; queue: number };
   /** True when bb has more threads than cow reads. */
@@ -181,7 +181,6 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
       leftBehind: leftBehind(line),
     })),
     kept: lines(overview.kept, STATUS_LIMITS.kept),
-    archived: lines(overview.archived, STATUS_LIMITS.archived),
     automations: overview.automations.groups.slice(0, STATUS_LIMITS.automations).map((group) => ({
       id: group.automation.id,
       name: cut(group.automation.name, 80),
@@ -212,6 +211,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
       };
     }),
     outsideNotListed: { byPlugins: overview.outside.byPlugins, otherMains: overview.outside.otherMains },
+    archived: lines(overview.archived, STATUS_LIMITS.archived),
     omitted: {
       threads: omitted(overview.lines, STATUS_LIMITS.threads),
       parked: omitted(overview.parked, STATUS_LIMITS.parked),
@@ -282,9 +282,7 @@ export function statusText(report: StatusReport): string {
   out.push(...more(omitted.settle), "", `Kept: around on purpose, asking for nothing (${report.kept.length + omitted.kept})`);
   if (report.kept.length === 0) out.push("    nothing");
   for (const line of report.kept) out.push(...row(line, false));
-  out.push(...more(omitted.kept), "", `Archived in the last 2 days (${report.archived.length + omitted.archived})`);
-  for (const line of report.archived) out.push(...row(line, false));
-  out.push(...more(omitted.archived));
+  out.push(...more(omitted.kept));
   if (report.automations.length + omitted.automations > 0) {
     out.push("", `Automations: bb's scheduled runs, each with its recent run threads (${report.automations.length + omitted.automations})`);
     for (const row of report.automations) {
@@ -306,6 +304,10 @@ export function statusText(report: StatusReport): string {
     out.push(`    ${line.label} · ${line.since}  ${line.title} (${line.id})${where}${under}`);
   }
   out.push(...more(omitted.outside));
+  // Archived last, as on the page: looked at least often.
+  out.push("", `Archived in the last 2 days (${report.archived.length + omitted.archived})`);
+  for (const line of report.archived) out.push(...row(line, false));
+  out.push(...more(omitted.archived));
   if (report.truncated) out.push("", "bb has more threads than cow reads; some may be missing.");
   return `${out.join("\n")}\n`;
 }

@@ -2135,11 +2135,11 @@ async function outsideChecks(page, ids, shot, chooseMain) {
   // -- the section: last, folded, counted --
   await page.waitFor(`!!${heading}`, { label: "the Outside Main heading" });
   check(
-    "Outside Main is the last section, folded by default, showing its count",
+    "Outside Main comes after every other section but Archived, folded by default, showing its count",
     (await page.eval(`${heading}.dataset.cowSectionFolded === ""`)) &&
       (await page.eval(count)) >= 2 &&
       !(await page.eval(`!!${outLine(ostray)}`)) &&
-      (await page.eval(`(() => { const all = [...document.querySelectorAll(".cow-main [data-cow-section], .cow-main [data-cow-archived], .cow-main [data-cow-shelf]")]; return all[all.length - 1] === ${heading}; })()`)),
+      (await page.eval(`(() => { const all = [...document.querySelectorAll(".cow-main [data-cow-section], .cow-main [data-cow-shelf]")]; const archived = document.querySelector(".cow-main [data-cow-archived]"); return all[all.length - 1] === ${heading} && (!archived || !!(${heading}.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING)); })()`)),
   );
   // -- / finds its lines while folded --
   await page.key("/");
@@ -2271,6 +2271,12 @@ async function outsideChecks(page, ids, shot, chooseMain) {
   check("archived, it leaves Outside Main and is listed under Archived with its reason", await page.eval(`!!document.querySelector("[data-cow-archived]")`));
   const statusArchived = (await cow("status", "--main", omain)).stdout;
   check("bb cow status lists it under Archived too", new RegExp(`\\(${ostray}\\)[^\\n]*cow test: old work`).test(statusArchived), statusArchived.split("\n").filter((l) => l.includes(ostray)).join(" / "));
+  check(
+    "Archived is the last section, after Outside Main, on the page and in bb cow status",
+    (await page.eval(`(() => { const archived = document.querySelector(".cow-main [data-cow-archived]"); const all = [...document.querySelectorAll(".cow-main [data-cow-section], .cow-main [data-cow-shelf], .cow-main [data-cow-archived]")]; return all[all.length - 1] === archived && !!(${heading}.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING); })()`)) &&
+      statusArchived.indexOf("\nOutside Main:") >= 0 &&
+      statusArchived.indexOf("\nOutside Main:") < statusArchived.indexOf("\nArchived in the last 2 days"),
+  );
   await restoreStored();
   await bb("thread", "unarchive", ostray);
   await page.waitFor(`!!${outLine(ostray)}`, { label: "back outside Main, unarchived", timeout: 20_000 });
@@ -2457,6 +2463,10 @@ async function settleChecks(page, ids, shot, chooseMain) {
   await page.key("Enter");
   await page.waitFor(`(${lineEl(sjob)}?.querySelector("[data-cow-archive-reason]")?.textContent ?? "").includes("thought through")`, { label: "under Archived" });
   check("e archives a kept line; it is listed under Archived with its reason, and its keep note is gone", (await keeps(sjob)) === null && (await page.eval(`!!document.querySelector("[data-cow-archived]")`)));
+  check(
+    "Archived is listed below Kept and Outside Main, and its line comes last for the cursor",
+    await page.eval(`(() => { const archived = document.querySelector(".cow-main [data-cow-archived]"); const kept = document.querySelector('[data-cow-section="section:kept"]'); const outside = document.querySelector('[data-cow-section="section:outside"]'); const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); return follows(kept, archived) && follows(outside, archived) && follows(archived, ${lineEl(sjob)}); })()`),
+  );
   await page.key("u");
   await page.key("y");
   await page.waitFor(`${settled(sjob)}`, { label: "unarchived" });

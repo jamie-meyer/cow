@@ -2508,13 +2508,6 @@ function OverviewScreen({
                   onFold={toggleFold}
                 />
                 {keptShown.map((line) => row(line, true))}
-                {overview.archived.length > 0 ? (
-                  <div className="cow-sec" data-cow-archived="">
-                    Archived
-                    <span>{overview.archived.length} in the last 2 days, with their reasons · u takes back an archive made here</span>
-                  </div>
-                ) : null}
-                {archivedShown.map((line) => row(line, true))}
               </>
             )}
             {/* Only when the automations plugin answered: without it there is no section, and nothing to say. */}
@@ -2577,6 +2570,14 @@ function OverviewScreen({
                 onOpen={openChat}
               />
             ))}
+            {/* Archived is last: looked at least often. */}
+            {!nothingListed && overview.archived.length > 0 ? (
+              <div className="cow-sec" data-cow-archived="">
+                Archived
+                <span>{overview.archived.length} in the last 2 days, with their reasons · u takes back an archive made here</span>
+              </div>
+            ) : null}
+            {nothingListed ? null : archivedShown.map((line) => row(line, true))}
             {truncated ? (
               <p className="cow-warn">bb has more threads than this page reads; some may be missing.</p>
             ) : null}

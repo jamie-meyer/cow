@@ -219,7 +219,11 @@ age, and none is in the queue for being old.
   lines scrolls as smoothly as a short one.
 
 Archived lines are listed apart, under **Archived**, with their reasons, for
-2 days.
+2 days. Archived is the last section on the page.
+
+**The order of the page.** Top to bottom: the tree, Parked, To settle, Kept,
+Automations, Outside Main, then Archived. The cursor, `/`'s matches and
+`bb cow status` (its text and its `--json`) go in the same order.
 
 ## Keeping
 
@@ -269,7 +273,7 @@ runs.
   automation started appears or changes, when the section is unfolded, and
   once a minute while it is unfolded: it cannot hear the plugin's own
   signals.
-- **Where.** The **Automations** section, after Archived and before Outside
+- **Where.** The **Automations** section, after Kept and before Outside
   Main. Folded by default with its count; `h` and `l` on its heading fold
   it and the window remembers. Its heading is never coloured.
 - **A row.** One per automation, enabled ones first, then by name: its
@@ -339,8 +343,8 @@ the parent of a thread's open children to none when it archives it).
   other projects: "3 started by plugins, not listed". An automation's runs
   that the Automations section lists or counts are neither listed nor
   counted here, so nothing is counted twice.
-- **Where.** The **Outside Main** section, at the bottom of the page after
-  Archived. Folded by default with its count showing; `h` and `l` on its
+- **Where.** The **Outside Main** section, after Automations and before
+  Archived, which is last. Folded by default with its count showing; `h` and `l` on its
   heading fold it and the window remembers, as for To settle and Kept.
 - **A line.** Its title; its bb project's name, when that is not Main's; how
   long since it last did anything (bb's `latestAttentionAt`); and whether it

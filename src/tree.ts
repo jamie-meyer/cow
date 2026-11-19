@@ -556,9 +556,9 @@ export function leftBehind(line: Line, todos = 0): string[] {
 /** For an ask of a thread under a parked or kept one: what it is set aside under. Empty for any other line. */
 export const asideText = (line: Line): string => (line.aside ? ` · under ${line.aside.state} “${line.aside.title}”` : "");
 
-/** Every thread line on the page, top to bottom: the tree, the Parked shelf and the asks under what is set aside, To settle, Kept, Archived, then the automations' runs. Outside Main's lines are not `Line`s, and not here. */
+/** Every thread line on the page, top to bottom: the tree, the Parked shelf and the asks under what is set aside, To settle, Kept, the automations' runs, then Archived. Outside Main's lines, between the runs and Archived on the page, are not `Line`s, and not here. */
 export function listed(overview: Overview): Line[] {
-  return [...overview.lines, ...overview.parked, ...overview.asideAsks, ...overview.settle, ...overview.kept, ...overview.archived, ...runLines(overview)];
+  return [...overview.lines, ...overview.parked, ...overview.asideAsks, ...overview.settle, ...overview.kept, ...runLines(overview), ...overview.archived];
 }
 
 /** The sections that fold, as the cursor names their headings. */
@@ -648,9 +648,9 @@ export function cursorOrder(overview: Overview, folded: ReadonlySet<string> = ne
     ...overview.asideAsks.map((line) => line.thread.id),
     ...section(SETTLE_SECTION),
     ...section(KEPT_SECTION),
-    ...overview.archived.map((line) => line.thread.id),
     ...automations,
     ...section(OUTSIDE_SECTION),
+    ...overview.archived.map((line) => line.thread.id),
   ];
 }
 

@@ -227,3 +227,29 @@ test("a thread archived from Outside Main is listed under Archived with its reas
   assert.deepEqual(overview(NOW - 3 * DAY).archived, []);
   assert.deepEqual(archivedOutsideIds(threads(NOW - HOUR), "main", NOW - 2 * DAY), ["gone", "plain", "was"]);
 });
+
+test("the sections, everywhere, in one order: the tree, Parked, To settle, Kept, Automations, Outside Main, then Archived", () => {
+  const threads = [...world(), thread({ id: "forked", archivedAt: NOW - HOUR, latestAttentionAt: NOW - 2 * HOUR })];
+  const overview = buildOverview(threads, "main", (t) => derive(t, activity(), NOW, null, t.id === "forked" ? "old work" : null), NOW, {
+    note: () => null,
+    todos: () => [],
+    otherMains: new Set(["otherMain"]),
+    archivedOutside: (id) => id === "forked",
+  });
+  assert.deepEqual(overview.archived.map((line) => line.thread.id), ["forked"]);
+  // The cursor: Archived's lines come after Outside Main's heading, folded or not.
+  const order = cursorOrder(overview, new Set());
+  assert.deepEqual(order.slice(-2), [OUTSIDE_SECTION, "forked"]);
+  const unfolded = cursorOrder(overview, new Set([OUTSIDE_SECTION]));
+  assert.ok(unfolded.indexOf("head") < unfolded.indexOf("forked"));
+  assert.equal(unfolded[unfolded.length - 1], "forked");
+  // The filter: a match outside Main comes before one under Archived.
+  assert.deepEqual(filterOverview(overview, "fork").matches, ["fork", "forked"]);
+  // bb cow status: Archived is the last heading, and the last list of --json.
+  const report = statusReport(overview, NOW, false, new Map());
+  const text = statusText(report);
+  assert.ok(text.indexOf("\nKept:") < text.indexOf("\nOutside Main:"));
+  assert.ok(text.indexOf("\nOutside Main:") < text.indexOf("\nArchived in the last 2 days"));
+  const keys = Object.keys(report);
+  assert.ok(keys.indexOf("outside") < keys.indexOf("archived") && keys.indexOf("kept") < keys.indexOf("automations"));
+});
