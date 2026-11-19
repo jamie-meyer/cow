@@ -1226,6 +1226,17 @@
   .cow-foot .cow-verbs > * {
     flex: none;
   }
+  /* The line's verbs share the first row with the mode and the line's name;
+     the page's own verbs take the second. */
+  .cow-foot .cow-verbs {
+    flex: 1 1 0;
+  }
+  .cow-foot .cow-verbs ~ .cow-verbs {
+    flex: 1 1 100%;
+  }
+  .cow-foot .cow-verbs + .cow-sep {
+    display: none;
+  }
   .cow-app > .cow-keybanner,
   .cow-app > .cow-aside {
     max-height: min(13%, 96px);

@@ -2527,6 +2527,8 @@ async function settleChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`!${mainDot}`, { label: "Main's mark cleared" });
   check("Space clears Main's mark", (await seenOf(ids.smain)) !== null);
   await cowAs(ids.smain, "project", schat, "--clear");
+  // The project's withdrawn ask left a trace in the queue of every page: acknowledged, so no later run starts with a notice.
+  await clearTraces(ids);
 }
 
 async function prepareHistory(ids) {
@@ -3930,7 +3932,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
     ["reset-file", `sh -c 'mkdir -p "${dirname(resetPath)}" && touch "${resetPath}" && echo CREATED-THE-RESET-FILE'`],
     ["bb-approve", `bb thread interactions approve ${probeRequest.id} ${chead}`],
   ];
-  // The light actions are a script and a turn of their own: bb keeps only the start and the end of a long output.
+  // The light actions: tried in the same script, after the others.
   const lightRoutes = Object.entries(light).flatMap(([name, [action]]) => [
     [`old-${name}`, post(`old-${name}`, action)],
     [`bb-rpc-${name}`, `bb plugin rpc call ${PLUGIN} ${action} --input-file ${probeDir}/old-${name}.json --json`],
@@ -3938,11 +3940,14 @@ async function capsChecks(page, ids, shot, chooseMain) {
     [`bb-rpc-signed-${name}`, `bb plugin rpc call ${PLUGIN} signed --input-file ${probeDir}/unsigned-${name}.json --json`],
     [`forged-${name}`, post(`forged-${name}`, "signed")],
   ]);
-  writeFileSync(join(probeDir, "light.sh"), `${lightRoutes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-130; echo`).join("\n")}\n`);
-  writeFileSync(join(probeDir, "run.sh"), `${routes.map(([name, command]) => `printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-240; echo`).join("\n")}\n`);
+  // One script, run in one turn, writing what each route gave to a file the check reads. Two turns were
+  // not dependable: having seen the first script's output, a fixture model may read the second and refuse
+  // to run it. And bb keeps only the start and the end of a long output, so the routes are not read from it.
+  const outFile = join(probeDir, "out.txt");
+  writeFileSync(join(probeDir, "run.sh"), `${[...routes, ...lightRoutes].map(([name, command]) => `{ printf 'ROUTE ${name}: '; ${command} 2>&1 | tr '\\n' ' ' | cut -c1-240; echo; } >> ${outFile}`).join("\n")}\necho probe finished\n`);
   const keysBefore = (await signer.state()).keys.map((key) => key.fingerprint).sort().join(" ");
   /**
-   * Have the fixture run one probe script, and read what it printed. A turn
+   * Have the fixture run the probe script, and read what each route wrote. A turn
    * may wait for a free slot before it starts, so "idle" a moment after the
    * message is not "done": this waits for a turn that ended after the
    * message was sent. A fixture that ends its turn without running the
@@ -3954,27 +3959,27 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const runProbe = async (script, names, label) => {
     let rows = [];
     let output = "";
+    rmSync(outFile, { force: true });
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const before = await lastTurn();
       await sayTo(ckid, `run: sh ${probeDir}/${script}`);
       await waitUntil(async () => (await lastTurn()) > before, `${label}: a turn that ends after it was asked`, 300_000);
       await waitForThread(ckid, (t) => t.status === "idle" && !t.hasPendingInteraction, `${label} done`, 180_000);
       rows = (await api(`/threads/${ckid}/timeline`)).rows.filter((entry) => entry.workKind === "command" && String(entry.command).includes(`.cow-e2e-probe/${script}`));
-      output = String(rows.at(-1)?.output ?? "");
-      // Run once, it is not run again: a route such as bb's approve must not be tried twice. Routes it did not print fail below.
-      if (rows.length > 0) break;
+      output = existsSync(outFile) ? readFileSync(outFile, "utf8") : "";
+      // Run once, it is not run again: a route such as bb's approve must not be tried twice. Routes it did not write fail below.
+      if (rows.length > 0 || output !== "") break;
       console.log(`note: the fixture ended its turn without running ${label} (attempt ${attempt} of 3)`);
     }
     const said = Object.fromEntries(names.map((name) => [name, new RegExp(`ROUTE ${name}: (.*)`).exec(output)?.[1]?.trim() ?? null]));
     return { rows, output, said };
   };
-  const firstProbe = await runProbe("run.sh", routes.map(([name]) => name), "the probe");
-  const probeRows = firstProbe.rows;
-  const probeOutput = firstProbe.output;
-  const secondProbe = await runProbe("light.sh", lightRoutes.map(([name]) => name), "the second probe");
-  const lightRows = secondProbe.rows;
-  const lightOutput = secondProbe.output;
-  const got = { ...firstProbe.said, ...secondProbe.said };
+  const probe = await runProbe("run.sh", [...routes, ...lightRoutes].map(([name]) => name), "the probe");
+  const probeRows = probe.rows;
+  const probeOutput = probe.output;
+  const lightRows = probe.rows;
+  const lightOutput = probe.output.slice(probe.output.indexOf(`ROUTE ${lightRoutes[0][0]}:`));
+  const got = probe.said;
   console.log("what each route gave a sandboxed fixture:");
   for (const [name] of [...routes, ...lightRoutes]) console.log(`  ${name.padEnd(22)} ${got[name] === null ? "PROBE DID NOT RUN" : got[name].slice(0, 200)}`);
   /** A check on what the probe saw: when a route it needs printed nothing, it fails as such. */
@@ -4026,7 +4031,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
       () => [got[`old-${name}`], got[`bb-rpc-${name}`], got[`unsigned-${name}`], got[`forged-${name}`]].map((line) => line.slice(0, 80)).join(" | "),
     );
   }
-  check("the second probe ran too, inside the fixture's sandbox", lightRows.length >= 1 && lightRoutes.every(([name]) => got[name] !== null), lightRows.length === 0 ? "probe did not run: the fixture never ran it" : `no output for ${lightRoutes.filter(([name]) => got[name] === null).map(([name]) => name).join(", ") || "none"} · ${lightOutput.slice(0, 160)}`);
+  check("the routes of the second set ran too, inside the fixture's sandbox", lightRows.length >= 1 && lightRoutes.every(([name]) => got[name] !== null), lightRows.length === 0 ? "probe did not run: the fixture never ran it" : `no output for ${lightRoutes.filter(([name]) => got[name] === null).map(([name]) => name).join(", ") || "none"} · ${lightOutput.slice(0, 160)}`);
   check("nothing it tried took a line out of the queue: what is seen, dismissed and read is as it was, and nothing was logged", lightAfter === lightBefore && lightLogged.length === 0, `${lightBefore} -> ${lightAfter}`);
   await page.waitFor(`!!document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"]')`, { label: "the fixture's request in the queue" });
   check("that request is in the person's queue, under the name the fixture gave it", (await page.eval(`document.querySelector('[data-cow-key-waiting="${agentKey.fingerprint}"] p').textContent`)).includes("made by a fixture"));
