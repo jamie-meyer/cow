@@ -15,6 +15,7 @@
       "icon": "./assets/cow.svg"
     },
     "server": "./server.ts",
+    "host": "./src/clone/host.ts",
     "app": "./app.tsx",
     "themes": [
       {

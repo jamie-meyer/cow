@@ -12,6 +12,7 @@ import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
+import { registerCloneProvider } from "./src/clone/provider.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
@@ -127,6 +128,8 @@ export default async function plugin(bb: BbPluginApi) {
   const automations = registerAutomations(bb);
   // The context card: bb's own git and pull-request plugins, and every plugin that offers `cow_card`. Only reads.
   registerCard(bb);
+  // A copy-on-write workspace a thread can be started in (macOS): `bb thread spawn --environment-provider <plugin id>-clone`.
+  registerCloneProvider(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   const caps = registerCaps(bb, log);
