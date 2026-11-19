@@ -2578,11 +2578,16 @@ async function settleChecks(page, ids, shot, chooseMain) {
   await select(sjob);
   await page.key("e");
   await page.waitFor(`${mode} === "archive"`, { label: "the archive prompt" });
+  // A kept worker is asked what it came to first; Enter leaves it unsaid.
+  await page.waitFor(`!!document.querySelector('[data-cow-outcome-prompt="archive"]')`, { label: "the outcome, asked first" });
+  await page.key("Enter");
   await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "the archive prompt: focused" });
   await page.type("thought through");
   await page.key("Enter");
   await page.waitFor(`(${lineEl(sjob)}?.querySelector("[data-cow-archive-reason]")?.textContent ?? "").includes("thought through")`, { label: "under Archived" });
   check("e archives a kept line; it is listed under Archived with its reason, and its keep note is gone", (await keeps(sjob)) === null && (await page.eval(`!!document.querySelector("[data-cow-archived]")`)));
+  const unsaid = (await rpc("ledger_read", { days: 14 })).rows.find((row) => row.threadId === sjob);
+  check("Enter at the outcome leaves it unsaid: the ledger row is written with none", unsaid !== undefined && unsaid.outcome === null && unsaid.judgedBy === null, JSON.stringify(unsaid));
   check(
     "Archived is listed below Kept and Outside Main, and its line comes last for the cursor",
     await page.eval(`(() => { const archived = document.querySelector(".cow-main [data-cow-archived]"); const kept = document.querySelector('[data-cow-section="section:kept"]'); const outside = document.querySelector('[data-cow-section="section:outside"]'); const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); return follows(kept, archived) && follows(outside, archived) && follows(archived, ${lineEl(sjob)}); })()`),
