@@ -530,7 +530,7 @@ test("an entry records the key that signed it, and changing that breaks the chai
   assert.equal(checkChain([{ ...signed, by: "eeee-ffff-0000-1111" }, unsigned], sha).intact, false);
   assert.equal(checkChain([{ ...signed, by: null }, unsigned], sha).intact, false);
   // The kinds that record one of the person's actions are the ones that must be signed.
-  for (const kind of ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "key-refused", "key-removed"] as const) assert.ok(SIGNED_KINDS.includes(kind), kind);
+  for (const kind of ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "outcome-set", "key-refused", "key-removed"] as const) assert.ok(SIGNED_KINDS.includes(kind), kind);
   for (const kind of ["auto-allowed", "outside", "requested", "enrollment-reset", "key-requested"] as const) assert.ok(!SIGNED_KINDS.includes(kind), kind);
 });
 

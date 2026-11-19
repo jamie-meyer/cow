@@ -4,7 +4,10 @@
 // registers the `bb cow` CLI.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { createActions } from "./src/actions.ts";
+import { CowError, createActions } from "./src/actions.ts";
+import { Refusal } from "./src/kv.ts";
+import { judgementSchema, rowSchema, type LedgerSummary } from "./src/ledger.ts";
+import { LEDGER_CHANGED, createLedgerStore, sdkEvents } from "./src/ledger-store.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
@@ -90,8 +93,18 @@ export const rpcContract = defineRpcContract({
     output: z.null(),
   },
   /**
+   * The ledger: rows of the workers archived in the last `days` days, newest
+   * first, their summary, and the latest outcome of every worker that has
+   * one. Only reads; an outcome is set from the page by a signed call.
+   */
+  ledger_read: {
+    input: z.object({ days: z.number().int().min(1).max(3650) }),
+    output: z.object({ rows: z.array(rowSchema), summary: z.custom<LedgerSummary>(), outcomes: z.record(z.string(), judgementSchema) }),
+  },
+  /**
    * Archive a thread in bb with cow's reason for it; a null reason forgets an
-   * earlier one. `dropped` stops its turn first.
+   * earlier one. `dropped` stops its turn first. A worker gets its ledger row,
+   * archived by the person.
    */
   thread_archive: {
     input: z.object({ threadId: id, reason: z.string().min(1).max(300).nullable(), dropped: z.boolean(), at: z.number() }),
@@ -120,6 +133,8 @@ export default async function plugin(bb: BbPluginApi) {
   traces.record = async (input) => {
     await caps.trace(input);
   };
+  // The ledger lives in cow's own storage, and reads each worker's prompts and turns when it is archived.
+  const ledger = createLedgerStore(bb.storage.kv, sdkEvents(bb.sdk.threads.events as never), () => bb.realtime.publish(LEDGER_CHANGED, {}));
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -147,7 +162,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return found;
     },
-  });
+  }, ledger);
 
   const chooseMain = async (projectId: string, threadId: string | null): Promise<MainState> => {
       const state = await readState();
@@ -172,10 +187,19 @@ export default async function plugin(bb: BbPluginApi) {
     setDismissal: actions.setDismissal,
     readBrief: (threadId, version, read) => attention.briefs.read(threadId, version, read),
     chooseMain,
+  }, async (threadId, outcome) => {
+    try {
+      return await actions.outcomeChecked({ callerId: null, threadId, outcome });
+    } catch (cause) {
+      // The signed call's refusals are the signing module's kind.
+      if (cause instanceof CowError) throw new Refusal(cause.code, cause.message, cause.hint);
+      throw cause;
+    }
   });
 
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
+    ledger_read: ({ days }) => actions.ledger(days),
     notes_list: ({ threadIds }) => actions.notes(threadIds),
     park_set: async ({ threadId, park }) => {
       await actions.setPark(threadId, park);

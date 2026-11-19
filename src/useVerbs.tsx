@@ -43,6 +43,7 @@ import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, 
 import { type UndoEntry, undoText } from "./undo.ts";
 import { RUN_REFUSAL, type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
 import { waitNote } from "./waiting.ts";
+import { OUTCOMES, OUTCOME_TEXT, type Judgement, type Outcome, whoText } from "./ledger.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
@@ -55,7 +56,9 @@ type Modal =
   | { kind: "park-pickup"; threadId: string; reason: string | null; value: string; error: string }
   /** Why it is archived, or dropped: one optional line, then it happens. */
   /** `outside`: a line of Outside Main, which is not in the tree; the prompt is then held by Main, as a move's is. */
-  | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string; outside?: OutsideLine }
+  | { kind: "archive-reason"; threadId: string; dropped: boolean; value: string; error: string; outside?: OutsideLine; outcome?: Outcome | null }
+  /** What a finished worker came to: before its archive's reason (`archiving`), or on its own, with o. */
+  | { kind: "outcome"; threadId: string; archiving: boolean }
   | { kind: "confirm"; mode: string; threadId: string; label: string; cancelled: string; run: () => void }
   /** Who or what it waits on, then an optional reminder. */
   | { kind: "wait-on"; threadId: string; value: string; error: string }
@@ -85,6 +88,10 @@ export interface VerbHost {
   coverage: (threadId: string, refusals: readonly Refusal[]) => (string | null)[];
   /** Delete one of bb's automations: a signed call, so only an enrolled page can. */
   deleteAutomation: (group: AutomationGroup) => Promise<void>;
+  /** Say what a worker came to, for the ledger: a signed call, so only an enrolled page can. */
+  setOutcome: (threadId: string, outcome: Outcome) => Promise<void>;
+  /** The latest outcome of a worker, if one was given. */
+  outcomeOf: (threadId: string) => Judgement | undefined;
   /** Send a thread a message as the person: a signed call, so only an enrolled page can. */
   sendAs: (threadId: string, text: string) => Promise<void>;
   /** Start the steps that make a capability. */
@@ -125,6 +132,8 @@ export interface Verbs {
   startBring: (line: OutsideLine) => void;
   /** Ask for a reason, then archive a thread from Outside Main. `u` takes it back. */
   startArchiveOutside: (line: OutsideLine) => void;
+  /** Ask what a worker under Archived or To settle came to, or change it: o. */
+  startOutcome: (line: Line) => void;
   /** Ask, naming it, then delete an automation. Nothing undoes it. */
   startDeleteAutomation: (group: AutomationGroup) => void;
   /** Ask, then take a not-started item off its list. */
@@ -288,20 +297,48 @@ export function useVerbs(host: VerbHost): Verbs {
     }
   };
 
-  const archive = async (line: Pick<Line, "thread">, dropped: boolean, reason: string | null) => {
+  const archive = async (line: Pick<Line, "thread">, dropped: boolean, reason: string | null, outcome: Outcome | null = null) => {
     const id = line.thread.id;
     const next = afterLeaving(id);
     const under = host.under(id);
     try {
-      // The backend records the reason, stops a dropped thread, and archives it.
+      // The backend records the reason, stops a dropped thread, archives it, and writes a worker's ledger row.
       await parks.archive(id, reason, dropped, clockNow());
       host.stay(id, false);
       remember({ kind: "archive", threadId: id, title: line.thread.title, dropped, under, reason });
       setCursor(next);
-      close(`${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`);
+      const said = `${dropped ? "dropped: stopped and archived" : "archived"}${reason === null ? "" : `: ${reason}`}`;
+      if (outcome === null) return close(said);
+      // The outcome is the person's judgement, so it is signed; the archive stands either way.
+      try {
+        await host.setOutcome(id, outcome);
+        close(`${said} · came to: ${outcome}`);
+      } catch (cause) {
+        close(`${said} · its outcome was not saved: ${errorText(cause)} · o under Archived sets it`);
+      }
     } catch (cause) {
       close(`not archived: ${errorText(cause)}`);
     }
+  };
+
+  /** Whether e asks what the line came to first: a worker that finished a turn, not a project, Main or an automation's run. */
+  const asksOutcome = (line: Line): boolean =>
+    line.thread.id !== main.thread.id && line.project === null && line.run === undefined && (line.derived.state === "done" || line.derived.state === "waiting" || line.derived.state === "kept");
+
+  const judge = async (line: Line, outcome: Outcome) => {
+    try {
+      await host.setOutcome(line.thread.id, outcome);
+      close(`came to: ${outcome} (${OUTCOME_TEXT[outcome]})`);
+    } catch (cause) {
+      close(`outcome not saved: ${errorText(cause)}`);
+    }
+  };
+
+  const startOutcome = (line: Line) => {
+    if (line.thread.id === main.thread.id) return say("Main is no worker: it has no outcome");
+    if (line.project !== null) return say("a project is no worker: it has no outcome");
+    if (line.run !== undefined) return say("an automation's run is no worker: it has no outcome");
+    setModal({ kind: "outcome", threadId: line.thread.id, archiving: false });
   };
 
   const takeBack = async (entry: UndoEntry) => {
@@ -795,6 +832,8 @@ export function useVerbs(host: VerbHost): Verbs {
               },
         );
       case "archive":
+        // A finished worker is first asked what it came to: one key, or Enter for nothing.
+        if (asksOutcome(line)) return setModal({ kind: "outcome", threadId, archiving: true });
         // A reason given before, and kept through an undo, is offered again.
         return setModal({
           kind: "archive-reason",
@@ -823,7 +862,7 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, startDeleteAutomation, removeTodo, moveTodo, undoable };
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, startOutcome, startDeleteAutomation, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }
@@ -1046,6 +1085,54 @@ export function useVerbs(host: VerbHost): Verbs {
       card: null,
     };
   }
+  if (modal.kind === "outcome") {
+    const { archiving } = modal;
+    const before = host.outcomeOf(modal.threadId);
+    const toReason = (outcome: Outcome | null) =>
+      setModal({ kind: "archive-reason", threadId: modal.threadId, dropped: false, value: parks.archives.get(modal.threadId)?.reason ?? "", error: "", outcome });
+    return {
+      mode: archiving ? "ARCHIVE" : "OUTCOME",
+      ...common,
+      onKey: (key) => {
+        const outcome = /^[1-4]$/.test(key) ? OUTCOMES[Number(key) - 1] : undefined;
+        if (archiving) {
+          if (key === "Escape") return close("not archived");
+          if (key === "Enter") return toReason(null);
+          if (outcome) toReason(outcome);
+          return;
+        }
+        if (outcome && target) return void judge(target, outcome);
+        close(before ? `not changed: it came to ${before.outcome}` : "no outcome given");
+      },
+      footer: (
+        <>
+          <span className="cow-mode cow-m-prompt">{archiving ? "ARCHIVE" : "OUTCOME"}</span>
+          <span className="cow-noun">{title}</span>
+          <span className="cow-sep">▸</span>
+          <span className="cow-prompt" data-cow-outcome-prompt={archiving ? "archive" : "change"}>
+            <label>
+              what did it come to?{before ? ` now: ${before.outcome}, judged by ${before.by === "person" ? "you" : whoText(before.by)} ·` : ""}
+            </label>
+            <small>
+              {OUTCOMES.map((outcome, index) => (
+                <span key={outcome} data-cow-outcome-choice={outcome}>
+                  <kbd>{index + 1}</kbd> {outcome}: {OUTCOME_TEXT[outcome]} ·{" "}
+                </span>
+              ))}
+              {archiving ? (
+                <>
+                  <kbd>⏎</kbd> leave it unsaid · <kbd>Esc</kbd> cancels
+                </>
+              ) : (
+                "any other key cancels"
+              )}
+            </small>
+          </span>
+        </>
+      ),
+      card: null,
+    };
+  }
   if (modal.kind === "wait-on" || modal.kind === "wait-remind") {
     const asksOn = modal.kind === "wait-on";
     const submitWait = () => {
@@ -1135,7 +1222,7 @@ export function useVerbs(host: VerbHost): Verbs {
       }
       // Closed before it runs, so a second Enter cannot run it twice.
       close();
-      void archive({ thread: subject }, dropped, value === "" ? null : value);
+      void archive({ thread: subject }, dropped, value === "" ? null : value, modal.outcome ?? null);
     };
     return {
       mode: dropped ? "DROP" : "ARCHIVE",
@@ -1148,7 +1235,8 @@ export function useVerbs(host: VerbHost): Verbs {
           label={
             <>
               {dropped ? "drop" : "archive"} · <b>{subject?.title ?? title}</b>
-              {withUnder} · reason:
+              {withUnder}
+              {modal.outcome ? ` · came to: ${modal.outcome}` : ""} · reason:
             </>
           }
           placeholder="why, or nothing"

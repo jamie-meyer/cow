@@ -19,6 +19,7 @@ import type { Caps } from "../caps/service.ts";
 import { Refusal } from "../kv.ts";
 import { type Dismissal, type Seen, dismissalSchema, seenSchema } from "../shared.ts";
 import { AUTOMATIONS_PLUGIN } from "../automations.ts";
+import { OUTCOMES, type Outcome } from "../ledger.ts";
 import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
 
@@ -62,6 +63,7 @@ export const ACTION_ARGS = {
   main_choose: z.object({ projectId: id, threadId: id.nullable() }),
   /** `name` is what the confirmation named, for the log. */
   automation_delete: z.object({ projectId: id, automationId: id, name: z.string().max(400) }),
+  outcome_set: z.object({ threadId: id, outcome: z.enum(OUTCOMES) }),
   key_approve: z.object({ fingerprint }),
   key_refuse: z.object({ fingerprint }),
   key_remove: z.object({ fingerprint }),
@@ -181,7 +183,10 @@ export function queueDispatch(log: LogStore, marks: QueueMarks, changed: () => v
   };
 }
 
-export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks): Keys {
+/** Judge what a worker came to as the person; a refusal says why it cannot be. */
+export type JudgeOutcome = (threadId: string, outcome: Outcome) => Promise<unknown>;
+
+export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks, judgeOutcome: JudgeOutcome): Keys {
   const changed = () => bb.realtime.publish(CAPS_CHANGED, {});
   const resetPath = join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "reset-enrollment");
   const keys = createKeys({
@@ -245,6 +250,13 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
         signal: AbortSignal.timeout(10_000),
       });
       await log.append({ kind: "automation-deleted", projectId: args.projectId, automationId: args.automationId, name: args.name.slice(0, 200) }, by);
+      changed();
+      return null;
+    },
+    outcome_set: async (args, by) => {
+      // Refused when it is no worker, or never finished a turn; nothing is logged then.
+      await judgeOutcome(args.threadId, args.outcome);
+      await log.append({ kind: "outcome-set", threadId: args.threadId, outcome: args.outcome }, by);
       changed();
       return null;
     },

@@ -46,7 +46,11 @@ export type Command =
   /** The actions other plugins offer for the selected thread. */
   | { kind: "more" }
   /** Hide or show the context card in this window. */
-  | { kind: "card" };
+  | { kind: "card" }
+  /** Say what a worker under Archived or To settle came to, or change it. */
+  | { kind: "outcome" }
+  /** Open the ledger sheet. */
+  | { kind: "ledger" };
 
 /** The key map as the legend shows it: grouped by what the person is doing. */
 export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
@@ -88,13 +92,20 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     keys: [
       { keys: "p", does: "park it: a reason, then 19 Nov, +3d, +2w, a condition, or nothing" },
       { keys: "r", does: "resume a parked line: back into the tree" },
-      { keys: "e", does: "archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back" },
+      { keys: "e", does: "archive a done, idle, waiting, kept or failed line, or a line in Outside Main at rest with nothing open under it: a reason or nothing, then Enter. On a finished worker (done, waiting or kept; not a project, Main or an automation's run) it first asks what it came to: 1 done, 2 partial, 3 redone, 4 dropped, or Enter to leave it unsaid. On an automation's row, delete the automation (y confirms): its past runs stay, and u cannot bring it back" },
       { keys: "z", does: "keep a line that is not running: it goes to Kept, asks for nothing and reminds you of nothing, until it starts a turn. A few words or nothing, then Enter. On a kept line, z takes it off Kept" },
       { keys: "x", does: "stop a running turn (y confirms); on parked work that came back, drop it, with a reason; on a not-started item, remove it" },
       { keys: "A", does: "on a line in Outside Main, bring that thread under Main (y confirms): Main gets a short notice from bb and starts a turn, and the thread's notifications to Main are set to stuck, so it does not wake Main each time it finishes a turn" },
       { keys: "u", does: "undo the last park, resume, archive, dismissal, mark as seen, project mark, wait, keep or move under Main (y confirms). A sent message, an answer, a decision and a stopped turn cannot be undone" },
       { keys: "P", does: "mark a line as a project, or unmark it: a project is never done; when quiet it reads idle and stays in the tree" },
       { keys: "J K", does: "move a not-started item down, up its list" },
+    ],
+  },
+  {
+    title: "What finished work came to",
+    keys: [
+      { keys: "o", does: "on a line under Archived or To settle, say what the worker came to, or change it: 1 done (the work was used as it came back), 2 partial (some of it was used, or it needed a second worker), 3 redone (it was wrong, and you or another thread redid it), 4 dropped (it was not used); any other key cancels. Signed as yours: no thread can overwrite it" },
+      { keys: "L", does: "the ledger over the page: for the last 14 days, by model and by dispatching thread, how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. j k scroll, q or Esc closes" },
     ],
   },
   {
@@ -206,6 +217,10 @@ export class KeyReader {
         return { kind: "more" };
       case "v":
         return { kind: "card" };
+      case "o":
+        return { kind: "outcome" };
+      case "L":
+        return { kind: "ledger" };
       case "w":
         return { kind: "wait" };
       case ";":

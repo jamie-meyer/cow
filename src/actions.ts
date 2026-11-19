@@ -39,7 +39,10 @@ import {
   waitNoteSchema,
 } from "./shared.ts";
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
-import { type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
+import { AUTOMATIONS_PLUGIN, type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
+import { Refusal } from "./kv.ts";
+import { type Judgement, type LedgerRow, type LedgerSummary, type Outcome, PERSON, inWindow, summarize } from "./ledger.ts";
+import type { LedgerStore } from "./ledger-store.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
 import { NOT_UNDER_MAIN, insteadFromCli, verbBlocked } from "./verbs.ts";
@@ -122,11 +125,16 @@ export interface Actions {
   /** The plans as the CLI writes them: `callerId` may plan only for itself and what is under it. */
   nextChecked(args: { callerId: string | null; threadId: string; text: string | null }): Promise<{ title: string; note: NextNote | null }>;
   todoChecked(args: { callerId: string | null; threadId: string; op: TodoOp | null }): Promise<{ title: string; list: TodoItem[]; item: TodoItem | null }>;
-  /** Record the reason (or forget an earlier one), stop it when dropped, and archive it in bb. */
-  archive(args: { threadId: string; reason: string | null; dropped: boolean; at: number }): Promise<void>;
+  /** Record the reason (or forget an earlier one), stop it when dropped, and archive it in bb. A worker gets its ledger row. `by`: "person" (the default) or the archiving thread's id. */
+  archive(args: { threadId: string; reason: string | null; dropped: boolean; at: number; by?: string }): Promise<void>;
   /** The verbs as the CLI runs them: the page's rules first, then the same action. */
   /** `callerId`: the thread that ran the command, or null for the person. Outside Main, only Main, the person, or the thread itself archives. */
-  archiveChecked(args: { callerId: string | null; threadId: string; reason: string | null }): Promise<{ title: string; under: number; outside: boolean }>;
+  /** `outcome`: what the worker came to, judged by the caller; refused before anything is archived when it cannot be given. */
+  archiveChecked(args: { callerId: string | null; threadId: string; reason: string | null; outcome?: Outcome | null }): Promise<{ title: string; under: number; outside: boolean }>;
+  /** Judge what a worker came to, open or archived, under archive's rule of who may. `callerId` null: the person. */
+  outcomeChecked(args: { callerId: string | null; threadId: string; outcome: Outcome }): Promise<{ title: string; archived: boolean; judgement: Judgement; changes: number; row: boolean }>;
+  /** The ledger's rows archived in the last `days` days, newest first, their summary, and the latest outcome of every worker that has one. */
+  ledger(days: number): Promise<{ rows: LedgerRow[]; summary: LedgerSummary; outcomes: Record<string, Judgement> }>;
   /** `callerId`: the thread that ran the command, or null for one run outside any thread (the person). An agent that parks what waited on the person leaves a trace. */
   parkChecked(args: { callerId: string | null; threadId: string; reason: string; pickUp: string; stop: boolean }): Promise<{ title: string; record: ParkRecord; kept: boolean; traced: boolean }>;
   resumeChecked(threadId: string): Promise<{ title: string }>;
@@ -159,7 +167,7 @@ export interface TraceNotice {
   at: number;
 }
 
-export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource): Actions {
+export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource, ledger?: LedgerStore): Actions {
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
@@ -289,7 +297,30 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     return !Object.values((await readMains()).mains).includes(threadId);
   };
 
-  const archive: Actions["archive"] = async ({ threadId, reason, dropped, at }) => {
+  /** Why a thread is no worker for the ledger, or null when it is one: a Main, a project, or an automation's run is not. Whether it finished a turn is the ledger's to say. */
+  const notWorker = async (threads: readonly ThreadFacts[], target: ThreadFacts): Promise<string | null> => {
+    if (Object.values((await readMains()).mains).includes(target.id)) return "it is a Main, not a worker";
+    const marked = Object.keys((await notes([target.id])).projects);
+    if (projectIds(threads, marked, null).has(target.id)) return "it is a project, not a worker";
+    const automations = (await raised?.automations?.().catch(() => NO_AUTOMATIONS)) ?? NO_AUTOMATIONS;
+    if (target.originPluginId === AUTOMATIONS_PLUGIN || runThreadIds(automations).includes(target.id)) return "it is an automation's run, not a worker";
+    return null;
+  };
+
+  /** Write a worker's ledger row once it is archived. Never fails the archive: a row that cannot be written is logged. */
+  const recordWorker = async (target: ThreadFacts | undefined, threads: readonly ThreadFacts[], archived: { at: number; by: string }) => {
+    if (!ledger || !target) return;
+    try {
+      if ((await notWorker(threads, target)) !== null) return;
+      await ledger.record(target, archived);
+    } catch (cause) {
+      bb.log.warn(`could not write the ledger row of ${target.id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  };
+
+  const archive: Actions["archive"] = async ({ threadId, reason, dropped, at, by = PERSON }) => {
+    // Its parent now, before bb archives it: the thread that dispatched it.
+    const { threads: before } = ledger ? await listThreads(reader) : { threads: [] as ThreadFacts[] };
     // The reason is cow's note on the thread; archiving without one forgets an earlier reason.
     // A thread outside Main keeps a note either way: under no Main once archived, the note is what lists it under Archived.
     const outside = await isOutside(threadId);
@@ -299,6 +330,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     // nothing to stop, which is not a reason to keep it.
     if (dropped) await bb.sdk.threads.stop({ threadId }).catch(() => undefined);
     await bb.sdk.threads.archive({ threadId });
+    await recordWorker(before.find((thread) => thread.id === threadId), before, { at, by });
     // An archived thread waits on nobody and is kept by nobody; unarchived, it starts without either note.
     const after = await notes([threadId]);
     if (after.waits[threadId]) await setWait(threadId, null);
@@ -375,6 +407,27 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     return { line, isMain, threads: seen.threads, now: seen.now, mains };
   };
 
+  /** A refusal of the ledger's, as the actions' kind. */
+  const asCow = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (cause) {
+      if (cause instanceof Refusal) throw new CowError(cause.code, cause.message, cause.hint);
+      throw cause;
+    }
+  };
+
+  /** Refuse unless `by` may judge what this worker came to now: it must be a worker that finished a turn, and a thread never overwrites the person. */
+  const judgeable = async (threads: readonly ThreadFacts[], target: ThreadFacts, by: string, verb: "archive" | "outcome") => {
+    if (!ledger) throw new CowError("no_ledger", "cow keeps no ledger here");
+    const lead = verb === "archive" ? `cannot archive “${target.title}” (${target.id}) with an outcome` : `cannot set what “${target.title}” (${target.id}) came to`;
+    const hint = verb === "archive" ? "Archive it without --outcome." : undefined;
+    const why = (await notWorker(threads, target)) ?? ((await ledger.finished(target.id)) ? null : "it never finished a turn, so it has no outcome");
+    if (why !== null) throw new CowError("not_a_worker", `${lead}: ${why}`, hint);
+    const refused = await ledger.refusal(target.id, by);
+    if (refused !== null) throw new CowError(refused.code, `${lead}: ${refused.message}`, verb === "archive" ? hint : refused.hint);
+  };
+
   const refuse = (verb: string, line: Line, why: string): never => {
     throw new CowError(`cannot_${verb}`, `cannot ${verb} “${line.thread.title}” (${line.thread.id}): ${why}`, insteadFromCli(why) || undefined);
   };
@@ -439,7 +492,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       return { title: target.title, ...(await todo(threadId, checked)) };
     },
 
-    async archiveChecked({ callerId, threadId, reason }) {
+    async archiveChecked({ callerId, threadId, reason, outcome = null }) {
       const { line, isMain, threads, now, mains } = await lineFor(threadId);
       const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
       const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
@@ -447,9 +500,37 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       if (place.why !== null) refuse("archive", line, place.why);
       const why = verbBlocked("archive", line, isMain);
       if (why !== null) refuse("archive", line, why);
+      const by = callerId ?? PERSON;
+      // An outcome that cannot be given refuses the whole archive, before anything is done.
+      if (outcome !== null) await judgeable(threads, line.thread, by, "archive");
       const under = descendantIds(threads, threadId).length;
-      await archive({ threadId, reason, dropped: false, at: now });
+      await archive({ threadId, reason, dropped: false, at: now, by });
+      if (outcome !== null && ledger) await asCow(() => ledger.judge(threadId, outcome, by, Date.now()));
       return { title: line.thread.title, under, outside: place.outside };
+    },
+
+    async outcomeChecked({ callerId, threadId, outcome }) {
+      if (!ledger) throw new CowError("no_ledger", "cow keeps no ledger here");
+      const { threads } = await listThreads(reader);
+      const target = threads.find((thread) => thread.id === threadId);
+      if (!target) throw new CowError("thread_not_found", `there is no thread ${threadId}`, "Run `bb thread list` to see thread ids.");
+      const mains = await readMains();
+      const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
+      const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
+      const place = archivePlace(threads, mains.mains, callerId, ownProject, threadId);
+      if (place.why !== null) throw new CowError("cannot_judge", `cannot set what “${target.title}” (${threadId}) came to: ${place.why}`, insteadFromCli(place.why) || undefined);
+      const by = callerId ?? PERSON;
+      await judgeable(threads, target, by, "outcome");
+      const judged = await asCow(() => ledger.judge(threadId, outcome, by, Date.now()));
+      const judgement = judged.judgements[judged.judgements.length - 1] as Judgement;
+      return { title: target.title, archived: target.archivedAt !== null, judgement, changes: judged.judgements.length - 1, row: judged.row !== null };
+    },
+
+    async ledger(days) {
+      if (!ledger) return { rows: [], summary: summarize([], Date.now(), days), outcomes: {} };
+      const now = Date.now();
+      const all = await ledger.rows();
+      return { rows: inWindow(all, now, days), summary: summarize(all, now, days), outcomes: Object.fromEntries(await ledger.outcomes()) };
     },
 
     async parkChecked({ callerId, threadId, reason, pickUp, stop }) {
@@ -530,7 +611,14 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       // The traces about this Main's threads, or made by one of them.
       const ours = new Set([id, ...descendantIds(seen.threads, id)]);
       const traces = ((await raised?.traces?.().catch(() => [])) ?? []).filter((trace) => ours.has(trace.threadId) || ours.has(trace.actorThreadId));
-      return { ...statusReport(overview, seen.now, seen.truncated, projectNames), traces: traces.map((trace) => ({ ...trace })) };
+      const report = statusReport(overview, seen.now, seen.truncated, projectNames);
+      // An archived worker shows what it came to, when someone said.
+      const outcomes = ledger ? await ledger.outcomes().catch(() => new Map<string, Judgement>()) : new Map<string, Judgement>();
+      const archived = report.archived.map((line) => {
+        const judged = outcomes.get(line.id);
+        return judged ? { ...line, outcome: { outcome: judged.outcome, by: judged.by } } : line;
+      });
+      return { ...report, archived, traces: traces.map((trace) => ({ ...trace })) };
     },
   };
 }

@@ -46,6 +46,8 @@ export const PERSON_ACTIONS = [
   "main_choose",
   /** Delete one of bb's automations, through the automations plugin. Its past run threads stay; nothing undoes it. */
   "automation_delete",
+  /** Say what a finished worker came to, for cow's ledger. What the person judges, no thread overwrites. */
+  "outcome_set",
   /** Approve or refuse a page that asks for its key to be enrolled; remove an enrolled key. */
   "key_approve",
   "key_refuse",

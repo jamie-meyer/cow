@@ -76,7 +76,7 @@ test("what is signed is the same text whatever order the fields come in", () => 
 
 test("every action only the person may do has its arguments defined, and nothing else is an action", () => {
   assert.deepEqual(Object.keys(ACTION_ARGS).sort(), [...PERSON_ACTIONS].sort());
-  for (const action of ["cap_create", "cap_delete", "cap_restore", "cap_ack", "permission_decide", "send", "ask_answer", "ask_close", "seen_set", "dismissal_set", "brief_read", "main_choose", "automation_delete", "key_approve", "key_refuse", "key_remove"]) {
+  for (const action of ["cap_create", "cap_delete", "cap_restore", "cap_ack", "permission_decide", "send", "ask_answer", "ask_close", "seen_set", "dismissal_set", "brief_read", "main_choose", "automation_delete", "outcome_set", "key_approve", "key_refuse", "key_remove"]) {
     assert.ok((PERSON_ACTIONS as readonly string[]).includes(action), action);
   }
 });

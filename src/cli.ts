@@ -9,10 +9,12 @@ import { pickUpText } from "./park.ts";
 import { formatDay } from "./pickup.ts";
 import { MAX_NEXT, MAX_TODOS, MAX_WAIT_FOR, MAX_WAIT_ON, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
+import { OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, ledgerText, whoText } from "./ledger.ts";
 import { statusText, withCapabilities } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
-export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked">;
+export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
+  Partial<Pick<Actions, "outcomeChecked" | "ledger">>;
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -38,6 +40,59 @@ function reasonText(value: string, required: boolean): string | null {
     throw new PluginCliError(`keep the reason under ${MAX_REASON} characters`, { code: "reason_too_long" });
   }
   return reason;
+}
+
+const OUTCOME_LIST = OUTCOMES.map((outcome) => `${outcome} (${OUTCOME_TEXT[outcome]})`).join(", ");
+
+function outcomeOf(value: string): Outcome {
+  const outcome = value.trim().toLowerCase();
+  if (!isOutcome(outcome)) {
+    throw new PluginCliError(`"${value}" is not an outcome`, { code: "bad_outcome", hint: `One of: ${OUTCOME_LIST}.` });
+  }
+  return outcome;
+}
+
+/** The ledger commands: what a finished worker came to, and the rows and summary. */
+function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof cliCommand>> {
+  const { outcomeChecked, ledger } = actions;
+  if (!outcomeChecked || !ledger) return {};
+  return {
+    outcome: cliCommand({
+      summary: "Say what a finished worker came to: done, partial, redone or dropped",
+      description:
+        `The outcomes: ${OUTCOME_LIST}. "done" means the work was used as it came back. ` +
+        "Works on an open thread and on an archived one, under the same rule as archive; it can be changed later, and each change " +
+        "keeps who made it and when. An outcome the person set is never overwritten by a thread. It goes in cow's ledger (`bb cow ledger`).",
+      positionals: [thread, { name: "outcome", description: "done, partial, redone or dropped", required: true }],
+      options: { json },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const outcome = outcomeOf(input.positionals.outcome);
+        const done = await acting(() => outcomeChecked({ callerId: ctx.threadId ?? null, threadId: id, outcome }));
+        return print(
+          input.options.json,
+          { threadId: id, title: done.title, outcome: done.judgement.outcome, judgedBy: done.judgement.by, judgedAt: done.judgement.at, changes: done.changes, archived: done.archived },
+          `“${done.title}” (${id}) came to: ${outcome} (${OUTCOME_TEXT[outcome]}) · judged by ${whoText(done.judgement.by)}${done.changes > 0 ? ` · changed ${done.changes}×` : ""}${done.archived ? "" : " · it is kept for its ledger row, written when it is archived"}`,
+        );
+      },
+    }),
+    ledger: cliCommand({
+      summary: "What finished workers came to: rows, and a summary by model and by dispatching thread",
+      description:
+        "One row per worker archived through cow: its model and effort, time to its first report, how many times the person and other threads " +
+        "steered it before that report, how many turns it ran, its outcome and who judged it. No titles, prompts or message text. " +
+        "Groups of fewer than 5 workers are counted, not compared.",
+      options: { days: { type: "string", description: "How many days back to read. Default: 14" }, json },
+      async run(input) {
+        const raw = input.options.days ?? "14";
+        if (!/^[1-9][0-9]{0,3}$/.test(raw.trim())) throw new PluginCliError(`"${raw}" is not a number of days`, { code: "bad_days", hint: "--days 14" });
+        const read = await acting(() => ledger(Number(raw.trim())));
+        return input.options.json
+          ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, summary: read.summary, rows: read.rows })}\n` }
+          : { exitCode: 0, stdout: `${ledgerText(read.summary, read.rows)}\n` };
+      },
+    }),
+  };
 }
 
 /** Run an action, turning a refusal into the CLI's kind of error. */
@@ -251,17 +306,22 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
         positionals: [thread],
         options: {
           reason: { type: "string", aliases: ["why"], description: `Why it is archived, up to ${MAX_REASON} characters` },
+          ...(actions.outcomeChecked
+            ? { outcome: { type: "string", description: `What a worker you dispatched came to, honestly: ${OUTCOME_LIST}. Optional` } as const }
+            : {}),
           json,
         },
         async run(input, ctx) {
           const id = threadId(input.positionals.thread);
           const reason = reasonText(input.options.reason ?? "", false);
-          const done = await acting(() => actions.archiveChecked({ callerId: ctx.threadId ?? null, threadId: id, reason }));
+          const given = (input.options as { outcome?: string }).outcome;
+          const outcome = given === undefined ? null : outcomeOf(given);
+          const done = await acting(() => actions.archiveChecked({ callerId: ctx.threadId ?? null, threadId: id, reason, ...(outcome === null ? {} : { outcome }) }));
           const with_ = done.under === 0 ? "" : ` with the ${done.under === 1 ? "thread" : `${done.under} threads`} under it`;
           return print(
             input.options.json,
-            { threadId: id, title: done.title, reason, archivedUnder: done.under, outside: done.outside },
-            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}${done.outside ? " · it was outside Main: it is listed under Archived for two days" : ""}`,
+            { threadId: id, title: done.title, reason, archivedUnder: done.under, outside: done.outside, ...(outcome === null ? {} : { outcome }) },
+            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}${outcome === null ? "" : ` · came to: ${outcome}`}${done.outside ? " · it was outside Main: it is listed under Archived for two days" : ""}`,
           );
         },
       }),
@@ -310,6 +370,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           return print(input.options.json, { threadId: id, title: done.title }, `resumed “${done.title}” (${id}): it is back in the tree`);
         },
       }),
+      ...ledgerCommands(actions),
       ...(attention ? attentionCommands(attention) : {}),
       ...(extra ?? {}),
     },

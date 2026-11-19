@@ -80,6 +80,8 @@ export interface StatusLine {
   /** Whether a reply in it has not been seen (on a line to settle, or an idle project's), and, to settle, what archiving it would leave behind. */
   unread?: boolean;
   leftBehind?: string[];
+  /** For an archived worker: what it came to, as last judged, and by whom ("person" or a thread's id). */
+  outcome?: { outcome: string; by: string };
 }
 
 /** The same report with each line saying which capabilities its thread holds. */
@@ -240,8 +242,9 @@ function row(line: StatusLine, indent: boolean): string[] {
     : "";
   const unreadMark = line.unread ? " [unread]" : "";
   const behind = line.leftBehind && line.leftBehind.length > 0 ? `  [archiving leaves: ${line.leftBehind.join(", ")}]` : "";
+  const outcome = line.outcome ? `  [outcome: ${line.outcome.outcome}, judged by ${line.outcome.by === "person" ? "the person" : line.outcome.by}]` : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${holds(line)}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${outcome}${holds(line)}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }

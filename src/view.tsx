@@ -114,6 +114,8 @@ import type { FileRef } from "./reader/link.ts";
 import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
+import { LedgerSheet, ledgerKey, useLedger } from "./LedgerSheet.tsx";
+import type { Judgement } from "./ledger.ts";
 import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
 import { pickAction, pickChoice } from "./plugins.ts";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
@@ -422,8 +424,11 @@ function LineRow({
   onFold,
   settle = false,
   sidebar,
+  outcome,
 }: {
   line: Line;
+  /** What the worker came to, when someone said: shown under Archived and To settle. */
+  outcome?: Judgement;
   /** bb's own copy of the thread, which other plugins' badges are drawn for; absent when bb's list does not hold it. */
   sidebar?: PluginSidebarThread;
   /** It is listed under To settle: its age is how long since it finished, warm then red, and it says what archiving it leaves behind. */
@@ -597,6 +602,12 @@ function LineRow({
           <b className="cow-why" data-cow-archive-reason="">
             archived: {derived.archivedWhy}
             {derived.doing && derived.doing !== "archived" ? " · " : ""}
+          </b>
+        ) : null}
+        {outcome ? (
+          <b className="cow-why" data-cow-outcome={outcome.outcome} title={`judged by ${outcome.by === "person" ? "you" : outcome.by} · o changes it`}>
+            came to: {outcome.outcome}
+            {" · "}
           </b>
         ) : null}
         {derived.archivedWhy && derived.doing === "archived" ? null : derived.doing}
@@ -1625,6 +1636,8 @@ function OverviewScreen({
   const [sayText, setSayText] = useState("");
   const [sending, setSending] = useState(false);
   const [help, setHelp] = useState(false);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  const ledger = useLedger();
   const [message, setMessage] = useState("");
   const sidebarIndex = useSidebarIndex();
   /** What other plugins offer for the selected line, as its probe last reported. */
@@ -1859,6 +1872,9 @@ function OverviewScreen({
     );
   };
 
+  /** Whether a line is where o works: under Archived or To settle. */
+  const judgedHere = (line: Line): boolean => [...overview.archived, ...overview.settle].some((other) => other.thread.id === line.thread.id);
+
   const verbs = useVerbs({
     sdk,
     overview,
@@ -1871,6 +1887,10 @@ function OverviewScreen({
     sendAs: async (threadId, text) => {
       await signer.call("send", { threadId, text });
     },
+    setOutcome: async (threadId, outcome) => {
+      await signer.call("outcome_set", { threadId, outcome });
+    },
+    outcomeOf: (threadId) => ledger.outcomes.get(threadId),
     deleteAutomation: async (group) => {
       const { automation } = group;
       await signer.call("automation_delete", { projectId: automation.projectId, automationId: automation.id, name: automation.name });
@@ -2160,6 +2180,12 @@ function OverviewScreen({
         return verbs.startUndo();
       case "help":
         return setHelp(true);
+      case "ledger":
+        setMessage("");
+        return setLedgerOpen(true);
+      case "outcome":
+        if (!selectedLine || !judgedHere(selectedLine)) return setMessage("o says what a finished worker came to: select a line under Archived or To settle");
+        return verbs.startOutcome(selectedLine);
       case "card": {
         const hidden = !cardHidden;
         rememberCardHidden(hidden);
@@ -2193,6 +2219,8 @@ function OverviewScreen({
         }
       : help
       ? (key) => helpKey(key, () => setHelp(false))
+      : ledgerOpen
+      ? (key) => ledgerKey(key, () => setLedgerOpen(false))
       : capSteps.onKey
         ? (key) => {
             // The steps that make a capability hold the keyboard until they are saved or left.
@@ -2330,6 +2358,7 @@ function OverviewScreen({
         onSelect={setCursor}
         onOpen={openChat}
         sidebar={sidebarIndex.get(line.thread.id)}
+        outcome={judgedHere(line) ? ledger.outcomes.get(line.thread.id) : undefined}
       />
       {card(line.thread.id)}
     </Fragment>
@@ -2350,6 +2379,8 @@ function OverviewScreen({
             ? "say"
             : help
               ? "help"
+              : ledgerOpen
+              ? "ledger"
               : capSteps.origin !== null
                 ? "cap"
                 : (verbs.mode?.toLowerCase() ?? (moreOpen !== null ? "more" : filter !== null ? "filter" : capSheet.open ? "caps" : sheet.threadId !== null ? "brief" : "normal"))
@@ -2834,6 +2865,9 @@ function OverviewScreen({
                 {selectedLine && !selectedTodo && selectedLine.run === undefined && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
                   <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
                 ) : null}
+                {selectedLine && judgedHere(selectedLine) && selectedLine.project === null && selectedLine.run === undefined ? (
+                  <Verb keys="o" label={ledger.outcomes.has(selectedLine.thread.id) ? "change outcome" : "outcome"} name="outcome" why="what the worker came to, for the ledger: L shows it" onRun={() => run({ kind: "outcome" })} />
+                ) : null}
                 {lineRows.length > 0 ? (
                   <Verb keys="." label="more" name="more" why="what other plugins offer for this thread, run by them" onRun={() => run({ kind: "more" })} />
                 ) : null}
@@ -2869,6 +2903,7 @@ function OverviewScreen({
       {reader.node}
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
+      {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} /> : null}
     </div>
   );
 }
