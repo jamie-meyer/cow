@@ -697,6 +697,12 @@ uses one that is not listed.
 | `experimental_listPluginMetadata` (backend) | finding cow's notes on threads that bb has since deleted |
 | `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
 | `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5 |
+| `experimental_environments` (backend) | registering the copy-on-write workspace as an environment provider |
+| `experimental_client` (backend) | the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed |
+| `experimental_defineHostEntry` (backend) | the copy-on-write workspace: the host entry that clones and removes a workspace |
+| `experimental_paths` (backend) | the copy-on-write workspace: the plugin's own data folder on the host, where clones live |
+| `experimental_claimPath` (backend) | the copy-on-write workspace: telling bb which folder an environment owns |
+| `experimental_retainWorker` (backend) | the copy-on-write workspace: keeping the host worker alive while a removed clone is deleted in the background |
 | `experimental_Diff` (page) | the reader: a file change drawn as a diff |
 | `experimental_SourceCode` (page) | the reader: a file drawn with highlighting and line numbers |
 | `experimental_copyToClipboard` (page) | the reader: copying a path |
