@@ -237,8 +237,11 @@ export function createWorkspaces(deps: WorkspacesDeps) {
       return { threadId, workspace: approved?.folder ?? folder, branch: first.branch, repos, clone, approved };
     },
 
-    /** Run `back` for a thread's clone. Only the person: from the page, signed, or from a terminal outside any thread. */
-    async back(threadId: string, by: string | null): Promise<{ workspace: string; results: BackResultWire[] }> {
+    /**
+     * Run `back` for a thread's clone. Only the person, from the page: the
+     * signed `workspace_back` is its one caller, and `by` is the key that signed it.
+     */
+    async back(threadId: string, by: string): Promise<{ workspace: string; results: BackResultWire[] }> {
       const plan = await this.backPlan(threadId);
       if (plan.approved === null) {
         throw new Refusal("not_approved", `no approved ${WORKSPACE_FILE} covers this clone${plan.workspace ? ` (its workspace is ${plan.workspace})` : ""}, so there is no back command to run`);

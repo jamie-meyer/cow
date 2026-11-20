@@ -8,7 +8,7 @@ import { Refusal } from "../src/kv.ts";
 import { type Dispatch, runSigned, sha256Hex, verifyP256, workspaceDispatch } from "../src/signing/backend.ts";
 import { type Envelope, PERSON_ACTIONS, type PublicKey, fingerprintText, formatFingerprint, signedText } from "../src/signing/envelope.ts";
 import { createKeys } from "../src/signing/keys.ts";
-import { workspaceCommands } from "../src/workspace/backend.ts";
+import { workspaceCommands, workspaceRpcContract } from "../src/workspace/backend.ts";
 import { type Approved, type HostPort, createWorkspaces } from "../src/workspace/service.ts";
 import { NOW } from "./fixtures.ts";
 import { memoryKv } from "./memory.ts";
@@ -58,7 +58,7 @@ test("proposing makes a notice and approves nothing; with no approval everything
   await refused(w.workspaces.approvedFor(FOLDER), "not_approved");
   await refused(w.workspaces.sync(FOLDER, null), "not_approved");
   await refused(w.workspaces.sync(null, null), "not_approved");
-  await refused(w.workspaces.back("thr_clone", null), "not_approved");
+  await refused(w.workspaces.back("thr_clone", "key-1"), "not_approved");
   assert.deepEqual(w.ran, []);
   await refused(w.workspaces.propose("/nope"), "workspace_not_found");
 });
@@ -94,7 +94,7 @@ test("a changed file waits for the person, and until then the approved content i
   assert.deepEqual(view!.fresh, [{ as: null, kind: "sync", text: "rm -rf ~" }]);
   assert.ok(view!.review!.indexOf("rm -rf ~") < view!.review!.indexOf("The change"));
   await w.workspaces.sync(FOLDER, null);
-  await w.workspaces.back("thr_clone", null);
+  await w.workspaces.back("thr_clone", "key-1");
   await w.workspaces.output({ folder: FOLDER, as: "api", kind: "sync" });
   assert.deepEqual(w.ran.map((run) => [run.call, run.approved!.text]), [["sync", GOOD], ["back", GOOD], ["output", GOOD]]);
   // Dismissed: out of the queue until the file changes again, and still not approved.
@@ -158,12 +158,73 @@ test("every wrong source of a command is refused: unsigned calls, the file on di
   // The host call takes commands only inside `approved`, whose hash must be a SHA-256; nothing else carries text.
   const create = cloneHostContract.clone_create.input as unknown as { safeParse(value: unknown): { success: boolean } };
   assert.equal(create.safeParse({ pathKey: "k", branch: "b", inputs: null, workspace: { approved: { folder: FOLDER, text: "{}", hash: "x" }, pick: null } }).success, false);
-  // A thread cannot run back from the CLI, even naming its own clone.
-  const back = workspaceCommands(w.workspaces, "/data/plugins/cow/host-data/clones")["workspace back"] as unknown as { run(input: unknown, ctx: unknown): Promise<unknown> };
-  await assert.rejects(back.run({ positionals: { thread: "thr_clone" }, options: {} }, { threadId: "thr_any" }), /only the user/);
-  await assert.rejects(back.run({ positionals: { thread: "thr_clone" }, options: {} }, { cwd: "/data/plugins/cow/host-data/clones/k/ws" }), /only the user/);
+  // The CLI's back only shows the plan, whoever calls and from wherever.
+  const back = workspaceCommands(w.workspaces)["workspace back"] as unknown as { run(input: unknown, ctx: unknown): Promise<{ exitCode: number; stdout: string }> };
+  for (const ctx of [{ threadId: "thr_any" }, { cwd: "/data/plugins/cow/host-data/clones/k/ws" }, { cwd: "/Users/me" }, {}]) {
+    const shownPlan = await back.run({ positionals: { thread: "thr_clone" }, options: {} }, ctx);
+    assert.equal(shownPlan.exitCode, 0);
+    assert.match(shownPlan.stdout, /api +1 new commit · would run: echo back · in \/w\/api/);
+    assert.match(shownPlan.stdout, /Nothing was run\. The user brings it back with B on the thread's line on cow's page\./);
+    const asJson = JSON.parse((await back.run({ positionals: { thread: "thr_clone" }, options: { json: true } }, ctx)).stdout);
+    assert.equal(asJson.ran, false);
+    assert.deepEqual(asJson.repos.map((repo: { as: string; ahead: number; command: string }) => [repo.as, repo.ahead, repo.command]), [["api", 1, "echo back"]]);
+  }
   assert.deepEqual(w.ran, []);
-  // From a terminal outside any thread it runs.
-  await back.run({ positionals: { thread: "thr_clone" }, options: {} }, { cwd: "/Users/me" });
-  assert.deepEqual((w.ran as Array<{ call: string }>).map((run) => run.call), ["back"]);
 });
+
+test("nothing but the signed workspace_back reaches the host's back", async () => {
+  const w = world();
+  const shown = await w.workspaces.propose(FOLDER);
+  await w.workspaces.approve({ folder: FOLDER, hash: shown.currentHash! }, "key-1");
+  const backs = () => w.ran.filter((run) => run.call === "back").length;
+  // Every command, from a thread, from a clone, from a terminal, with and without --json.
+  const commands = workspaceCommands(w.workspaces) as unknown as Record<string, { run(input: unknown, ctx: unknown): Promise<unknown> }>;
+  for (const [name, command] of Object.entries(commands)) {
+    for (const ctx of [{ threadId: "thr_any" }, { cwd: "/data/plugins/cow/host-data/clones/k/ws" }, { cwd: "/Users/me" }, {}]) {
+      for (const json of [false, true]) {
+        await command.run({ positionals: { thread: "thr_clone", folder: FOLDER }, options: { json } }, ctx).catch(() => undefined);
+      }
+    }
+    assert.equal(backs(), 0, `bb cow ${name} reached the host's back`);
+  }
+  // Every method of the service but back itself.
+  const methods = w.workspaces as unknown as Record<string, unknown>;
+  for (const [name, method] of Object.entries(methods)) {
+    if (name === "back" || typeof method !== "function") continue;
+    await (method as (...args: unknown[]) => Promise<unknown>).call(w.workspaces, "thr_clone", "key-1").catch(() => undefined);
+    await (method as (...args: unknown[]) => Promise<unknown>).call(w.workspaces, FOLDER, null).catch(() => undefined);
+    await (method as (...args: unknown[]) => Promise<unknown>).call(w.workspaces, { folder: FOLDER, hash: shown.currentHash!, as: "api", kind: "back", threadId: "thr_clone" }, "key-1").catch(() => undefined);
+    assert.equal(backs(), 0, `the service's ${name} reached the host's back`);
+  }
+  // The RPC anyone may call has no method that runs back.
+  assert.deepEqual(Object.keys(workspaceRpcContract).sort(), ["workspace_back_plan", "workspace_state", "workspace_sync"]);
+  // Signed actions: workspace_back unsigned is refused; signed, it is the one way.
+  const keys = createKeys({ kv: w.kv, now: () => NOW, hash: sha256Hex, verify: verifyP256, log: w.log, resetPath: "/r", takeResetFile: async () => false, changed: () => undefined });
+  const person = await page();
+  await keys.enrol(person.key, "Chrome");
+  const dispatch = { ...Object.fromEntries(PERSON_ACTIONS.map((action) => [action, async () => null])), ...workspaceDispatch(w.workspaces) } as unknown as Dispatch;
+  await refused(runSigned(keys, dispatch, { action: "workspace_back", args: { threadId: "thr_clone" } }), "unsigned");
+  assert.equal(backs(), 0);
+  await runSigned(keys, dispatch, await person.sign("workspace_back", { threadId: "thr_clone" }, NOW));
+  assert.equal(backs(), 1);
+  // And in the source: the service's back is called only from the signed dispatch, and the host's only from the service's port.
+  const sources = await sourceFiles(new URL("../src/", import.meta.url).pathname);
+  const callers = sources.filter((file) => /\bworkspaces\.back\(/.test(file.text)).map((file) => file.name);
+  // view.tsx calls the page's own back (WorkspaceSheet.tsx), which is the signed call itself.
+  assert.deepEqual(callers.sort(), ["signing/backend.ts", "view.tsx"]);
+  assert.match(sources.find((file) => file.name === "workspace/WorkspaceSheet.tsx")!.text, /back: async \(threadId\) => \{\n\s+const done = await signer\.call\("workspace_back", \{ threadId \}\);/);
+  const hostCallers = sources.filter((file) => /["']workspace_back["']\s*,/.test(file.text) && /host\.call\(/.test(file.text)).map((file) => file.name);
+  assert.deepEqual(hostCallers, ["workspace/backend.ts"]);
+  const portUses = sources.filter((file) => /\bhost\.back\(/.test(file.text)).map((file) => file.name);
+  assert.deepEqual(portUses, ["workspace/service.ts"]);
+});
+
+async function sourceFiles(root: string): Promise<Array<{ name: string; text: string }>> {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name));
+  return Promise.all(files.map(async (entry) => {
+    const path = `${entry.parentPath}/${entry.name}`;
+    return { name: path.slice(root.length).replace(/^\//, ""), text: await readFile(path, "utf8") };
+  }));
+}

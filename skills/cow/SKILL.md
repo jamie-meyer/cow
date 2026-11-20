@@ -397,12 +397,16 @@ until the user approves the file's content on cow's page.
 bb cow workspace [<folder>] [--json]           # what cow knows: approved or not, each repository's last sync
 bb cow workspace add <folder>                  # propose it: the user approves it on the page; nothing runs until then
 bb cow workspace sync [<folder>] [--only <as>] # run the approved sync commands; dirty repositories are skipped
+bb cow workspace back <thread> [--json]        # show what bringing its work back would run; runs nothing
 ```
 
 Editing the file changes nothing that runs until the user approves the change.
-Bringing a thread's work back (`bb cow workspace back`) is the user's alone and
-is refused from a thread: ask them with `bb cow ask`. You cannot read a
-command's output; the user sees it on the page.
+Bringing a thread's work back is the user's alone: they do it with `B` on the
+thread's line on cow's page, and nothing else runs it. When a thread's work is
+ready to come back, do not try to run anything: say so with `bb cow ask`,
+naming the thread (for example `bb cow ask "@thread:<id> is ready to bring
+back: 2 commits in api" --thread <id>`), and the user decides. You cannot read
+a command's output; the user sees it on the page.
 
 ## Limits
 

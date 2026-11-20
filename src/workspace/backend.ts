@@ -1,10 +1,9 @@
 // Workspaces, wired to bb: the host entry calls, the page's RPC, and the
 // `bb cow workspace` commands. Approving, dismissing, bringing back and
 // reading output are the person's, and are reached only as signed calls
-// (../signing/backend.ts) — except `back` from a terminal outside any thread.
+// (../signing/backend.ts). `bb cow workspace back` only shows what would run.
 
 import { type BbPluginApi, PluginCliError, cliCommand, defineRpcContract } from "@get-bb/plugin-sdk";
-import { join } from "node:path";
 import { z } from "zod";
 import { cloneHostContract } from "../clone/contract.ts";
 import { cloneProviderId } from "../clone/provider.ts";
@@ -121,7 +120,22 @@ const syncLine = (result: { as: string | null; status: string; code: number | nu
     result.status === "ran" ? (result.timedOut ? "stopped at its time limit" : `exit ${result.code}`) + ` in ${((result.ms ?? 0) / 1000).toFixed(1)} s` : result.status === "dirty" ? `skipped: dirty (${result.why})` : result.status === "missing" ? `skipped: ${result.why}` : result.status === "no-command" ? "no sync command" : result.status
   }`;
 
-export function workspaceCommands(workspaces: Workspaces, clonesFolder: string) {
+const BACK_HOW = "Nothing was run. The user brings it back with B on the thread's line on cow's page.";
+
+/** The preview `bb cow workspace back` prints: each repository, its new commits and the command that would run. */
+export function backPlanText(plan: BackPlan, approved: boolean): string {
+  const lines = [`${plan.threadId} (branch ${plan.branch})${plan.workspace ? `, workspace ${plan.workspace}` : ""}`];
+  if (!approved) lines.push(`  no approved ${WORKSPACE_FILE} covers this clone, so there is no back command to run`);
+  for (const repo of plan.repos) {
+    const ahead = repo.ahead === 0 ? "nothing new" : repo.ahead === null ? `unknown${repo.why ? ` (${repo.why})` : ""}` : `${repo.ahead} new commit${repo.ahead === 1 ? "" : "s"}`;
+    const would = repo.ahead === 0 ? "nothing to bring back" : repo.command === null ? "no back command" : `would run: ${repo.command}`;
+    lines.push(`  ${(repo.as ?? ".").padEnd(14)} ${ahead} · ${would} · in ${repo.source}`);
+  }
+  lines.push(BACK_HOW);
+  return lines.join("\n");
+}
+
+export function workspaceCommands(workspaces: Workspaces) {
   return {
     workspace: cliCommand({
       summary: "The workspace folders cow knows: whether each file is approved, and each repository's last sync",
@@ -169,36 +183,22 @@ export function workspaceCommands(workspaces: Workspaces, clonesFolder: string) 
       },
     }),
     "workspace back": cliCommand({
-      summary: "Bring a thread's commits back: run the approved back command of each repository with new commits (the user's only)",
+      summary: "Show what bringing a thread's work back would run; runs nothing (the user brings it back with B on cow's page)",
       description:
-        "For each repository in the thread's copy-on-write workspace whose branch has commits its source does not have (against the commit recorded " +
-        "when the clone was made), runs the approved back command in the source. This writes outside the thread's sandbox, so it is the user's alone: " +
-        "from cow's page, or from a terminal outside any thread. A thread that runs it is refused: ask the user with `bb cow ask`.",
-      positionals: [{ name: "thread", description: "The thread whose work to bring back", required: true }],
+        "For each repository in the thread's copy-on-write workspace, shows how many commits its branch has that its source does not (against the " +
+        "commit recorded when the clone was made) and the approved back command that would run in the source. It runs nothing, for anyone: " +
+        "bringing work back writes outside the thread's sandbox, so only the user does it, with B on the thread's line on cow's page. " +
+        "A thread whose work is ready says so with `bb cow ask`.",
+      positionals: [{ name: "thread", description: "The thread whose work would come back", required: true }],
       options: { json },
-      async run(input, ctx) {
-        const inClone = typeof ctx.cwd === "string" && (ctx.cwd === clonesFolder || ctx.cwd.startsWith(`${clonesFolder}/`));
-        if (ctx.threadId || inClone) {
-          throw new PluginCliError("only the user brings a thread's work back: it runs commands outside the sandbox", {
-            code: "person_only",
-            hint: "Ask the user with `bb cow ask`: they bring it back from cow's page (B on the thread's line) or from their own terminal.",
-          });
-        }
+      async run(input) {
         const id = input.positionals.thread.trim().replace(/^@?thread:/, "");
-        const done = await acting(() => workspaces.back(id, null));
-        if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...done })}\n` };
-        const lines = done.results.map(
-          (result) =>
-            `  ${(result.as ?? ".").padEnd(14)} ${
-              result.status === "ran" ? `${result.ahead} commit(s): ${result.timedOut ? "stopped at its time limit" : `exit ${result.code}`}` : result.status === "nothing-new" ? "nothing new" : `${result.status}${result.why ? `: ${result.why}` : ""}`
-            }`,
-        );
-        return { exitCode: done.results.some((result) => result.status === "ran" && result.code !== 0) ? 1 : 0, stdout: `${[`${id} with the approved file of ${done.workspace}`, ...lines].join("\n")}\n` };
+        const { clone: _clone, approved, ...plan } = await acting(() => workspaces.backPlan(id));
+        if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ran: false, approved: approved !== null, ...plan, how: BACK_HOW })}\n` };
+        return { exitCode: 0, stdout: `${backPlanText(plan, approved !== null)}\n` };
       },
     }),
   };
 }
 
-/** Where a thread's copy-on-write workspace lives, as the server can name it: under cow's host data folder. */
-export const clonesFolderOf = (dataDir: string, pluginId: string) => join(dataDir, "plugins", pluginId, "host-data", "clones");
 export { message as errorText };

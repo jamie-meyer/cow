@@ -1910,8 +1910,10 @@ The `workspace` commands are described in [docs/clone.md](clone.md#the-workspace
 last sync (when, exit code), whether it is dirty now, and which commands it
 has, never their text. `workspace add` only proposes a folder: its file
 waits for your approval on the page. `workspace sync` runs the approved sync
-commands; anyone may run it. `workspace back` is yours alone: a thread that
-runs it is refused.
+commands; anyone may run it. `workspace back` shows what bringing a thread's
+work back would run, for each repository how many commits it has that its
+source does not and the command, and runs nothing, whoever calls it: you
+bring work back with `B` on the thread's line on the page, signed.
 
 **What a workspace keeps, and where.** In cow's own storage (bb's database):
 each workspace folder cow knows, by real path, with the content you last

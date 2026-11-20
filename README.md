@@ -358,7 +358,7 @@ See [Copy-on-write workspaces](docs/clone.md#the-workspace-file).
 | --- | --- |
 | `W` | the workspaces sheet over the page: each workspace folder cow knows, whether its cow.workspace.json is approved, and each repository with its last sync, whether it is dirty and which commands it has. j k move, s syncs the selected repository, S every approved workspace, Enter shows the selected one's last sync output in the reader (signed: output may hold secrets), or the file's change when it waits on you; q or Esc closes |
 | on a workspace notice | a workspace file that is new or changed waits in the queue; a click or its hint opens it in the reader: the commands that would newly run first, then the change. There a approves exactly the content shown (refused if the file changed since), x dismisses it without approving until it changes again. Signed: no thread can approve |
-| `B` | on a thread that runs in a copy-on-write workspace, bring its work back: names each repository with new commits and the approved back command it would run, then y runs them in the sources (signed) |
+| `B` | on a thread that runs in a copy-on-write workspace, bring its work back: names each repository with new commits and the approved back command it would run, then y runs them in the sources (signed); any other key cancels. This is the only way a back command runs |
 
 **Other plugins**
 
@@ -414,7 +414,7 @@ bb cow ledger [--days 14] [--json]               # what finished workers came to
 bb cow workspace [<folder>]                      # workspace files: approved or not, each repository's last sync
 bb cow workspace add <folder>                    # propose one: you approve its file on the page
 bb cow workspace sync [<folder>] [--only <as>]   # run the approved sync commands
-bb cow workspace back <thread>                   # yours: refused from a thread
+bb cow workspace back <thread>                   # what B would run for it; runs nothing
 bb cow help
 ```
 

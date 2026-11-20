@@ -13,7 +13,7 @@ import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { registerCloneProvider } from "./src/clone/provider.ts";
-import { clonesFolderOf, registerWorkspaces, workspaceCommands } from "./src/workspace/backend.ts";
+import { registerWorkspaces, workspaceCommands } from "./src/workspace/backend.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
@@ -252,7 +252,7 @@ export default async function plugin(bb: BbPluginApi) {
     return found;
   };
   bb.cli.register(
-    cowCli(actions, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces, clonesFolderOf(bb.server.experimental_dataDir, bb.pluginId)) }, capabilityNames, bb.pluginId),
+    cowCli(actions, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was

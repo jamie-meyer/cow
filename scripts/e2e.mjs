@@ -59,6 +59,11 @@
 //   --only-caps         only the capability checks: three fixtures
 //   --only-workspace    only the workspace file on the page: one fixture, and a
 //                       throwaway workspace folder under the system temp folder
+//                       with two throwaway git repositories; then a second
+//                       fixture started in a copy-on-write clone of it, which
+//                       commits once, so B can bring that commit back to the
+//                       throwaway source. It is archived, and its clone
+//                       removed, when the section ends, also after a failure
 //   --only-reader       only the reader, projects, asks answered in chat and
 //                       chat scrolling: four fixtures, and --environment must
 //                       be a checkout of cow, whose files the fixture links to
@@ -113,7 +118,7 @@
 //                       which the run clears
 
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -1584,14 +1589,24 @@ async function prepareSettle(ids) {
  * its commands are `true` and `echo`, written here, and none is run.
  */
 async function workspaceChecks(page, ids, shot, chooseMain) {
-  const base = mkdtempSync(join(tmpdir(), "cow-e2e-wsfile-"));
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cow-e2e-wsfile-")));
+  let cloneThread = null;
+  let cloneEnvironment = null;
   try {
     const ws = join(base, "ws");
     const api = join(base, "api");
+    const docs = join(base, "docs");
+    const git = async (cwd, ...argv) => (await run("git", ["-C", cwd, ...argv])).stdout.trim();
     mkdirSync(ws, { recursive: true });
-    mkdirSync(api, { recursive: true });
+    for (const repo of [api, docs]) {
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "a.txt"), "first\n");
+      await git(repo, "init", "-q", "-b", "main");
+      await git(repo, "add", ".");
+      await git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "first");
+    }
     const write = (file) => writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(file, null, 2)}\n`);
-    const first = { bring: [{ path: "../api", as: "api", sync: "true" }], sync: "echo first" };
+    const first = { bring: [{ path: "../api", as: "api", sync: "true" }, { path: "../docs", as: "docs" }], sync: "echo first" };
     write(first);
     const added = JSON.parse((await run("bb", [PLUGIN, "workspace", "add", ws, "--json"])).stdout);
     const folder = added.folder;
@@ -1638,9 +1653,99 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     const sheet = await page.eval(`document.querySelector('[data-cow-workspace="${folder}"]').textContent`);
     check("W lists the workspace's repositories, their state and which commands they have, not their text", /api/.test(sheet) && /never synced/.test(sheet) && /commands: sync/.test(sheet) && !sheet.includes("echo"), sheet);
     await shot("workspace-sheet");
+
+    // Enter on a repository that never ran says so, through the signed call.
+    const selectedRepo = `(document.querySelector('[data-cow-workspace="${folder}"] [data-cow-selected]')?.dataset.cowWorkspaceRepo ?? null)`;
+    const selectRepo = async (as, key) => {
+      for (let i = 0; i < 10 && (await page.eval(selectedRepo)) !== as; i += 1) await page.key(key);
+      check(`${key} selects ${as} in the sheet`, (await page.eval(selectedRepo)) === as);
+    };
+    await selectRepo("docs", "j");
+    await page.key("Enter");
+    await page.waitFor(`!!document.querySelector("[data-cow-reader]")`, { label: "the reader, for a repository that never ran" });
+    check("Enter on a repository that never ran says so in the reader", /never synced: there is no output to show/.test(await page.eval(readerText)), (await page.eval(readerText)).slice(0, 200));
     await page.key("q");
-    await page.waitFor(`${mode} === "normal"`, { label: "the sheet closed" });
+    await page.waitFor(`!document.querySelector("[data-cow-reader]")`, { label: "the reader closed" });
+
+    // s runs api's approved sync; Enter then shows its last output, read with a signed call.
+    await page.key("W");
+    await page.waitFor(`${mode} === "workspaces"`, { label: "the sheet again" });
+    await selectRepo("api", "k");
+    await page.key("s");
+    await page.waitFor(`/synced 1 repository/.test(document.querySelector("[data-cow-workspaces-note]")?.textContent ?? "")`, { label: "api synced", timeout: 60_000 });
+    await page.waitFor(`/synced .* ago, exit 0/.test(document.querySelector('[data-cow-workspace="${folder}"] [data-cow-workspace-repo="api"]')?.textContent ?? "")`, { label: "the sheet shows api's sync" });
+    await page.key("Enter");
+    await page.waitFor(`!!document.querySelector("[data-cow-reader]")`, { label: "the reader, with api's last output" });
+    const output = await page.eval(readerText);
+    check("Enter on a repository that ran shows its last output in the reader: where, when, its exit code", output.includes(`last sync of api in ${api}`) && /exit 0/.test(output), output.slice(0, 300));
+    const unsignedOutput = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/workspace_output`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder, as: "api", kind: "sync" }) }).then((r) => r.json());
+    const forgedOutput = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "workspace_output", args: { folder, as: "api", kind: "sync" } }) }).then((r) => r.json());
+    check("the output is read only through the signed call: there is no unsigned one, and an unsigned envelope is refused", unsignedOutput.ok === false && forgedOutput.ok === false, JSON.stringify([unsignedOutput, forgedOutput]).slice(0, 300));
+    await page.key("q");
+    await page.waitFor(`!document.querySelector("[data-cow-reader]") && ${mode} === "normal"`, { label: "the reader closed" });
+
+    // B: a thread in a clone of the workspace commits once; B brings it back.
+    const backCommand = 'git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH"';
+    write({ bring: [{ path: "../api", as: "api", sync: "true", back: backCommand }, { path: "../docs", as: "docs", back: backCommand }] });
+    let withBack = await view();
+    for (let i = 0; i < 20 && withBack.currentHash === withBack.approvedHash; i += 1) withBack = await view();
+    await signer.must("workspace_approve", { folder, hash: withBack.currentHash });
+    check("the file with back commands is approved", (await view()).status === "approved");
+    const commit = 'cd api && echo work > work.txt && git add work.txt && git -c user.name=t -c user.email=t@example.com commit -qm "work from the thread"';
+    const spawned = await bb(
+      "thread", "spawn",
+      "--project", PROJECT,
+      "--environment-provider", `${PLUGIN}-clone`,
+      "--environment-inputs", JSON.stringify({ workspace: folder }),
+      "--provider", "claude-code",
+      "--model", MODEL,
+      "--title", TITLE,
+      "--parent-notifications", "off",
+      "--parent-thread", ids.wmain,
+      "--prompt", `You are a test fixture for a bb plugin. Run this one shell command exactly as written, once, with your shell tool, then reply with exactly: done\n${commit}\nUse no other tool and run nothing else.`,
+    );
+    cloneThread = spawned.id;
+    console.log(`clone fixture ${cloneThread}`);
+    const finished = await waitForThread(cloneThread, (t) => t.status === "idle" && !!t.environmentId, "the clone fixture idle", 5 * 60_000);
+    cloneEnvironment = finished.environmentId;
+    const environment = await bb("environment", "show", cloneEnvironment);
+    const clonePath = (environment.environment ?? environment).path;
+    const branch = await git(join(clonePath, "api"), "branch", "--show-current");
+    check("the clone fixture committed in its clone", (await git(join(clonePath, "api"), "log", "-1", "--format=%s")) === "work from the thread", clonePath);
+    check("the source has no such branch yet", (await git(api, "branch", "--list", branch)) === "");
+
+    const cloneLine = `document.querySelector('.cow-main [data-cow-line="${cloneThread}"]')`;
+    await page.waitFor(`!!${cloneLine}`, { label: "the clone fixture's line", timeout: 60_000 });
+    const confirmText = `(document.querySelector("[data-cow-confirm]")?.textContent ?? "")`;
+    const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
+    const pressB = async () => {
+      await page.eval(`${cloneLine}.click(); true`);
+      await sleep(200);
+      await page.key("B");
+      await page.waitFor(`!!document.querySelector("[data-cow-confirm]")`, { label: "B's confirmation", timeout: 30_000 });
+    };
+    await pressB();
+    const asked = await page.eval(confirmText);
+    check("B names each repository with new commits and the command it would run, and only those", asked.includes("api (1 commit): runs git -C \"$COW_SOURCE\" fetch") && !asked.includes("docs"), asked);
+    await shot("workspace-back-confirm");
+    await page.key("n");
+    await page.waitFor(`!document.querySelector("[data-cow-confirm]")`, { label: "cancelled" });
+    check("any other key cancels, and nothing runs", /not brought back/.test(await message()) && (await git(api, "branch", "--list", branch)) === "", await message());
+    const logged = async () => JSON.stringify((await rpc("caps_log", { limit: 20 })).entries ?? []);
+    check("the cancel is not in the log as a back", !(await logged()).includes(cloneThread));
+    await pressB();
+    await page.key("y");
+    await page.waitFor(`/brought back/.test(document.querySelector("[data-cow-message]")?.textContent ?? "")`, { label: "brought back", timeout: 120_000 });
+    check("y runs it through the signed action, and the result is shown", /brought back: api exit 0/.test(await message()), await message());
+    check("the source repository has the commit afterwards", (await git(api, "log", "-1", "--format=%s", branch)) === "work from the thread");
+    check("docs had nothing new: no branch there", (await git(docs, "branch", "--list", branch)) === "");
+    check("the back is in the log, signed", /workspace-back/.test(await logged()) && (await logged()).includes(cloneThread));
+    await shot("workspace-back-done");
   } finally {
+    if (cloneThread) {
+      await bb("thread", "archive", cloneThread).catch((cause) => console.error(`could not archive ${cloneThread}`, cause));
+      if (cloneEnvironment) await bb("environment", "cleanup", cloneEnvironment).catch((cause) => console.error(`could not clean up ${cloneEnvironment}`, cause));
+    }
     rmSync(base, { recursive: true, force: true });
   }
 }
@@ -3347,7 +3452,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
     for (const [width, height] of [[1280, 800], [700, 800]]) {
       await tab.resize(width, height);
       await sleep(1200);
-      seen[width] = JSON.parse(await tab.eval(`(() => { const app = document.querySelector(".cow-app"), body = document.querySelector(".cow-app > .cow-body"), note = ${banner}; return JSON.stringify({ app: app?.clientHeight ?? 0, list: Math.round(body?.getBoundingClientRect().height ?? 0), notice: Math.round(note?.getBoundingClientRect().height ?? 0), sentences: (note?.textContent ?? "").split(/[.:] /).length }); })()`));
+      seen[width] = JSON.parse(await tab.eval(`(() => { const app = document.querySelector(".cow-app"), body = document.querySelector(".cow-app > .cow-body"), note = ${banner}; return JSON.stringify({ app: app?.clientHeight ?? 0, list: Math.round(body?.getBoundingClientRect().height ?? 0), notice: Math.round(note?.getBoundingClientRect().height ?? 0), parts: [...(app?.children ?? [])].map((el) => el.className.split(" ")[0] + ":" + Math.round(el.getBoundingClientRect().height)).join(" "), verbRows: [...document.querySelectorAll(".cow-foot .cow-verbs")].map((el) => Math.round(el.getBoundingClientRect().top)).join(","), sentences: (note?.textContent ?? "").split(/[.:] /).length }); })()`));
     }
     await tab.resize(1440, 900);
     await sleep(1200);

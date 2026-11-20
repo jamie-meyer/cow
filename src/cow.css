@@ -74,6 +74,14 @@
   overflow-y: auto;
   scrollbar-width: thin;
 }
+/* The notices above the list (asides, the key's banner) share one cap
+   between them, low enough that with the head and the verb bar the list
+   keeps 70% of the page: a notice added later scrolls, the list stays. */
+.cow-app > .cow-notices {
+  max-height: min(16%, 120px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 .cow-app > .cow-ans,
 .cow-app > .cow-held,
 .cow-app > .cow-steps {
@@ -1237,6 +1245,7 @@
   .cow-foot .cow-verbs + .cow-sep {
     display: none;
   }
+  .cow-app > .cow-notices,
   .cow-app > .cow-keybanner,
   .cow-app > .cow-aside {
     max-height: min(13%, 96px);

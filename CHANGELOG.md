@@ -36,12 +36,20 @@ thread's work brought back, with commands you write and approve.
   its last lines of output, and the clone is removed.
 - **Bringing work back.** `B` on a copy-on-write thread's line names each
   repository with new commits and the approved `back` command it would run;
-  `y` runs them in the sources. `bb cow workspace back <thread>` does the
-  same from your terminal. A thread is refused.
+  `y` runs them in the sources, signed by your page's key. That is the only
+  way a back command runs: `bb cow workspace back <thread>` shows the same
+  plan (each repository's new commits and the command) and runs nothing,
+  whoever calls it, so no process can pass for you to run one. A thread
+  whose work is ready says so with `bb cow ask`.
 - **Seeing it.** `W` lists each workspace and repository with its last sync,
   whether it is dirty and which commands it has; `s` syncs the selected
   repository, `S` all, `Enter` shows the last output, to you only.
   `bb cow workspace` shows the same without the output.
+- **A narrow page keeps its list's room with two notices showing.** The
+  notices above the list (the key's banner, and an aside such as "bb is
+  outside the version cow was tested on") now share one height limit
+  instead of each having its own, so one more notice scrolls inside that
+  space instead of shortening the list.
 
 ## 0.2.14
 

@@ -2473,30 +2473,33 @@ function OverviewScreen({
             on you
           </span>
         </header>
-        <Asides />
-        {signer.status !== "enrolled" && signer.status !== "loading" ? (
-          <p className="cow-keybanner cow-keybanner-off" data-cow-key-status={signer.status} data-cow-key-fingerprint={signer.fingerprint ?? ""} role="alert">
-            <b>
-              {signer.status === "unavailable"
-                ? "This page can only read."
-                : (signer.keys?.keys.length ?? 0) > 0
-                  ? "cow's person-only actions are held by a key that is not this page's."
-                  : "This page's key is not enrolled."}
-            </b>{" "}
-            {signer.why[0]?.toUpperCase()}
-            {signer.why.slice(1)}
-            {signer.status === "pending" ? " If you never enrolled a page, something else did: that is what the reset is for." : ""}
-          </p>
-        ) : signer.firstUse ? (
-          <p className="cow-keybanner" data-cow-key-status="first" data-cow-key-fingerprint={signer.fingerprint ?? ""} role="status">
-            <b>This page's key {signer.fingerprint} is now enrolled, by first use.</b> It signs what only you may do here, so an agent
-            cannot do those things through cow; any other browser has to be approved from this one. <kbd>C</kbd> lists the keys
-            later, and <kbd>?</kbd> says more.{" "}
-            <button type="button" className="cow-vb" data-cow-hint="" data-cow-key-dismiss="" tabIndex={-1} onClick={signer.dismissFirstUse}>
-              understood
-            </button>
-          </p>
-        ) : null}
+        {/* Every notice above the list shares one cap (cow.css), so one more notice never takes more of the list's room. */}
+        <div className="cow-notices" data-cow-notices="">
+          <Asides />
+          {signer.status !== "enrolled" && signer.status !== "loading" ? (
+            <p className="cow-keybanner cow-keybanner-off" data-cow-key-status={signer.status} data-cow-key-fingerprint={signer.fingerprint ?? ""} role="alert">
+              <b>
+                {signer.status === "unavailable"
+                  ? "This page can only read."
+                  : (signer.keys?.keys.length ?? 0) > 0
+                    ? "cow's person-only actions are held by a key that is not this page's."
+                    : "This page's key is not enrolled."}
+              </b>{" "}
+              {signer.why[0]?.toUpperCase()}
+              {signer.why.slice(1)}
+              {signer.status === "pending" ? " If you never enrolled a page, something else did: that is what the reset is for." : ""}
+            </p>
+          ) : signer.firstUse ? (
+            <p className="cow-keybanner" data-cow-key-status="first" data-cow-key-fingerprint={signer.fingerprint ?? ""} role="status">
+              <b>This page's key {signer.fingerprint} is now enrolled, by first use.</b> It signs what only you may do here, so an agent
+              cannot do those things through cow; any other browser has to be approved from this one. <kbd>C</kbd> lists the keys
+              later, and <kbd>?</kbd> says more.{" "}
+              <button type="button" className="cow-vb" data-cow-hint="" data-cow-key-dismiss="" tabIndex={-1} onClick={signer.dismissFirstUse}>
+                understood
+              </button>
+            </p>
+          ) : null}
+        </div>
         {card(main.thread.id)}
 
         <div className="cow-body">

@@ -32,9 +32,12 @@
 // file is not approved and sync refuses; approves it through the copy's
 // signed path as the page would; checks sync pulls a new commit and skips a
 // dirty repository; starts one thread from { "workspace": … } and checks
-// setup ran; has the thread commit and try `back` (refused); runs `back`
-// from outside any thread and checks the commit reached the source; and
-// edits the file to a harmful-looking command and checks nothing new runs.
+// setup ran; has the thread commit and run `bb <id> workspace back` (it
+// shows the plan and runs nothing); runs it from outside any thread too
+// (the same: nothing runs); brings the work back through the copy's signed
+// `workspace_back`, as the page's B does, and checks the commit reached the
+// source; and edits the file to a harmful-looking command and checks nothing
+// new runs.
 // The thread is archived at the end, also after a failure. The bb CLI is run
 // without BB_THREAD_ID for the "outside any thread" calls, as a terminal would.
 //
@@ -401,7 +404,7 @@ async function workspaceE2e() {
     // A thread from the workspace file: it commits in api, and tries back itself.
     const threadCommand =
       'cd api && echo work > work.txt && git add work.txt && git -c user.name=t -c user.email=t@example.com commit -qm "work from the thread"; cd ..; ' +
-      `{ echo "setup=$(cat api/setup-ran 2>/dev/null)"; ${BB} ${plugin} workspace back "$BB_THREAD_ID" >/dev/null 2>back-err.txt; echo "back=$?"; } > cow-e2e-report.txt 2>&1`;
+      `{ echo "setup=$(cat api/setup-ran 2>/dev/null)"; ${BB} ${plugin} workspace back "$BB_THREAD_ID" >back-out.txt 2>back-err.txt; echo "back=$?"; } > cow-e2e-report.txt 2>&1`;
     const thread = await bb(
       "thread", "spawn",
       "--project", project,
@@ -423,14 +426,34 @@ async function workspaceE2e() {
     check("setup ran in the brought folder", readFileSync(join(path, "api", "setup-ran"), "utf8") === "api");
     const report = existsSync(join(path, "cow-e2e-report.txt")) ? readFileSync(join(path, "cow-e2e-report.txt"), "utf8") : "";
     const errText = existsSync(join(path, "back-err.txt")) ? readFileSync(join(path, "back-err.txt"), "utf8") : "";
-    check("back from the thread is refused", /back=[1-9]/.test(report) && /only the user/.test(errText), `${report} ${errText}`);
+    const outText = existsSync(join(path, "back-out.txt")) ? readFileSync(join(path, "back-out.txt"), "utf8") : "";
     const branch = await git(join(path, "api"), "branch", "--show-current");
     check("the thread committed in its clone", (await git(join(path, "api"), "log", "-1", "--format=%s")) === "work from the thread");
-    check("the source has no such branch yet", (await git(api, "branch", "--list", branch)) === "");
+    check(
+      "workspace back from the thread shows the plan and runs nothing",
+      /back=0/.test(report) && /api +1 new commit · would run: git -C/.test(outText) && /Nothing was run\. The user brings it back with B/.test(outText),
+      `${report} ${outText} ${errText}`,
+    );
+    check("the source has no such branch after it", (await git(api, "branch", "--list", branch)) === "");
 
-    const brought = await bbOutside(plugin, "workspace", "back", threadId, "--json");
-    const backResults = JSON.parse(brought.stdout || "{}").results ?? [];
-    check("back from outside any thread runs api's back command", backResults.find((r) => r.as === "api")?.status === "ran" && backResults.find((r) => r.as === "web")?.status === "nothing-new", brought.stdout + brought.stderr);
+    const preview = await bbOutside(plugin, "workspace", "back", threadId);
+    const previewJson = await bbOutside(plugin, "workspace", "back", threadId, "--json");
+    console.log(preview.stdout.trimEnd());
+    const plan = JSON.parse(previewJson.stdout || "{}");
+    check(
+      "workspace back from outside any thread is the same plan, and runs nothing",
+      plan.ran === false && plan.repos?.find((r) => r.as === "api")?.ahead === 1 && plan.repos?.find((r) => r.as === "web")?.ahead === 0 && /Nothing was run/.test(preview.stdout),
+      previewJson.stdout + previewJson.stderr,
+    );
+    check("the source still has no such branch", (await git(api, "branch", "--list", branch)) === "");
+
+    // Brought back as the page's B does: the signed workspace_back.
+    const unsigned = await (await fetch(`${bbUrl}/api/v1/plugins/${plugin}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "workspace_back", args: { threadId } }) })).json();
+    check("an unsigned workspace_back is refused", unsigned.ok === false || unsigned.result?.ok === false, JSON.stringify(unsigned).slice(0, 300));
+    check("and nothing came back", (await git(api, "branch", "--list", branch)) === "");
+    const done = await signer.must("workspace_back", { threadId });
+    const backResults = done.results ?? [];
+    check("the signed workspace_back runs api's back command, and web has nothing new", backResults.find((r) => r.as === "api")?.status === "ran" && backResults.find((r) => r.as === "api")?.code === 0 && backResults.find((r) => r.as === "web")?.status === "nothing-new", JSON.stringify(done));
     check("the commit reached the source", (await git(api, "log", "-1", "--format=%s", branch)) === "work from the thread");
 
     // A harmful-looking change runs nothing until approved.

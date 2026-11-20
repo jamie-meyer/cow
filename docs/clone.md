@@ -240,26 +240,36 @@ repository and `S` every approved workspace.
 ### Bringing work back
 
 ```sh
-bb cow workspace back <thread> [--json]
+# on cow's page: B on the thread's line brings it back, y confirms
+bb cow workspace back <thread> [--json]   # the same plan, shown; runs nothing
 ```
 
-For each repository in the thread's clone whose branch has commits its source
-does not (the branch against the commit recorded when the clone was made),
-runs that repository's `back` in the source, and reports each repository:
-ran (with its exit code), nothing new, or no back command. The approved file
-used is the one the clone was made from, or, for a clone made with explicit
-inputs, the approved file of its source folder if cow knows it.
+Bringing work back looks, for each repository in the thread's clone, at the
+commits its branch has that its source does not (the branch against the
+commit recorded when the clone was made), and runs that repository's `back`
+in the source. The approved file used is the one the clone was made from,
+or, for a clone made with explicit inputs, the approved file of its source
+folder if cow knows it.
 
 This writes outside the thread's sandbox with a command you wrote, so it is
-yours alone: from the page (`B` on the thread's line names each repository
-with new commits and the command it would run; `y` runs them, signed), or
-from a terminal outside any thread. A thread that runs it is refused and
-told to ask you with `bb cow ask`. Each run is added to the log.
+yours alone, and only the page does it: `B` on the thread's line names each
+repository with new commits and the command it would run; `y` runs them,
+signed by your page's key, and shows what each exited with; any other key
+cancels. Each run is added to the log.
 
-The refusal goes by what the bb CLI forwards: the calling thread's id, and
-its working directory (refused inside cow's clones folder). A process that
-removes both from its environment is taken for a terminal; the page's `B`,
-which is signed, is the way that is certainly yours.
+`bb cow workspace back <thread>` runs nothing, for anyone. It prints the same
+plan, each repository with its new commits and the command that would run,
+and says how you bring it back (`--json` gives the plan as JSON):
+
+```
+thr_abc123 (branch cow/thr_abc123), workspace /Users/you/work
+  api            2 new commits · would run: git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH" · in /Users/you/work/api
+  web            nothing new · nothing to bring back · in /Users/you/work/web
+Nothing was run. The user brings it back with B on the thread's line on cow's page.
+```
+
+A thread whose work is ready to come back says so with `bb cow ask`, naming
+the thread; it cannot run a back command.
 
 ### Examples
 
@@ -337,8 +347,6 @@ exact:
 
 - Virtualenvs are only reported, not fixed.
 - No restore: once removed, a clone is gone.
-- `back` from the command line trusts what the bb CLI says about who calls
-  (see [Bringing work back](#bringing-work-back)).
 - The inputs have no form in bb's New Thread picker yet; start threads from
   `bb thread spawn`.
 - A file the thread marks immutable (`chflags uchg`) would stop removal.
