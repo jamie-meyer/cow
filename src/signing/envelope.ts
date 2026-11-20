@@ -48,6 +48,17 @@ export const PERSON_ACTIONS = [
   "automation_delete",
   /** Say what a finished worker came to, for cow's ledger. What the person judges, no thread overwrites. */
   "outcome_set",
+  /**
+   * A workspace file: approve exactly the content that was shown (its hash),
+   * or dismiss its notice until it changes again. Its commands run with the
+   * person's full access, so only the person makes them the ones that run.
+   */
+  "workspace_approve",
+  "workspace_dismiss",
+  /** Run the approved back commands for a thread's copy-on-write workspace: they write outside its sandbox. */
+  "workspace_back",
+  /** Read a command's last output, which may hold secrets. */
+  "workspace_output",
   /** Approve or refuse a page that asks for its key to be enrolled; remove an enrolled key. */
   "key_approve",
   "key_refuse",

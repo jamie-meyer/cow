@@ -64,6 +64,12 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("key-removed"), fingerprint: z.string() }),
   /** Every enrolled key was cleared, because the reset file was found. `keys`: how many. */
   z.object({ kind: z.literal("enrollment-reset"), keys: z.number() }),
+  /** The content of a workspace file was approved on cow's page: from now on its commands are the ones that run. `hash` is the content's SHA-256. */
+  z.object({ kind: z.literal("workspace-approved"), folder: z.string(), hash: z.string(), newCommands: z.number() }),
+  /** The notice of a changed workspace file was dismissed without approving, until the file changes again. */
+  z.object({ kind: z.literal("workspace-dismissed"), folder: z.string(), hash: z.string() }),
+  /** A thread's work was brought back with the approved back commands: from cow's page (signed) or a terminal outside any thread (by null). */
+  z.object({ kind: z.literal("workspace-back"), threadId: z.string(), folder: z.string(), hash: z.string(), what }),
   /**
    * An agent took something out of the person's queue: parked a thread that
    * waited on them, withdrew an ask, or closed one as answered in chat when
@@ -104,7 +110,7 @@ export function nextEntry(last: Pick<LogEntry, "seq" | "hash"> | null, event: Lo
 }
 
 /** What an entry needs a signature for: these kinds are written only for a call a key signed. */
-export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "automation-deleted", "outcome-set", "key-refused", "key-removed"];
+export const SIGNED_KINDS: readonly LogEvent["kind"][] = ["created", "deleted", "restored", "acknowledged", "decided", "sent", "ask-answered", "ask-closed", "seen", "refusals-dismissed", "brief-read", "main-chosen", "automation-deleted", "outcome-set", "key-refused", "key-removed", "workspace-approved", "workspace-dismissed"];
 
 /**
  * The marks: light things the page signs many times a day, often as a side
@@ -220,6 +226,12 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return `key ${event.fingerprint} was removed`;
     case "trace":
       return event.what;
+    case "workspace-approved":
+      return `approved the workspace file of ${event.folder} (${event.hash.slice(0, 12)}): ${event.newCommands === 0 ? "no new command" : `${event.newCommands} new or changed ${event.newCommands === 1 ? "command" : "commands"}`}`;
+    case "workspace-dismissed":
+      return `dismissed the changed workspace file of ${event.folder} (${event.hash.slice(0, 12)}) without approving it`;
+    case "workspace-back":
+      return `brought back the work of ${on(event.threadId)} with the approved file of ${event.folder}: ${event.what}`;
     case "enrollment-reset":
       return `enrollment was reset from the reset file: ${event.keys} ${event.keys === 1 ? "key" : "keys"} cleared`;
   }

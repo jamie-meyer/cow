@@ -3,34 +3,21 @@
 // independent and put on the thread's branch, the read-only paths locked.
 // All or nothing: when a step fails, what was made is removed and the error
 // names the step.
-import { execFile } from "node:child_process";
 import { type Stats, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { type CloneInputs, type CloneResource, cloneInputsSchema, cloneResourceSchema } from "./contract.ts";
 import type { CloneCall } from "./helper.ts";
+import { git } from "./git.ts";
+
+export { git };
 import { type Layout, checkPathKey, donePath, removeClone, resolveCloneFolder, strictlyInside } from "./remove.ts";
 import { type CloneTreeResult, checkSameVolume, cloneTree } from "./tree.ts";
+import { resolveBringPath } from "../workspace/file.ts";
+import { type Approved, type CommandDeps, approvedFile, runSetups, syncBeforeClone } from "../workspace/ops.ts";
 
 export class StepError extends Error {}
 
 const MAX_EXAMPLES = 8;
-
-function gitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("GIT_") && value !== undefined) env[key] = value;
-  env.GIT_TERMINAL_PROMPT = "0";
-  return env;
-}
-
-/** Run git in `cwd` with hooks off; never through a shell. */
-export function git(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((done) => {
-    execFile("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], { cwd, env: gitEnv(), maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
-      done({ code, stdout: String(stdout), stderr: String(stderr) });
-    });
-  });
-}
 
 interface RepoFacts {
   path: string;
@@ -184,6 +171,27 @@ function counts(result: CloneTreeResult) {
   return { entries: result.entries, chunks: result.chunks, files: result.files, excluded: result.excluded, skipped: result.skipped, ms: Math.round(result.totalMs) };
 }
 
+/** Explicit inputs from an approved workspace file: paths resolved against its folder, `pick` checked against its names. */
+export function workspaceInputs(approved: Approved, pick: string[] | null) {
+  let file;
+  try {
+    file = approvedFile(approved);
+  } catch (error) {
+    throw new StepError(`inputs: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const names = new Set(file.bring.map((item) => item.as));
+  for (const name of pick ?? []) if (!names.has(name)) throw new StepError(`inputs: bring "${name}": the approved workspace file brings nothing by that name (it brings ${[...names].join(", ") || "nothing"})`);
+  const chosen = pick === null ? file.bring : file.bring.filter((item) => pick.includes(item.as));
+  const inputs = {
+    source: approved.folder,
+    bring: chosen.map((item) => ({ path: resolveBringPath(approved.folder, item.path), as: item.as })),
+    readOnly: file.readOnly,
+    exclude: file.exclude,
+    includeSecrets: file.includeSecrets,
+  };
+  return { approved, file, inputs };
+}
+
 export interface CreateResult {
   path: string;
   resource: CloneResource;
@@ -194,11 +202,25 @@ export interface CreateResult {
  * Create the clone for `pathKey`, or return the one already made for it.
  * Throws a StepError naming the step; whatever was made is removed first.
  */
-export async function createClone(args: { paths: Layout; pathKey: string; branch: string; inputs: unknown; helper: CloneCall; chunk?: number; signal?: AbortSignal }): Promise<CreateResult> {
+export async function createClone(args: {
+  paths: Layout;
+  pathKey: string;
+  branch: string;
+  inputs: unknown;
+  /** Start from an approved workspace file instead of explicit inputs: its repositories (all, or those `pick` names), read-only paths and excludes. */
+  workspace?: { approved: Approved; pick: string[] | null } | null;
+  /** Where setup and sync record their runs; needed with `workspace`. */
+  commands?: CommandDeps;
+  helper: CloneCall;
+  chunk?: number;
+  signal?: AbortSignal;
+}): Promise<CreateResult> {
   const started = performance.now();
   const { paths, pathKey, branch, helper } = args;
   checkPathKey(pathKey);
-  const parsed = cloneInputsSchema.safeParse(args.inputs);
+  const fromFile = args.workspace ? workspaceInputs(args.workspace.approved, args.workspace.pick) : null;
+  if (fromFile && !args.commands) throw new StepError("inputs: a clone from a workspace file needs somewhere to record its commands");
+  const parsed = cloneInputsSchema.safeParse(fromFile ? fromFile.inputs : args.inputs);
   if (!parsed.success) throw new StepError(`inputs: ${parsed.error.issues.map((i) => `${i.path.join(".") || "inputs"}: ${i.message}`).join("; ")}`);
   const inputs = parsed.data;
   const branchCheck = await git(paths.clones, ["check-ref-format", "--branch", branch]);
@@ -217,6 +239,12 @@ export async function createClone(args: { paths: Layout; pathKey: string; branch
   let step = "check the inputs";
   let made = false;
   try {
+    let syncWarnings: string[] = [];
+    if (fromFile && args.commands && fromFile.file.syncBeforeClone) {
+      step = "sync before cloning";
+      syncWarnings = await syncBeforeClone(args.commands, fromFile.approved, fromFile.file, new Set(inputs.bring.map((item) => item.as)));
+      step = "check the inputs";
+    }
     const { source, bring, facts } = await preflight(inputs, paths.clones);
     const folder = join(paths.clones, pathKey);
     step = "make the clone folder";
@@ -255,8 +283,18 @@ export async function createClone(args: { paths: Layout; pathKey: string; branch
       makeReadOnly(real);
     }
 
+    let setups = 0;
+    if (fromFile && args.commands) {
+      step = "run setup";
+      setups = await runSetups(args.commands, fromFile.approved, fromFile.file, {
+        clone: workspace,
+        branch,
+        repos: [{ as: null, source }, ...bring.map((item) => ({ as: item.as, source: item.path }))],
+      });
+    }
+
     step = "write the record";
-    const warnings: string[] = [];
+    const warnings: string[] = [...syncWarnings];
     for (const venv of notes.venvs.slice(0, MAX_EXAMPLES)) {
       warnings.push(`Python virtualenv at ${venv}: its scripts name the source's absolute paths, so pip there would install into the source. Recreate it in the clone before using it.`);
     }
@@ -278,6 +316,8 @@ export async function createClone(args: { paths: Layout; pathKey: string; branch
       helper: helper.kind,
       totalMs: Math.round(performance.now() - started),
       warnings,
+      workspace: fromFile ? { folder: fromFile.approved.folder, hash: fromFile.approved.hash } : null,
+      setups,
     });
     writeFileSync(done, `${JSON.stringify({ path: workspace, resource })}\n`, { mode: 0o600 });
     return { path: workspace, resource, reused: false };

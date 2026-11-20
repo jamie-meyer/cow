@@ -22,6 +22,7 @@ import { AUTOMATIONS_PLUGIN } from "../automations.ts";
 import { OUTCOMES, type Outcome } from "../ledger.ts";
 import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
+import type { Workspaces } from "../workspace/service.ts";
 
 const id = z.string().min(1).max(200);
 const fingerprint = z.string().regex(/^[0-9a-f]{4}(-[0-9a-f]{4}){3}$/);
@@ -64,6 +65,10 @@ export const ACTION_ARGS = {
   /** `name` is what the confirmation named, for the log. */
   automation_delete: z.object({ projectId: id, automationId: id, name: z.string().max(400) }),
   outcome_set: z.object({ threadId: id, outcome: z.enum(OUTCOMES) }),
+  workspace_approve: z.object({ folder: z.string().min(1).max(1024), hash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  workspace_dismiss: z.object({ folder: z.string().min(1).max(1024), hash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  workspace_back: z.object({ threadId: id }),
+  workspace_output: z.object({ folder: z.string().min(1).max(1024), as: z.string().max(255).nullable(), kind: z.enum(["sync", "setup", "back"]) }),
   key_approve: z.object({ fingerprint }),
   key_refuse: z.object({ fingerprint }),
   key_remove: z.object({ fingerprint }),
@@ -105,6 +110,11 @@ const REFUSAL_CODES: Record<string, "conflict" | "forbidden" | "invalid" | "not_
   not_decided: "conflict",
   cannot_answer: "conflict",
   cannot_close: "conflict",
+  workspace_not_found: "not_found",
+  stale_file: "conflict",
+  not_approved: "conflict",
+  bad_file: "invalid",
+  not_a_clone: "invalid",
 };
 
 async function refusing<T>(run: () => Promise<T>): Promise<T> {
@@ -186,7 +196,17 @@ export function queueDispatch(log: LogStore, marks: QueueMarks, changed: () => v
 /** Judge what a worker came to as the person; a refusal says why it cannot be. */
 export type JudgeOutcome = (threadId: string, outcome: Outcome) => Promise<unknown>;
 
-export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks, judgeOutcome: JudgeOutcome): Keys {
+/** The workspace actions: each one the service carries out and logs under the key that signed it. */
+export function workspaceDispatch(workspaces: Pick<Workspaces, "approve" | "dismiss" | "back" | "output">): Pick<Dispatch, "workspace_approve" | "workspace_dismiss" | "workspace_back" | "workspace_output"> {
+  return {
+    workspace_approve: (args, by) => workspaces.approve(args, by),
+    workspace_dismiss: (args, by) => workspaces.dismiss(args, by),
+    workspace_back: (args, by) => workspaces.back(args.threadId, by),
+    workspace_output: (args) => workspaces.output(args),
+  };
+}
+
+export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks, judgeOutcome: JudgeOutcome, workspaces: Workspaces): Keys {
   const changed = () => bb.realtime.publish(CAPS_CHANGED, {});
   const resetPath = join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "reset-enrollment");
   const keys = createKeys({
@@ -260,6 +280,7 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
       changed();
       return null;
     },
+    ...workspaceDispatch(workspaces),
     key_approve: (args, by) => keys.approve(args.fingerprint, by),
     key_refuse: async (args, by) => {
       await keys.refuse(args.fingerprint, by);

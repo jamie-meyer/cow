@@ -13,6 +13,7 @@ import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { registerCloneProvider } from "./src/clone/provider.ts";
+import { clonesFolderOf, registerWorkspaces, workspaceCommands } from "./src/workspace/backend.ts";
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
@@ -128,10 +129,12 @@ export default async function plugin(bb: BbPluginApi) {
   const automations = registerAutomations(bb);
   // The context card: bb's own git and pull-request plugins, and every plugin that offers `cow_card`. Only reads.
   registerCard(bb);
-  // A copy-on-write workspace a thread can be started in (macOS): `bb thread spawn --environment-provider <plugin id>-clone`.
-  registerCloneProvider(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
+  // Workspace files: approved on the page, their commands run by the host entry from the approved content only.
+  const workspaces = registerWorkspaces(bb, log);
+  // A copy-on-write workspace a thread can be started in (macOS): `bb thread spawn --environment-provider <plugin id>-clone`.
+  registerCloneProvider(bb, workspaces);
   const caps = registerCaps(bb, log);
   traces.record = async (input) => {
     await caps.trace(input);
@@ -198,7 +201,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (cause instanceof CowError) throw new Refusal(cause.code, cause.message, cause.hint);
       throw cause;
     }
-  });
+  }, workspaces);
 
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
@@ -248,7 +251,9 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return found;
   };
-  bb.cli.register(cowCli(actions, attention, capCommands(caps, attention.asks, titleOf), capabilityNames, bb.pluginId));
+  bb.cli.register(
+    cowCli(actions, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces, clonesFolderOf(bb.server.experimental_dataDir, bb.pluginId)) }, capabilityNames, bb.pluginId),
+  );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.

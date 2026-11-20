@@ -11,6 +11,8 @@ import { FIRST_USE_SHOWN_MS, readDismissed, rememberDismissed } from "../support
 import { type EnrolledKey, type KeysState, type PersonAction, type PublicKey, fingerprintText, formatFingerprint, notEnrolledText, signedText } from "./envelope.ts";
 
 /** What each of the person's actions gives back. */
+import type { BackResultWire } from "../clone/contract.ts";
+
 export interface ActionResult {
   cap_create: Capability;
   cap_delete: Capability;
@@ -26,6 +28,10 @@ export interface ActionResult {
   main_choose: { mains: Record<string, string>; currentProjectId: string | null };
   automation_delete: null;
   outcome_set: null;
+  workspace_approve: { folder: string; hash: string; newCommands: number };
+  workspace_dismiss: null;
+  workspace_back: { workspace: string; results: BackResultWire[] };
+  workspace_output: { at: number; ms: number; code: number | null; timedOut: boolean; tail: string[]; cwd: string } | null;
   key_approve: EnrolledKey;
   key_refuse: null;
   key_remove: null;
