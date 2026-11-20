@@ -70,3 +70,23 @@ test("the review lists new commands before the diff", () => {
   assert.ok(text.indexOf("Commands that would newly run") < text.indexOf("The change"));
   assert.match(text, /- \{"sync":"a"\}\n\+ \{"sync":"b"\}/);
 });
+
+test("teardown: per repository and for the workspace folder, read strictly, and new commands in the review", () => {
+  const withTeardown = { ...good, teardown: "echo top-down", bring: [{ ...good.bring[0], teardown: 'dropdb "cow_$COW_BRANCH"' }] };
+  const parsed = parseWorkspaceFile(JSON.stringify(withTeardown));
+  assert.ok(parsed.ok);
+  assert.equal(parsed.file.teardown, "echo top-down");
+  assert.equal(parsed.file.bring[0]!.teardown, 'dropdb "cow_$COW_BRANCH"');
+  assert.deepEqual(problems({ ...good, bring: [{ ...good.bring[0], teardwon: "x" }] }), ['bring[0]: unknown field "teardwon"']);
+  assert.deepEqual(problems({ ...good, teardown: "  " }), ["teardown: must not be only spaces"]);
+  assert.deepEqual(problems({ ...good, teardown: 3 }).length, 1);
+  // Adding a teardown to approved content is a command that would newly run, with its hash covering it like any other.
+  const before = parseWorkspaceFile(JSON.stringify(good));
+  assert.ok(before.ok);
+  assert.deepEqual(newCommands(before.file, parsed.file), [
+    { as: null, kind: "teardown", text: "echo top-down" },
+    { as: "api", kind: "teardown", text: 'dropdb "cow_$COW_BRANCH"' },
+  ]);
+  const text = reviewText({ folder: "/w/ws", approvedText: JSON.stringify(good), currentText: JSON.stringify(withTeardown), problems: [], fresh: newCommands(before.file, parsed.file) });
+  assert.match(text, /Commands that would newly run[^\n]*\n {2}the workspace folder: teardown\n {4}echo top-down\n {2}api: teardown\n {4}dropdb/);
+});

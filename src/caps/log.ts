@@ -70,6 +70,8 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("workspace-dismissed"), folder: z.string(), hash: z.string() }),
   /** A thread's work was brought back with the approved back commands: from cow's page (signed) or a terminal outside any thread (by null). */
   z.object({ kind: z.literal("workspace-back"), threadId: z.string(), folder: z.string(), hash: z.string(), what }),
+  /** A clone bb removed was held back instead (by null), or a held clone's teardown ran again or it was removed for good from cow's page (signed). */
+  z.object({ kind: z.literal("workspace-held"), action: z.enum(["held", "teardown", "removed"]), id: z.string(), threadId: z.string().nullable(), what }),
   /**
    * An agent took something out of the person's queue: parked a thread that
    * waited on them, withdrew an ask, or closed one as answered in chat when
@@ -232,6 +234,8 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return `dismissed the changed workspace file of ${event.folder} (${event.hash.slice(0, 12)}) without approving it`;
     case "workspace-back":
       return `brought back the work of ${on(event.threadId)} with the approved file of ${event.folder}: ${event.what}`;
+    case "workspace-held":
+      return `${event.action === "held" ? "held back the clone" : event.action === "teardown" ? "ran teardown again for the held clone" : "removed the held clone"} ${event.id}${event.threadId ? ` of ${on(event.threadId)}` : ""}: ${event.what}`;
     case "enrollment-reset":
       return `enrollment was reset from the reset file: ${event.keys} ${event.keys === 1 ? "key" : "keys"} cleared`;
   }

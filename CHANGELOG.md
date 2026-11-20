@@ -4,6 +4,31 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.17
+
+- **Teardown, and no quiet loss of a clone's work.** The workspace file takes
+  a `teardown` command per repository and for the workspace folder, approved
+  like `sync`, `setup` and `back` (the review lists it as a command that would
+  newly run). When bb removes a clone, five minutes after its last thread is
+  archived, each teardown runs first, while the clone still exists, from the
+  content you approved: repositories in the reverse of setup's order, then
+  the workspace folder's. Use it to save leftover work and release what setup
+  made, such as a database or a port.
+- **A clone that might hold work is held, not deleted.** Before removing a
+  clone, cow looks at each git repository in it without a teardown: anything
+  uncommitted or untracked (ignored files do not count), or commits on its
+  branches that its source repository does not have (work already brought
+  back does not count). A clean teardown is taken as having saved what
+  mattered. If a teardown failed or ran past its time limit, or a repository
+  without one holds unsaved work, the clone is moved aside, in one rename, to
+  `held/` in cow's host data folder, and bb is told it was removed. A notice
+  in your queue says which and why; `W` lists the held clones with their
+  path, so you can look inside. There `Enter` shows what the teardowns
+  printed, `t` runs the approved teardown again (and removes the clone when
+  nothing holds it any more), and `d` removes it for good after a `y`
+  confirmation that names what would be lost. Each is signed.
+  `bb cow workspace` lists held clones; nothing in the CLI removes one.
+
 ## 0.2.16
 
 - **Open cow from anywhere.** Ctrl+Option+C (Ctrl+Alt+C off macOS) opens

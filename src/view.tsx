@@ -115,7 +115,7 @@ import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
 import { LedgerSheet, ledgerKey, useLedger } from "./LedgerSheet.tsx";
-import { backConfirmText, reviewTarget, useWorkspaceSheet, useWorkspaces } from "./workspace/WorkspaceSheet.tsx";
+import { backConfirmText, heldName, heldReasons, reviewTarget, useWorkspaceSheet, useWorkspaces } from "./workspace/WorkspaceSheet.tsx";
 import type { Judgement } from "./ledger.ts";
 import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
 import { pickAction, pickChoice } from "./plugins.ts";
@@ -2364,7 +2364,9 @@ function OverviewScreen({
   const keyRequests = signer.status === "enrolled" ? (signer.keys?.requests ?? []).filter((request) => request.status === "pending") : [];
   // A workspace file whose content changed, or was never approved: its commands wait for the person.
   const workspaceNotices = workspaces.views.filter((view) => view.waiting);
-  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length;
+  // A clone bb removed that cow held back: work might be lost with it, so it stays in the queue until the person decides.
+  const heldNotices = workspaces.held;
+  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length + heldNotices.length;
   const waiting = overview.queue.length + notices;
   const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
@@ -2675,6 +2677,20 @@ function OverviewScreen({
                         </p>
                         <small>
                           workspace · <kbd>f</kbd> or a click opens it in the reader, then <kbd>a</kbd> approves exactly what it shows, <kbd>x</kbd> dismisses · <kbd>W</kbd> lists workspaces
+                        </small>
+                      </div>
+                    </li>
+                  ))}
+                  {heldNotices.map((entry) => (
+                    <li key={`held-${entry.id}`} className="cow-q cow-q-notice" data-cow-held-notice={entry.id} data-cow-hint="" onClick={() => workspaceSheet.show(entry.id)}>
+                      <span className="cow-qn">!</span>
+                      <span className="cow-gl" />
+                      <div>
+                        <p>
+                          the clone of {heldName(entry)} was held, not deleted: {heldReasons(entry).join("; ") || "why is not recorded"}
+                        </p>
+                        <small>
+                          workspace · held {formatAge(Math.max(0, now - entry.heldAt))} ago · {entry.path} · <kbd>f</kbd> or a click opens it in <kbd>W</kbd>
                         </small>
                       </div>
                     </li>

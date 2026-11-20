@@ -8,14 +8,28 @@ import { cloneHostContract, cloneResourceSchema, providerInputsSchema } from "./
 
 /** Clones can be large; a call may run this long before bb gives up on it. */
 const CREATE_TIMEOUT_MS = 30 * 60 * 1000;
-const REMOVE_TIMEOUT_MS = 15 * 60 * 1000;
+/** Removal runs each repository's teardown first, up to 15 minutes each. */
+const REMOVE_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** The provider's id, derived from the plugin's, so a copy installed for checks registers its own. */
 export const cloneProviderId = (pluginId: string) => `${pluginId}-clone`;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export function registerCloneProvider(bb: BbPluginApi, workspaces: Pick<Workspaces, "folderOf" | "approvedFor">): void {
+/** The thread a clone's path key is for (bb's keys start with its id), and its title, for the held notice. */
+async function threadLabel(bb: BbPluginApi, pathKey: string): Promise<{ threadId: string | null; title: string | null }> {
+  const threadId = /^(thr_[A-Za-z0-9]+)(?:-\d+)?$/.exec(pathKey)?.[1] ?? null;
+  if (threadId === null) return { threadId, title: null };
+  try {
+    const [thread] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+    const title = (thread as { title?: unknown } | undefined)?.title;
+    return { threadId, title: typeof title === "string" && title !== "" ? title.slice(0, 400) : null };
+  } catch {
+    return { threadId, title: null };
+  }
+}
+
+export function registerCloneProvider(bb: BbPluginApi, workspaces: Pick<Workspaces, "folderOf" | "approvedFor" | "forRemoval" | "noteHeld">): void {
   const host = bb.hosts.experimental_client({ contract: cloneHostContract });
   bb.experimental_environments.register({
     id: cloneProviderId(bb.pluginId),
@@ -74,10 +88,26 @@ export function registerCloneProvider(bb: BbPluginApi, workspaces: Pick<Workspac
       if (context.hostId === null) return { status: "failed", message: "The machine that holds this clone is unknown." };
       context.report.step("Removing the copy-on-write workspace");
       try {
+        // Teardown runs from what the person approved now for the workspace the clone was made from, never from a file or the record.
+        const resource = cloneResourceSchema.safeParse(context.resource);
+        const approved = await workspaces.forRemoval(resource.success ? (resource.data.workspace?.folder ?? null) : null);
+        const label = await threadLabel(bb, context.pathKey);
         // Only the path key goes to the host: the folder to delete is derived there, never taken from a path.
-        const result = await host.call("clone_remove", { pathKey: context.pathKey }, { hostId: context.hostId, signal: context.signal, timeoutMs: REMOVE_TIMEOUT_MS });
+        const result = await host.call(
+          "clone_remove",
+          { pathKey: context.pathKey, approved, label },
+          { hostId: context.hostId, signal: context.signal, timeoutMs: REMOVE_TIMEOUT_MS },
+        );
         if (result.status === "failed") return result;
         if (result.killed > 0) context.report.log(`Stopped ${result.killed} process(es) working in the clone.`);
+        for (const run of result.teardowns) {
+          context.report.log(`Teardown of ${run.as ?? "the workspace folder"}: ${run.timedOut ? "stopped at its time limit" : `exit ${run.code}`} in ${(run.ms / 1000).toFixed(1)} s.`);
+        }
+        if (result.held !== null) {
+          // Held, not deleted. bb is told it was removed: its environment is gone from where bb put it, and a failure would only have bb run teardown again and again.
+          context.report.log(`Held, not deleted: ${result.held.reasons.join("; ")}. It is at ${result.held.path}; the user decides on cow's page (W).`);
+          await workspaces.noteHeld({ id: result.held.id, threadId: label.threadId, reasons: result.held.reasons }).catch(() => {});
+        }
         return { status: "removed" };
       } catch (error) {
         if (context.signal.aborted) throw error;

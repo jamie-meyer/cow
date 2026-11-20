@@ -3,6 +3,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { checkPattern } from "./glob.ts";
+import type { HoldReason } from "./judge.ts";
 import { folderName, relativePath } from "./names.ts";
 
 export { folderName };
@@ -101,14 +102,14 @@ const failed = z.object({ status: z.literal("failed"), message: z.string() });
 
 /** Content the person approved, passed from cow's server: the only place a command is ever read from. */
 export const approvedSchema = z.object({ folder: absolute, text: z.string().max(256 * 1024), hash: z.string().regex(/^[0-9a-f]{64}$/) });
-const commandKind = z.enum(["sync", "setup", "back"]);
+const commandKind = z.enum(["sync", "setup", "back", "teardown"]);
 const runSummary = z.object({ at: z.number(), ms: z.number(), code: z.number().nullable(), timedOut: z.boolean() });
 const repoStatus = z.object({
   as: z.string().nullable(),
   path: z.string(),
   exists: z.boolean(),
   dirty: z.boolean().nullable(),
-  commands: z.object({ sync: z.boolean(), setup: z.boolean(), back: z.boolean() }),
+  commands: z.object({ sync: z.boolean(), setup: z.boolean(), back: z.boolean(), teardown: z.boolean() }),
   sync: runSummary.nullable(),
   lastOkSyncAt: z.number().nullable(),
 });
@@ -136,6 +137,27 @@ const backResult = z.object({
 export type BackResultWire = z.infer<typeof backResult>;
 const backCandidate = z.object({ as: z.string().nullable(), source: z.string(), clone: z.string(), ahead: z.number().nullable(), hasCommand: z.boolean(), why: z.string().nullable() });
 export type BackCandidateWire = z.infer<typeof backCandidate>;
+
+const teardownSummary = z.object({ as: z.string().nullable(), at: z.number(), ms: z.number(), code: z.number().nullable(), timedOut: z.boolean() });
+const unsavedSchema = z.object({ repo: z.boolean(), uncommitted: z.number(), branches: z.array(z.string()), error: z.string().nullable() });
+const heldSummary = z.object({
+  id: z.string(),
+  pathKey: z.string(),
+  heldAt: z.number(),
+  path: z.string(),
+  threadId: z.string().nullable(),
+  title: z.string().nullable(),
+  branch: z.string(),
+  workspace: z.string().nullable(),
+  hash: z.string().nullable(),
+  reasons: z.array(z.custom<HoldReason>()),
+  unsaved: z.array(z.object({ as: z.string().nullable(), unsaved: unsavedSchema })),
+  teardowns: z.array(teardownSummary),
+  repos: z.array(z.object({ as: z.string().nullable(), source: z.string() })),
+  fromFile: z.boolean(),
+  missing: z.boolean(),
+});
+export type HeldWire = z.infer<typeof heldSummary>;
 
 export const cloneHostContract = defineRpcContract({
   clone_create: {
@@ -175,8 +197,44 @@ export const cloneHostContract = defineRpcContract({
       failed,
     ]),
   },
+  /**
+   * bb's removal of a clone: its approved teardowns run first (only from
+   * `approved`, the content approved now for the workspace it was made from),
+   * then it is removed, or held aside when a teardown failed or a repository
+   * without one holds unsaved work.
+   */
   clone_remove: {
-    input: z.object({ pathKey: z.string() }),
-    output: z.discriminatedUnion("status", [z.object({ status: z.literal("removed"), existed: z.boolean(), killed: z.number() }), failed]),
+    input: z.object({
+      pathKey: z.string(),
+      approved: approvedSchema.nullable().default(null),
+      label: z.object({ threadId: z.string().max(200).nullable(), title: z.string().max(400).nullable() }).default({ threadId: null, title: null }),
+    }),
+    output: z.discriminatedUnion("status", [
+      z.object({
+        status: z.literal("removed"),
+        existed: z.boolean(),
+        killed: z.number(),
+        teardowns: z.array(teardownSummary).default([]),
+        held: z.object({ id: z.string(), path: z.string(), reasons: z.array(z.string()) }).nullable().default(null),
+      }),
+      failed,
+    ]),
+  },
+  /** The held clones of this machine. No command's output. */
+  held_list: { input: z.null(), output: z.array(heldSummary) },
+  /** A held clone's teardowns with their output. cow's server asks only for a signed call. */
+  held_output: {
+    input: z.object({ id: z.string().max(220) }),
+    output: z.discriminatedUnion("status", [z.object({ status: z.literal("done"), teardowns: z.array(teardownSummary.extend({ tail: z.array(z.string()) })), path: z.string() }), failed]),
+  },
+  /** Run a held clone's approved teardowns again; removed when nothing holds it any more. Only for a signed call. */
+  held_teardown: {
+    input: z.object({ id: z.string().max(220), approved: approvedSchema }),
+    output: z.discriminatedUnion("status", [z.object({ status: z.literal("done"), removed: z.boolean(), reasons: z.array(z.string()), teardowns: z.array(teardownSummary) }), failed]),
+  },
+  /** Remove a held clone for good. Only for a signed call. */
+  held_remove: {
+    input: z.object({ id: z.string().max(220) }),
+    output: z.discriminatedUnion("status", [z.object({ status: z.literal("removed") }), failed]),
   },
 });

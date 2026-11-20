@@ -59,6 +59,14 @@ export const PERSON_ACTIONS = [
   "workspace_back",
   /** Read a command's last output, which may hold secrets. */
   "workspace_output",
+  /**
+   * A clone held back from removal: run its approved teardown again, read
+   * what its teardowns printed, or remove it for good (after a confirmation
+   * naming what would be lost).
+   */
+  "workspace_held_teardown",
+  "workspace_held_output",
+  "workspace_held_remove",
   /** Approve or refuse a page that asks for its key to be enrolled; remove an enrolled key. */
   "key_approve",
   "key_refuse",

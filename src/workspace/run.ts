@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { CommandKind } from "./file.ts";
 
 /** How long each kind may run. */
-export const TIME_LIMITS: Record<CommandKind, number> = { sync: 5 * 60_000, setup: 15 * 60_000, back: 5 * 60_000 };
+export const TIME_LIMITS: Record<CommandKind, number> = { sync: 5 * 60_000, setup: 15 * 60_000, back: 5 * 60_000, teardown: 15 * 60_000 };
 export const TAIL_LINES = 20;
 const MAX_LINE = 500;
 const KEEP_BYTES = 64 * 1024;
@@ -110,6 +110,7 @@ export interface RepoRuns {
   sync?: RunRecord;
   setup?: RunRecord;
   back?: RunRecord;
+  teardown?: RunRecord;
   /** When its sync last exited 0. */
   lastOkSyncAt?: number;
 }
