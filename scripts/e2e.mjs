@@ -4709,7 +4709,8 @@ async function main() {
   });
   // A window that has never shown a Main, as a new one is.
   await page.goto(`${BB}/plugins/${PLUGIN}/main`);
-  await page.eval(`sessionStorage.removeItem("cow:main"); true`);
+  // Folds belong to the window: a run that stopped part-way may have left some.
+  await page.eval(`sessionStorage.removeItem("cow:main"); sessionStorage.removeItem("cow:folds"); true`);
   await page.resize(1440, 900);
   await page.colorScheme("light");
   await page.goto(`${BB}/plugins/${PLUGIN}/main`);
@@ -4876,11 +4877,36 @@ async function main() {
   const seenOf = async (id) => (await rpc("notes_list", { threadIds: [id] })).seen[id] ?? null;
   const lastTurnEnd = async (id) =>
     (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq ?? null;
+  const unseenDot = (id) => `!!document.querySelector('.cow-main [data-cow-line="${id}"] [data-cow-unseen]')`;
+  // The group head's newest turn is one the person did not start: its first,
+  // spawned. A fixture kept from an earlier run last replied to the person,
+  // below; Main tells it something first, as a run that starts afresh would find it.
+  await page.waitFor(`(${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}) || (${lineState(ids.quiet)} === "idle" && ${unseenDot(ids.quiet)})`, {
+    label: "the group head's reply",
+  });
+  if ((await page.eval(lineState(ids.quiet))) === "wants") {
+    await tellAs(ids.main, ids.quiet, "again");
+    await sleep(3000);
+    await waitForThread(ids.quiet, (t) => t.status === "idle", "its reply to Main");
+  }
+  await page.waitFor(`${lineState(ids.quiet)} === "idle" && ${unseenDot(ids.quiet)}`, { label: "the group head marked unread", timeout: 30_000 });
   // Whatever it said last: a fixture from an earlier run may not have said "ok".
-  const quietSaid = (await api(`/threads/${ids.quiet}/output`)).output.trim();
-  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, { label: "the group head's reply" });
+  const quietFirst = (await api(`/threads/${ids.quiet}/output`)).output.trim();
   check(
-    "a group head that finished a turn replied to you, whoever started the turn",
+    "a group head whose newest turn you did not start reads idle, says what it said, with the unread dot, and is not in the queue",
+    (await page.eval(whText(ids.quiet))) === quietFirst &&
+      !(await page.eval(isReply(ids.quiet))) &&
+      !(await page.eval(`!!document.querySelector('[data-cow-queue="${ids.quiet}"]')`)),
+    await page.eval(whText(ids.quiet)),
+  );
+  // Told something by the person, the same head's reply is theirs.
+  await tellAs(null, ids.quiet, "hello");
+  await sleep(3000);
+  await waitForThread(ids.quiet, (t) => t.status === "idle", "its reply to the person");
+  const quietSaid = (await api(`/threads/${ids.quiet}/output`)).output.trim();
+  await page.waitFor(`${lineState(ids.quiet)} === "wants" && ${isReply(ids.quiet)}`, { label: "the group head's reply to the person", timeout: 30_000 });
+  check(
+    "the same head, told something by you, replied to you",
     (await page.eval(whText(ids.quiet))).startsWith(`replied to you: ${quietSaid}`),
     await page.eval(whText(ids.quiet)),
   );
@@ -5052,8 +5078,23 @@ async function main() {
   check("arrows move too", await page.eval(isCursor(ids.leaf)));
   await page.key("ArrowUp");
   check("arrow up moves up", await page.eval(isCursor(ids.fails)));
+  // Below the tree come the sections, in the page's order; a heading with
+  // nothing under it is no stop. Outside Main holds the other fixtures' Mains.
   await page.key("G");
-  check("G goes to the bottom", await page.eval(isCursor(listedOrder[listedOrder.length - 1])));
+  const bottom = JSON.parse(
+    await page.eval(`JSON.stringify((() => {
+      const stops = [...document.querySelectorAll(".cow-main [data-cow-line], .cow-main [data-cow-outside-line], .cow-main [data-cow-section]")]
+        .filter((el) => el.querySelector("[data-cow-section-count]")?.dataset.cowSectionCount !== "0");
+      const cur = document.querySelector(".cow-main .cow-cur");
+      const lastLine = document.querySelector('.cow-main [data-cow-line="${listedOrder[listedOrder.length - 1]}"]');
+      return {
+        last: stops.at(-1) === cur,
+        belowTheLines: !!cur && !!lastLine && (lastLine === cur || !!(lastLine.compareDocumentPosition(cur) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        on: cur?.dataset.cowLine ?? cur?.dataset.cowSection ?? cur?.dataset.cowOutsideLine ?? null,
+      };
+    })())`),
+  );
+  check("G goes to the last stop on the page, below every line", bottom.last && bottom.belowTheLines, bottom.on);
 
   // -- folding a group --
   const inTree = (id) => `!!document.querySelector('.cow-main [data-cow-line="${id}"]')`;
@@ -5123,6 +5164,7 @@ async function main() {
   const treeIds = `JSON.stringify([...document.querySelectorAll(".cow-main [data-cow-line]")].map((el) => el.dataset.cowLine))`;
   const contextIds = `JSON.stringify([...document.querySelectorAll(".cow-main [data-cow-context]")].map((el) => el.dataset.cowLine))`;
   const matchCount = `Number(document.querySelector("[data-cow-filter-count]")?.dataset.cowFilterCount ?? -1)`;
+  const outsideDrawn = `document.querySelectorAll(".cow-main [data-cow-outside-line]").length`;
   const allLines = JSON.parse(await page.eval(treeIds));
   await goTo(ids.quiet);
   await page.key("h");
@@ -5168,11 +5210,13 @@ async function main() {
   await goTo(ids.quiet);
   await page.key("/");
   await page.type("cwtst");
-  await page.waitFor(`${matchCount} === ${allLines.length}`, { label: "every line matching loosely" });
+  // Every fixture is a "cow test": the lines on the page match, and so do the
+  // other fixtures' Mains, under Outside Main, folded: drawn while they match.
+  await page.waitFor(`${matchCount} === ${allLines.length} + ${outsideDrawn} && ${outsideDrawn} > 0`, { label: "every line matching loosely" });
   check(
-    "a name matches loosely, letters in order; parked and done lines are searched too",
+    "a name matches loosely, letters in order; done lines, and lines in a folded section, are searched too",
     (await page.eval(treeIds)) === JSON.stringify(allLines) && (await page.eval(isCursor(ids.quiet))),
-    `${await page.eval(matchCount)} of ${allLines.length}`,
+    `${await page.eval(matchCount)} of ${allLines.length} + ${await page.eval(outsideDrawn)}`,
   );
   await page.key("n", { ctrl: true });
   check("Ctrl+n moves to the next match", await page.eval(isCursor(ids.fails)));
@@ -5194,7 +5238,7 @@ async function main() {
   await page.waitFor(`${lineData(ids.quiet, "cowFold")} === "folded"`, { label: "the head folded" });
   await page.key("/");
   await page.type(TITLE);
-  await page.waitFor(`${matchCount} === ${allLines.length}`, { label: "its name matching" });
+  await page.waitFor(`${matchCount} === ${allLines.length} + ${outsideDrawn}`, { label: "its name matching" });
   await page.key("Enter");
   await page.waitFor(`${mode} === "normal"`, { label: "the filter closed" });
   const keptOpen = await page.eval(lineData(ids.quiet, "cowFold"));
@@ -5236,14 +5280,17 @@ async function main() {
   await shot("hints");
   const hints = JSON.parse(
     await page.eval(`JSON.stringify((() => {
-      const labels = [...document.querySelectorAll("[data-cow-hint-label]")].map((el) => el.dataset.cowHintLabel);
+      const tags = [...document.querySelectorAll("[data-cow-hint-label]")];
+      const labels = tags.map((el) => el.dataset.cowHintLabel);
       const targets = [...${ROOT}.querySelectorAll("[data-cow-hint]")];
       const off = [...${ROOT}.querySelectorAll(".cow-vb.cow-off")];
+      // Each label says what it is for: a line's id, for a line.
+      const lineIds = new Set([...${ROOT}.querySelectorAll(".cow-main [data-cow-line]")].map((el) => el.dataset.cowLine));
       return {
         labels,
         targets: targets.length,
-        asks: targets.findIndex((el) => el.dataset.cowLine === "${ids.asks}"),
-        lineLabels: labels.slice(0, targets.filter((el) => el.dataset.cowLine !== undefined).length),
+        asksLabel: tags.find((el) => el.dataset.cowHintFor === "${ids.asks}")?.dataset.cowHintLabel ?? "",
+        lineLabels: tags.filter((el) => lineIds.has(el.dataset.cowHintFor)).map((el) => el.dataset.cowHintLabel),
         offVerbs: off.length,
         offVerbsHinted: off.filter((el) => el.hasAttribute("data-cow-hint")).length,
       };
@@ -5264,12 +5311,13 @@ async function main() {
     hints.offVerbs > 0 && hints.offVerbsHinted === 0,
     `${hints.offVerbs} greyed out`,
   );
-  for (const letter of hints.labels[hints.asks]) await page.key(letter);
+  for (const letter of hints.asksLabel) await page.key(letter);
   check(
     "typing a hint activates it, with one key",
-    hints.labels[hints.asks].length === 1 &&
+    hints.asksLabel.length === 1 &&
       (await page.eval(isCursor(ids.asks))) &&
       (await page.eval(mode)) === "normal",
+    hints.asksLabel,
   );
   await page.key("f");
   await page.key("Escape");
@@ -5494,7 +5542,14 @@ async function main() {
   const childThreads = `document.querySelector('[data-cow-chat] button[aria-label*="active child thread"]')?.getAttribute("aria-expanded")`;
   const expandedBefore = await page.eval(childThreads);
   await page.key("f");
-  check("the same things get the same hints the next time", JSON.stringify(await hintList()) === JSON.stringify(inChat));
+  const inChatAgain = await hintList();
+  const shown = (list) => new Set(list.map((hint) => `${hint.label}=${hint.for}`));
+  const [hintsBefore, hintsAfter] = [shown(inChat), shown(inChatAgain)];
+  check(
+    "the same things get the same hints the next time",
+    JSON.stringify(inChatAgain) === JSON.stringify(inChat),
+    JSON.stringify({ gone: [...hintsBefore].filter((hint) => !hintsAfter.has(hint)), new: [...hintsAfter].filter((hint) => !hintsBefore.has(hint)) }),
+  );
   await typeHint(toggleHint?.label ?? "");
   await page.waitFor(`${childThreads} === "false"`, { label: "the chat's disclosure toggling", timeout: 5000 });
   check("a hint activates a button inside the chat: its list of child threads folds", expandedBefore === "true");
