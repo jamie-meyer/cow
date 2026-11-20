@@ -24,6 +24,20 @@
 //                     `bb environment cleanup`
 //   --keep            leave the thread and the throwaway folders
 //
+//   node scripts/e2e-clone.mjs workspace --plugin cow-clonecheck --project <bb project id>
+//
+// The workspace check makes a throwaway workspace folder with a
+// cow.workspace.json and two throwaway git repositories, each with a bare
+// repository as its remote, under the system temp folder. It checks that the
+// file is not approved and sync refuses; approves it through the copy's
+// signed path as the page would; checks sync pulls a new commit and skips a
+// dirty repository; starts one thread from { "workspace": … } and checks
+// setup ran; has the thread commit and try `back` (refused); runs `back`
+// from outside any thread and checks the commit reached the source; and
+// edits the file to a harmful-looking command and checks nothing new runs.
+// The thread is archived at the end, also after a failure. The bb CLI is run
+// without BB_THREAD_ID for the "outside any thread" calls, as a terminal would.
+//
 //   node scripts/e2e-clone.mjs timing [--entries 30000] [--chunk 5000]
 //
 // The timing check makes a tree of about that many entries under the system
@@ -36,6 +50,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { startHelper } from "../src/clone/helper.ts";
+import { createSigner } from "./sign.mjs";
 import { cloneTree } from "../src/clone/tree.ts";
 
 const args = process.argv.slice(2);
@@ -285,10 +300,160 @@ async function e2e() {
   }
 }
 
+// ---- the workspace file ---------------------------------------------------
+
+/** The bb CLI as a terminal outside any thread runs it: no thread named in its environment. */
+async function bbOutside(...argv) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^BB_(THREAD|PROJECT|ENVIRONMENT)/.test(key)));
+  return run(BB, argv, { env });
+}
+
+async function waitIdle(threadId) {
+  const deadline = Date.now() + 5 * 60_000;
+  for (;;) {
+    const shown = await bb("thread", "show", threadId);
+    const t = shown.thread ?? shown;
+    if (t.status === "error") throw new Error(`the thread failed: ${JSON.stringify(t).slice(0, 500)}`);
+    if (t.environmentId && t.status === "idle" && t.runtime?.displayStatus === "idle") return t;
+    if (Date.now() > deadline) throw new Error(`the thread never finished: ${JSON.stringify(t).slice(0, 500)}`);
+    await sleep(2000);
+  }
+}
+
+async function workspaceE2e() {
+  const plugin = option("plugin", "cow-check");
+  const project = option("project");
+  const model = option("model", "claude-haiku-5-5");
+  const bbUrl = option("bb", "http://127.0.0.1:38886");
+  if (plugin === "cow") {
+    console.error("refused: run this against a copy of cow (scripts/copy-for-checks.mjs), never the installed cow");
+    process.exit(2);
+  }
+  if (!project) {
+    console.error("--project <bb project id> is required");
+    process.exit(2);
+  }
+  const rpc = async (method, input) => (await (await fetch(`${bbUrl}/api/v1/plugins/${plugin}/rpc/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) })).json());
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "cow-e2e-workspace-")));
+  const ws = join(base, "ws");
+  const api = join(base, "api");
+  const web = join(base, "web");
+  const marker = join(base, "HARMFUL");
+  let threadId = null;
+  let environmentId = null;
+  try {
+    mkdirSync(join(ws, "notes"), { recursive: true });
+    writeFileSync(join(ws, "notes", "today.md"), "A note.\n");
+    const heads = {};
+    for (const [repo, name] of [[api, "api"], [web, "web"]]) {
+      await git(base, "init", "-q", "--bare", "-b", "main", `${name}.git`);
+      mkdirSync(repo);
+      writeFileSync(join(repo, "a.txt"), "first\n");
+      await git(repo, "init", "-q", "-b", "main");
+      await git(repo, "add", ".");
+      await git(repo, "commit", "-q", "-m", "first");
+      await git(repo, "remote", "add", "origin", join(base, `${name}.git`));
+      await git(repo, "push", "-q", "-u", "origin", "main");
+      // Someone else pushes a new commit: sync has something to pull.
+      await git(base, "clone", "-q", join(base, `${name}.git`), `${name}-pusher`);
+      writeFileSync(join(base, `${name}-pusher`, "a.txt"), "second\n");
+      await git(join(base, `${name}-pusher`), "commit", "-q", "-am", "second");
+      await git(join(base, `${name}-pusher`), "push", "-q", "origin", "main");
+      heads[name] = await git(join(base, `${name}-pusher`), "rev-parse", "HEAD");
+    }
+    const back = 'git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH"';
+    const file = {
+      bring: [
+        { path: "../api", as: "api", sync: "git pull -q --ff-only", setup: 'printf "%s" "$COW_AS" > setup-ran', back },
+        { path: "../web", as: "web", sync: "git pull -q --ff-only", back },
+      ],
+      readOnly: ["notes"],
+    };
+    const fileText = `${JSON.stringify(file, null, 2)}\n`;
+    writeFileSync(join(ws, "cow.workspace.json"), fileText);
+
+    const added = await bbOutside(plugin, "workspace", "add", ws, "--json");
+    check("workspace add proposes the folder", added.code === 0 && JSON.parse(added.stdout).status === "new", added.stdout + added.stderr);
+    const state0 = (await rpc("workspace_state", null)).result?.workspaces?.find((view) => view.folder === ws);
+    check("the file waits for the person, with its commands listed as new", state0?.waiting === true && state0.fresh.length === 5, JSON.stringify(state0).slice(0, 300));
+    const refusedSync = await bbOutside(plugin, "workspace", "sync", ws);
+    check("sync refuses before the file is approved", refusedSync.code !== 0 && /never been approved/.test(refusedSync.stdout + refusedSync.stderr), refusedSync.stdout + refusedSync.stderr);
+    check("nothing was pulled", (await git(api, "rev-parse", "HEAD")) !== heads.api);
+
+    const signer = await createSigner(bbUrl, "the workspace check", plugin);
+    const enrolled = await signer.enrol();
+    check("the check's key is enrolled with the copy", enrolled === "enrolled-first" || enrolled === "enrolled", enrolled);
+    const stale = await signer.call("workspace_approve", { folder: ws, hash: "0".repeat(64) });
+    check("an approval of other content is refused", stale.ok === false && /changed after it was shown/.test(JSON.stringify(stale)), JSON.stringify(stale));
+    await signer.must("workspace_approve", { folder: ws, hash: state0.currentHash });
+    const state1 = (await rpc("workspace_state", null)).result.workspaces.find((view) => view.folder === ws);
+    check("the file is approved", state1.status === "approved" && state1.waiting === false, state1.status);
+
+    writeFileSync(join(web, "dirty.txt"), "uncommitted\n");
+    const synced = await bbOutside(plugin, "workspace", "sync", ws, "--json");
+    const results = JSON.parse(synced.stdout || "{}").synced?.[0]?.results ?? [];
+    check("sync pulls the new commit", (await git(api, "rev-parse", "HEAD")) === heads.api, synced.stdout + synced.stderr);
+    check("a dirty repository is skipped and untouched", results.find((r) => r.as === "web")?.status === "dirty" && (await git(web, "rev-parse", "HEAD")) !== heads.web && existsSync(join(web, "dirty.txt")), JSON.stringify(results));
+    rmSync(join(web, "dirty.txt"));
+    const listed = await bbOutside(plugin, "workspace", ws);
+    check("bb <id> workspace shows each repository's last sync, and no command text", /api .*clean · last sync .*exit 0/.test(listed.stdout) && !listed.stdout.includes("git pull"), listed.stdout);
+
+    // A thread from the workspace file: it commits in api, and tries back itself.
+    const threadCommand =
+      'cd api && echo work > work.txt && git add work.txt && git -c user.name=t -c user.email=t@example.com commit -qm "work from the thread"; cd ..; ' +
+      `{ echo "setup=$(cat api/setup-ran 2>/dev/null)"; ${BB} ${plugin} workspace back "$BB_THREAD_ID" >/dev/null 2>back-err.txt; echo "back=$?"; } > cow-e2e-report.txt 2>&1`;
+    const thread = await bb(
+      "thread", "spawn",
+      "--project", project,
+      "--environment-provider", `${plugin}-clone`,
+      "--environment-inputs", JSON.stringify({ workspace: ws }),
+      "--provider", "claude-code",
+      "--model", model,
+      "--title", "cow test: workspace",
+      "--parent-notifications", "off",
+      "--prompt", PROMPT(threadCommand),
+    );
+    threadId = thread.id;
+    console.log(`thread ${threadId}`);
+    const t = await waitIdle(threadId);
+    environmentId = t.environmentId;
+    const env = (await bb("environment", "show", environmentId)).environment ?? (await bb("environment", "show", environmentId));
+    const path = env.path;
+    check("the thread started from { workspace } in a clone with both repositories", existsSync(join(path, "api", "a.txt")) && existsSync(join(path, "web", "a.txt")), path);
+    check("setup ran in the brought folder", readFileSync(join(path, "api", "setup-ran"), "utf8") === "api");
+    const report = existsSync(join(path, "cow-e2e-report.txt")) ? readFileSync(join(path, "cow-e2e-report.txt"), "utf8") : "";
+    const errText = existsSync(join(path, "back-err.txt")) ? readFileSync(join(path, "back-err.txt"), "utf8") : "";
+    check("back from the thread is refused", /back=[1-9]/.test(report) && /only the user/.test(errText), `${report} ${errText}`);
+    const branch = await git(join(path, "api"), "branch", "--show-current");
+    check("the thread committed in its clone", (await git(join(path, "api"), "log", "-1", "--format=%s")) === "work from the thread");
+    check("the source has no such branch yet", (await git(api, "branch", "--list", branch)) === "");
+
+    const brought = await bbOutside(plugin, "workspace", "back", threadId, "--json");
+    const backResults = JSON.parse(brought.stdout || "{}").results ?? [];
+    check("back from outside any thread runs api's back command", backResults.find((r) => r.as === "api")?.status === "ran" && backResults.find((r) => r.as === "web")?.status === "nothing-new", brought.stdout + brought.stderr);
+    check("the commit reached the source", (await git(api, "log", "-1", "--format=%s", branch)) === "work from the thread");
+
+    // A harmful-looking change runs nothing until approved.
+    const harmful = { ...file, bring: [{ ...file.bring[0], sync: `touch "${marker}"` }, file.bring[1]] };
+    writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(harmful, null, 2)}\n`);
+    const state2 = (await rpc("workspace_state", null)).result.workspaces.find((view) => view.folder === ws);
+    check("the changed file waits, with the new command first in its review", state2.status === "changed" && state2.waiting && state2.review.indexOf("touch") < state2.review.indexOf("The change"), JSON.stringify(state2).slice(0, 300));
+    await bbOutside(plugin, "workspace", "sync", ws);
+    check("sync ran the approved command, not the changed one", !existsSync(marker));
+  } finally {
+    if (threadId && !flag("keep")) {
+      await bb("thread", "archive", threadId).catch((error) => console.error(`could not archive ${threadId}: ${error.message}`));
+      if (environmentId) await bb("environment", "cleanup", environmentId).catch((error) => console.error(`could not clean up ${environmentId}: ${error.message}`));
+    }
+    if (!flag("keep")) rmSync(base, { recursive: true, force: true });
+    else console.log(`kept: thread ${threadId}, folders ${base}`);
+  }
+}
+
 if (process.platform !== "darwin") {
   console.error("copy-on-write clones need macOS and APFS");
   process.exit(2);
 }
-await (args[0] === "timing" ? timing() : e2e());
+await (args[0] === "timing" ? timing() : args[0] === "workspace" ? workspaceE2e() : e2e());
 console.log(failures === 0 ? "all checks passed" : `${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
