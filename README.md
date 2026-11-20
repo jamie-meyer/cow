@@ -266,6 +266,12 @@ over the page, read-only, with vim's keys for moving and searching. A link to
 a thread in the chat opens that thread in the pane instead of bb's chat page;
 `Esc` goes back to the chat you came from.
 
+**A copy-on-write workspace (macOS).** A thread can start in a clone of a
+whole workspace folder, with the repositories it needs cloned inside it,
+instead of a git worktree: fast, nearly free on disk, and independent of the
+originals. It is started from the command line for now. Details are in
+[docs/clone.md](docs/clone.md).
+
 ## Keys
 
 The page starts in normal mode. Typing in any field works as usual, and while

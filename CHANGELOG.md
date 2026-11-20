@@ -4,6 +4,31 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.13
+
+A copy-on-write workspace for a thread, on macOS.
+
+- **Start a thread in a clone of a whole workspace.** cow now offers bb an
+  environment, `cow-clone`, that gives a thread an APFS clone of a workspace
+  folder with the repositories it needs cloned inside it:
+  `bb thread spawn --environment-provider cow-clone --environment-inputs
+  '{"source": "…", "bring": [{"path": "…", "as": "…"}], "readOnly": ["notes"]}'`.
+  A clone of tens of thousands of files takes well under a second and costs
+  almost no disk until something is written.
+- **What a clone holds.** Each repository goes on a branch named for the
+  thread, with its uncommitted changes. Secrets such as `.env` files and keys
+  are never cloned. Paths you name are made read-only, so notes can be
+  context a thread reads and does not edit.
+- **What is refused.** A linked git worktree, and a repository that borrows
+  objects from another, are not independent once cloned, so they are refused
+  with the reason. A source on another volume is refused; nothing is ever
+  copied the slow way.
+- **Removing it.** The clone goes with the thread's environment. Only the
+  clone's own folder is ever deleted.
+- **Not yet.** A command to bring a thread's work back (for now, `git fetch`
+  from the original, as [docs/clone.md](docs/clone.md) shows), a list of
+  repositories kept by cow, and a form in bb's New Thread dialog.
+
 ## 0.2.12
 
 The checker runs on a provider that works, and says why when it cannot.
