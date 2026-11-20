@@ -109,8 +109,11 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   const at = found >= 0 ? found : Math.max(0, Math.min(lastAt.current, rows.length - 1));
   lastAt.current = at;
   const current = rows[at] ?? null;
+  /** The id the cursor was last seen on in the list. A cursor set to a row that has not arrived yet (one just restored) waits for it. */
+  const seen = useRef<string | null>(null);
+  if (found >= 0) seen.current = cursor;
   useEffect(() => {
-    if (open && cursor !== null && found < 0 && current !== null) {
+    if (open && cursor !== null && found < 0 && current !== null && seen.current === cursor) {
       slid.current = current.id;
       setCursor(current.id);
     }
