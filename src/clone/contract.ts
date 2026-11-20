@@ -3,6 +3,9 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { checkPattern } from "./glob.ts";
+import { folderName, relativePath } from "./names.ts";
+
+export { folderName };
 
 const absolute = z
   .string()
@@ -10,24 +13,6 @@ const absolute = z
   .max(1024)
   .refine((value) => value.startsWith("/"), "must be an absolute path")
   .refine((value) => !value.includes("\n") && !value.includes("\0"), "must not contain a newline or a NUL");
-
-/** One plain folder name: no slash, not only dots, nothing hidden in it. */
-export const folderName = z
-  .string()
-  .min(1)
-  .max(255)
-  .refine((value) => !value.includes("/") && !value.includes("\\"), "must be one folder name, without slashes")
-  .refine((value) => !/^\.+$/.test(value), "must not be only dots")
-  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "must not contain control characters")
-  .refine((value) => value.trim() === value, "must not start or end with a space");
-
-const relativePath = z
-  .string()
-  .min(1)
-  .max(1024)
-  .refine((value) => !value.startsWith("/"), "must be relative to the workspace")
-  .refine((value) => !value.split("/").some((part) => part === ".." || part === ""), "must not contain '..' or empty parts")
-  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "must not contain control characters");
 
 export const cloneInputsSchema = z
   .object({
