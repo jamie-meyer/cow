@@ -146,9 +146,9 @@ test("the sheet stops at disputes first, then judgement calls, then the other cl
 test("the heading says what kind of check it was, and never calls a failed one a check", () => {
   const one = checkLine(review(BRIEF, check(run(["supported", "supported", "supported", "supported"]))));
   assert.equal(one.tone, "checked");
-  assert.equal(one.text, "Audited by 1 run of small. It read only the evidence attached here.");
+  assert.equal(one.text, "Audited by 1 run of bb's default provider, model small. It read only the evidence attached here.");
   const two = checkLine(review(BRIEF, check(run(["supported", "supported", "supported", "supported"]), run(["supported", "not-supported", "supported", "supported"], "b"))));
-  assert.match(two.text, /^Audited by 2 runs of small; the runs disagreed on 1 claim\./);
+  assert.match(two.text, /^Audited by 2 runs of bb's default provider, model small; the runs disagreed on 1 claim\./);
   const agreed = checkLine(review(BRIEF, check(run(["supported", "supported", "supported", "supported"]), run(["supported", "supported", "supported", "supported"], "b"))));
   assert.match(agreed.text, /the runs agreed on every claim/);
   const failed = checkLine(review(BRIEF, check({ status: "failed", error: "prose", threadId: "c", startedAt: NOW, finishedAt: NOW })));
@@ -157,7 +157,9 @@ test("the heading says what kind of check it was, and never calls a failed one a
   assert.doesNotMatch(failed.text, /Audited/);
   assert.equal(checkLine(review(BRIEF, null)).tone, "none");
   assert.equal(checkLine(review(BRIEF, check({ status: "running", threadId: "c", startedAt: NOW, finishedAt: null }))).tone, "running");
-  assert.match(checkLine(review(BRIEF, { ...check(run(["supported", "supported", "supported", "supported"])), model: null })).text, /bb's default model/);
+  assert.match(checkLine(review(BRIEF, { ...check(run(["supported", "supported", "supported", "supported"])), model: null })).text, /bb's default provider and model/);
+  const inherited = { ...check(run(["supported", "supported", "supported", "supported"])), provider: "codex", model: "gpt-x", chosen: { provider: "inherited" as const, model: "inherited" as const } };
+  assert.equal(checkLine(review(BRIEF, inherited)).text, "Audited by 1 run of codex, model gpt-x, as the submitting thread ran. It read only the evidence attached here.");
 });
 
 test("already answered in chat is a choice of its own: a digit marks it, and Enter closes without sending", () => {

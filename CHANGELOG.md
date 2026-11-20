@@ -4,6 +4,38 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.12
+
+The checker runs on a provider that works, and says why when it cannot.
+
+- **The checker runs where your thread runs.** With cow's checker settings
+  empty, a brief is now checked on the provider and model of the thread
+  that submitted it, instead of on bb's default provider. bb's default can
+  be a provider that is installed and listed as ready but cannot run here,
+  for instance because it is signed out; then every check failed.
+- **Settings still come first.** `checkerProvider` and `checkerModel` in
+  cow's settings are used when set, and `bb cow brief check <thread>
+  --provider <id> --model <id>` overrides both. A provider given without a
+  model runs on that provider's default model.
+- **The check says where it ran.** The sheet and `bb cow brief show` name the
+  provider and model, and say "as the submitting thread ran" when both were
+  inherited. `--json` has `provider` and `chosen` (`given`, `setting`,
+  `inherited` or `default`) beside `model`.
+- **A failure says why.** Instead of "the checker's turn failed", a failed
+  check now says the provider and model it was started on, the cause where
+  bb recorded one ("the provider is not signed in", "the provider does not
+  have that model"), what bb said, and how to run it elsewhere, for example:
+
+  > the checker's turn failed on codex, its default model: the provider is
+  > not signed in (bb said: "…"). To check it on another provider: bb cow
+  > brief check thr_… --provider \<provider\> --model \<model\>
+
+  A provider that also fails is a failed check with its cause; cow does not
+  quietly try another.
+- **Briefs whose check already failed stay failed** until they are checked
+  again. Press `c` in the brief, or run `bb cow brief check <thread>`: with
+  your settings empty it now runs on that thread's own provider.
+
 ## 0.2.11
 
 What each finished worker came to, and a ledger of it.

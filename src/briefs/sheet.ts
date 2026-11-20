@@ -30,7 +30,7 @@ export function moveStop(items: readonly SheetItem[], current: string | null, by
 
 /** How the check went, in the words the sheet's heading uses. Only a check that answered is ever called a check. */
 export function checkLine(seen: Review): { tone: "failed" | "running" | "none" | "checked"; text: string } {
-  const model = seen.model ?? "bb's default model";
+  const model = seen.checker;
   const runs = (count: number) => `${count} ${count === 1 ? "run" : "runs"}`;
   if (seen.state === "failed") return { tone: "failed", text: "Check failed: no run of the checker gave a usable answer. Nothing below is verified." };
   if (seen.state === "running") return { tone: "running", text: `Checking now (${runs(seen.runs.running)} of ${model} still going). Nothing below is verified yet.` };

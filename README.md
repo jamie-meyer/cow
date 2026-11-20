@@ -445,15 +445,14 @@ only to the bb server they run in, through bb's plugin SDK. There is no
 telemetry, no update check, no font or script fetched from anywhere, and no
 address in the code but bb's own.
 
-Two things cow does cause to be sent, both by bb, to the model provider bb is
-configured with:
+Two things cow does cause to be sent, both by bb, to a model provider:
 
 - **The checker.** When a brief is submitted, cow starts a hidden thread
   whose one message is the brief: its summary, its claims with the agent's
   labels, the text of the attached evidence (up to 12,000 characters a piece
   and 60,000 in all) and the list of what was not done. bb sends that to the
-  provider and model set in cow's settings, or, when those are empty, to bb's
-  default for the project. The evidence is whatever the agent chose to
+  provider and model set in cow's settings, or, when those are empty, to the
+  provider and model the thread that submitted the brief ran on. The evidence is whatever the agent chose to
   attach from its thread's storage, so it can hold anything that agent could
   read. To stop the automatic check:
 
@@ -467,7 +466,7 @@ configured with:
   | Setting | Default | Means |
   | --- | --- | --- |
   | `checkOnSubmit` | on | check a brief as soon as it is submitted |
-  | `checkerModel`, `checkerProvider` | empty | the checker's model and provider; empty is bb's default for the project |
+  | `checkerModel`, `checkerProvider` | empty | the checker's model and provider; empty is the provider and model the thread that submitted the brief ran on |
   | `checkerRuns` | 1 | independent checkers per brief, up to 5 |
 
 - **Messages you send from the page.** An answer to an ask, "ask again as
@@ -821,8 +820,9 @@ node scripts/clear-stored.mjs --id cow-check --yes
 start first (the top of `scripts/e2e.mjs` gives the command). It creates
 seventeen cheap fixture threads titled "cow test", acts only on those, and
 archives them afterwards. `npm run e2e:asks` checks asks and briefs without a
-browser, with two more. Both set cow's checker model while they run and put
-it back, and both refuse to run against the installed cow unless given
+browser, with two more. `npm run e2e` sets cow's checker model while it runs, `npm
+run e2e:asks` clears it so that the checker inherits the fixture's, and both
+put it back, and both refuse to run against the installed cow unless given
 `--plugin cow --reset-the-installed-cow`. The head of each script says exactly
 what it touches.
 

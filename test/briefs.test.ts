@@ -141,7 +141,7 @@ test("with several runs the weakest verdict stands and disagreement is recorded 
 
 test("the text shows disputes, then judgement calls, then other claims, then what was left undone", () => {
   const text = reviewText({ threadId: "thr_a", version: 3, summary: BRIEF.summary }, review(BRIEF, check(run(verdicts("supported", "not-supported", "cannot-tell", "supported")))));
-  const order = ["Brief v3 from thr_a", "Checked by small: 1 run.", "Disputes (2)", "CONTRADICTED  c2", "NOT ESTABLISHED  c3", "Judgement calls for you (1)", "Ship it?  (ask_1)", "Other claims (2)", "c1  “A holds”", "Left undone (1)", "E was not looked at"];
+  const order = ["Brief v3 from thr_a", "Checked by bb's default provider, model small: 1 run.", "Disputes (2)", "CONTRADICTED  c2", "NOT ESTABLISHED  c3", "Judgement calls for you (1)", "Ship it?  (ask_1)", "Other claims (2)", "c1  “A holds”", "Left undone (1)", "E was not looked at"];
   let at = -1;
   for (const part of order) {
     const found = text.indexOf(part, at + 1);
@@ -485,6 +485,7 @@ test("a checker that cannot be started is a failed run", async () => {
     now: () => NOW,
     newId: () => "n",
     thread: async () => ({ projectId: "proj_1", environmentId: null }),
+    execution: async () => ({ provider: "codex", model: null }),
     ancestors: async () => ["main"],
     storageRoot: async () => null,
     readEvidence: async () => "",
@@ -496,7 +497,7 @@ test("a checker that cannot be started is a failed run", async () => {
   const record = await failing.check({ caller: "main", threadId: "child" });
   const view = briefView(record);
   assert.equal(view.review.state, "failed");
-  assert.match(view.review.failures[0] ?? "", /could not be started: no such model/);
+  assert.match(view.review.failures[0] ?? "", /could not be started on codex, its default model: no such model\. To check it on another provider: bb cow brief check child --provider <provider> --model <model>$/);
 });
 
 test("running a check again cannot take a dispute the person has not read out of their queue", async () => {

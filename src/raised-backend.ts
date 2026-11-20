@@ -11,6 +11,7 @@ import { createAsks } from "./asks/service.ts";
 import type { Attention } from "./raised-cli.ts";
 import { type CheckerSight, type CheckerSettings, MAX_RUNS, briefRecordSchema, createBriefs } from "./briefs/service.ts";
 import { Refusal } from "./kv.ts";
+import { failureOf } from "./briefs/provider.ts";
 import { RAISED_CHANGED } from "./raised.ts";
 import { readActivity } from "./activity.ts";
 import type { TraceInput } from "./traces.ts";
@@ -105,13 +106,13 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
     checkerModel: {
       type: "string",
       label: "Checker model",
-      description: "The model that audits a brief, such as claude-haiku-5-5. Empty: bb's default for the project. A small model's \"supported\" is weaker than a large one's.",
+      description: "The model that audits a brief, such as claude-haiku-5-5. Empty: the model of the thread that submitted the brief, when the checker runs on that thread's provider; otherwise the provider's default. A small model's \"supported\" is weaker than a large one's.",
       default: "",
     },
     checkerProvider: {
       type: "string",
       label: "Checker provider",
-      description: "The provider the checker runs on, such as claude-code. Empty: bb's default for the project.",
+      description: "The provider the checker runs on, such as claude-code. Empty: the provider of the thread that submitted the brief.",
       default: "",
     },
     checkerRuns: {
@@ -170,7 +171,13 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
   const look = async (threadId: string): Promise<CheckerSight> => {
     const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
     if (!found || found.deletedAt != null) return { state: "gone", reply: null, tools: [] };
-    if (found.status === "error") return { state: "error", reply: null, tools: [] };
+    if (found.status === "error") {
+      // What bb recorded about the failed turn, so that the check can say why.
+      const events = await bb.sdk.threads.events
+        .list({ threadId, limit: "40", order: "desc", types: ["provider/error", "turn/completed"] as never })
+        .catch(() => []);
+      return { state: "error", reply: null, tools: [], failure: failureOf(events as readonly { type: string; data?: unknown }[]) };
+    }
     if (found.status !== "idle") return { state: "running", reply: null, tools: [] };
     const [output, timeline] = await Promise.all([bb.sdk.threads.output({ threadId }), bb.sdk.threads.timeline({ threadId })]);
     const reply = typeof output.output === "string" && output.output.trim() !== "" ? output.output : null;
@@ -182,6 +189,11 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
     now: Date.now,
     newId: () => randomUUID().replace(/-/g, "").slice(0, 12),
     thread,
+    execution: async (threadId) => {
+      const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+      const options = await bb.sdk.threads.defaultExecutionOptions({ threadId }).catch(() => null);
+      return { provider: found?.providerId ?? null, model: options?.model?.trim() ? options.model : null };
+    },
     ancestors,
     storageRoot,
     readEvidence: async (threadId, path) => {

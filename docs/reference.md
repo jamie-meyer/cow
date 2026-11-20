@@ -1027,6 +1027,23 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   more with a fresh checker before the check fails: a slip in the form is not
   a verdict on the brief. A checker that used a tool, errored or said nothing
   is not tried again.
+- **Where it runs.** In order: `--provider` and `--model` given to `bb cow
+  brief check`, then cow's settings (below), then the provider and model the
+  thread that submitted the brief ran on. bb's default provider is used only
+  when none of these says anything: it may be one that is installed but
+  cannot run here. A provider given without a model runs on that provider's
+  default model, never on a model meant for another provider. The check
+  records the provider and model it was started on and where each came from
+  (`chosen` in `--json`: `given`, `setting`, `inherited` or `default`), and
+  the sheet and `bb cow brief show` name them, adding "as the submitting
+  thread ran" when both were inherited.
+- **When the checker cannot run.** A checker bb would not start, or whose
+  turn failed, is a failed check whose reason says the provider and model it
+  was started on, the cause in plain words where bb recorded one (such as
+  "the provider is not signed in" or "the provider does not have that
+  model"), what bb said, and the way out: `To check it on another provider:
+  bb cow brief check <thread> --provider <provider> --model <model>`. cow
+  never retries on another provider by itself.
 - A failed check keeps the reason and what the checker answered, as it came.
   The sheet and `bb cow brief show` print both, so that you can see whether
   it was the checker or the brief that went wrong. None of it counts as a
@@ -1110,7 +1127,8 @@ Settings (Settings → Installed plugins → cow, or `bb plugin config cow`):
 
 | Setting | Default | Means |
 | --- | --- | --- |
-| `checkerModel`, `checkerProvider` | empty | the checker's model and provider; empty is bb's default for the project |
+| `checkerProvider` | empty | the provider the checker runs on. Empty: the provider the thread that submitted the brief ran on, which is known to work here; bb's default only when that is not known |
+| `checkerModel` | empty | the checker's model. Empty: the submitting thread's model when the checker runs on that thread's provider, otherwise that provider's default. A model set without a provider runs on the submitting thread's provider |
 | `checkerRuns` | 1 | independent checkers per brief, up to 5. The weakest verdict stands, and a claim the runs disagree on says so |
 | `checkOnSubmit` | on | check a brief as soon as it is submitted |
 

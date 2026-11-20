@@ -121,6 +121,10 @@ bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
   it to say how to read the excerpt, not to argue the claim.
 - A check that failed says why and prints what the checker answered. A
   checker whose answer could not be read is run once more by itself. Submitting again later stores a new version.
+- The checker runs on cow's checker settings, or when they are empty on the
+  provider and model your thread runs on. When it could not run, the reason
+  names the provider and what bb said. The thread above you or the user can
+  run it elsewhere: `bb cow brief check <thread> --provider <id> --model <id>`.
 - `--wait` waits for the checker and prints the result. Read the disputes:
   fetch the evidence a "cannot tell" asks for, correct a claim that was
   wrong, and submit again. You cannot run the check on your own brief

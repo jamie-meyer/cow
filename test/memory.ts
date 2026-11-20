@@ -51,9 +51,12 @@ export function world(kv: Kv = memoryKv()) {
   const started: { prompt: string; model: string | null; provider: string | null; environmentId: string | null }[] = [];
   const discarded: string[] = [];
   const settings: CheckerSettings = { model: null, provider: null, runs: 1, onSubmit: true };
+  /** The provider and model the submitting thread ran on. */
+  const own: { provider: string | null; model: string | null } = { provider: null, model: null };
   const briefDeps: BriefDeps = {
     ...base,
     thread: async (threadId) => (threadId in PARENTS ? { projectId: "proj_1", environmentId: "env_1" } : null),
+    execution: async () => ({ ...own }),
     readEvidence: async (threadId, path) => {
       const text = files.get(`${threadId}/${path}`);
       if (text === undefined) throw new Error("no such file");
@@ -79,5 +82,5 @@ export function world(kv: Kv = memoryKv()) {
   const briefs = createBriefs(briefDeps);
   /** Make a checker answer. */
   const reply = (id: string, text: string | null, tools: string[] = []) => checkers.set(id, { state: "idle", reply: text, tools });
-  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, reply };
+  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, own, reply };
 }

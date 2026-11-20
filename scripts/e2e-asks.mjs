@@ -10,9 +10,9 @@
 // that its key is the first, and again when it finishes. Whoever uses this bb
 // has their page enrolled again, by first use, when they next open cow.
 //
-// While it runs it sets cow's checker model and provider to the fixture
-// model, so that a brief submitted by a fixture is checked on the cheap
-// model, and puts both settings back as they were afterwards.
+// While it runs it clears cow's checker model and provider settings, so that
+// a brief submitted by a fixture is checked on the fixture's own provider and
+// model (the cheap one), and puts both settings back as they were afterwards.
 //
 //   node scripts/copy-for-checks.mjs <empty folder> && bb plugin install <that folder> --yes
 //   npm run e2e:asks -- --project <bb project id> --environment <environment id>
@@ -24,8 +24,8 @@
 //                     scripts/copy-for-checks.mjs); its enrollment is reset
 //   --reset-the-installed-cow
 //                     needed, with --plugin cow, to run against the installed cow
-//   --model <id>      fixture and checker model (default claude-haiku-5-5)
-//   --provider <id>   fixture and checker provider (default claude-code)
+//   --model <id>      fixture model, which the checker inherits (default claude-haiku-5-5)
+//   --provider <id>   fixture provider, which the checker inherits (default claude-code)
 //   --keep            leave the fixtures unarchived
 
 import { execFile } from "node:child_process";
@@ -182,8 +182,9 @@ async function main() {
   if ((await signer.enrol()) !== "enrolled-first") throw new Error("the check's key was not enrolled by first use");
 
   try {
-    await config("set", "checkerModel", MODEL);
-    await config("set", "checkerProvider", PROVIDER);
+    // Unset, the checker runs on what the submitting thread ran on.
+    await config("unset", "checkerModel");
+    await config("unset", "checkerProvider");
 
     // ---- asks ---------------------------------------------------------
     ids.asker = await spawn(ASKER);
@@ -221,7 +222,11 @@ async function main() {
     const first = await waitFor("the fixture's brief", async () => (await rpc("brief_get", { threadId: ids.briefer })).result?.record ?? null);
     check("a fixture submitted a brief through the CLI", first.version === 1 && first.submittedBy === ids.briefer);
     check("the evidence file was copied into the brief", first.brief.claims[0].evidence[0].text.includes("request_timeout_seconds = 30"));
-    check("the check started by itself, on the fixture model", first.check?.runs.length === 1 && first.check.model === MODEL, JSON.stringify(first.check?.model));
+    check(
+      "the check started by itself, on the fixture's own provider and model, recorded as inherited",
+      first.check?.runs.length === 1 && first.check.provider === PROVIDER && first.check.model === MODEL && first.check.chosen?.provider === "inherited" && first.check.chosen?.model === "inherited",
+      JSON.stringify({ provider: first.check?.provider, model: first.check?.model, chosen: first.check?.chosen }),
+    );
     for (const entry of first.check?.runs ?? []) checkers.add(entry.threadId);
 
     // ---- reload, mid-way: an open ask, a stored brief, perhaps a running check
@@ -296,7 +301,25 @@ async function main() {
     for (const entry of broken.result?.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
     const failed = JSON.parse((await cow(null, "brief", "show", ids.briefer, "--wait", "--json")).stdout);
     check("a checker that cannot answer is a failed check, shown as one", failed.check.state === "failed" && failed.disputes.length === 0 && failed.claims.every((entry) => entry.verdict === null), JSON.stringify(failed.check));
-    check("a failed check is not a pass in `brief show`", /CHECK FAILED/.test((await cow(null, "brief", "show", ids.briefer)).stdout));
+    const failedText = (await cow(null, "brief", "show", ids.briefer)).stdout;
+    check("a failed check is not a pass in `brief show`", /CHECK FAILED/.test(failedText));
+    check(
+      "the failure says where the checker ran, what bb said, and how to run it elsewhere",
+      /failed on claude-code, model cow-test-no-such-model: .*bb said: ".+"/.test(failed.check.failures[0] ?? "") && failedText.includes(`To check it on another provider: bb cow brief check ${ids.briefer} --provider <provider> --model <model>`),
+      failed.check.failures[0],
+    );
+    console.log(`      | ${failed.check.failures[0]}`);
+
+    // A provider that does not exist: refused at the start, or a failed turn; either way said plainly, and not run elsewhere instead.
+    const nowhere = await cow(null, "brief", "check", ids.briefer, "--provider", "cow-test-no-such-provider", "--runs", "1", "--wait", "--json");
+    for (const entry of (await rpc("brief_get", { threadId: ids.briefer })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
+    const lost = nowhere.code === 0 ? JSON.parse(nowhere.stdout) : null;
+    check(
+      "a check on a provider that does not exist fails, naming the provider and the way out",
+      lost?.check.state === "failed" && lost.check.provider === "cow-test-no-such-provider" && /on cow-test-no-such-provider, its default model: .+To check it on another provider: bb cow brief check /.test(lost.check.failures[0] ?? ""),
+      `${lost?.check.failures[0] ?? nowhere.stderr.trim()}`,
+    );
+    console.log(`      | ${lost?.check.failures[0]}`);
 
     // ---- the answer, as the page makes it: a signed call ------------------
     const old = await rpc("ask_answer", { id: ask.id, option: 2, text: null });

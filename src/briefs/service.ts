@@ -7,6 +7,7 @@ import { storagePath } from "../asks/ask.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { BRIEF_LIMITS, BRIEF_SHAPE, type Brief, type Evidence, briefSchema, clip, validateBrief } from "./brief.ts";
 import { checkerPrompt, parseCheckerReply } from "./checker.ts";
+import { type CheckerFailure, chooseChecker, startFailedText, turnFailedText } from "./provider.ts";
 import { type BriefMark, type CheckRun, type Review, VERDICTS, disputeCount, markOf, review } from "./review.ts";
 
 const PREFIX = "brief:";
@@ -31,6 +32,10 @@ const checkSchema = z.object({
   model: z.string().nullable(),
   /** The provider the check ran on; null for bb's default. Checks recorded before this was kept have none. */
   provider: z.string().nullable().default(null),
+  /** Where the provider and the model came from: the command, cow's settings, the thread that submitted the brief, or bb's default. Absent on checks recorded before 0.2.12. */
+  chosen: z
+    .object({ provider: z.enum(["given", "setting", "inherited", "default"]), model: z.enum(["given", "setting", "inherited", "default"]) })
+    .optional(),
   startedAt: z.number(),
   runs: z.array(
     z.discriminatedUnion("status", [
@@ -68,7 +73,7 @@ export const briefRecordSchema = z.object({
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
 
 export interface CheckerSettings {
-  /** Null for bb's default model and provider. */
+  /** Null when not set: the submitting thread's provider and model are used, or failing those bb's default. */
   model: string | null;
   provider: string | null;
   runs: number;
@@ -83,6 +88,8 @@ export interface CheckerSight {
   reply: string | null;
   /** Every tool the checker used. It is told to use none. */
   tools: string[];
+  /** For state "error": what bb recorded about the failed turn. */
+  failure?: CheckerFailure | null;
 }
 
 export interface BriefDeps {
@@ -90,6 +97,8 @@ export interface BriefDeps {
   now(): number;
   newId(): string;
   thread(threadId: string): Promise<{ projectId: string; environmentId: string | null } | null>;
+  /** The provider a thread runs on and the model of its latest turn, each null when bb does not say. */
+  execution(threadId: string): Promise<{ provider: string | null; model: string | null }>;
   ancestors(threadId: string): Promise<readonly string[]>;
   storageRoot(threadId: string): Promise<string | null>;
   /** The text of a file in the thread's storage. Throws, saying why, when it cannot be read as text. */
@@ -160,7 +169,8 @@ export function createBriefs(deps: BriefDeps): Briefs {
   };
 
   /** Where one running run stands now: still running, or its final state. `unreadable`: it answered, and the answer could not be read. */
-  const judge = async (run: CheckRun, brief: Brief): Promise<CheckRun & { unreadable?: true }> => {
+  const judge = async (run: CheckRun, record: BriefRecord): Promise<CheckRun & { unreadable?: true }> => {
+    const { brief } = record;
     const now = deps.now();
     const attempt = run.attempt ?? 1;
     const base = { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now, attempt, answer: null };
@@ -169,7 +179,10 @@ export function createBriefs(deps: BriefDeps): Briefs {
       return now - run.startedAt > CHECK_TIMEOUT_MS ? { ...base, status: "failed", error: "the checker did not answer in time" } : run;
     }
     if (sight.state === "gone") return { ...base, status: "failed", error: "the checker's thread is gone" };
-    if (sight.state === "error") return { ...base, status: "failed", error: "the checker's turn failed" };
+    if (sight.state === "error") {
+      const error = turnFailedText({ provider: record.check?.provider ?? null, model: record.check?.model ?? null, failure: sight.failure ?? null, threadId: record.threadId });
+      return { ...base, status: "failed", error };
+    }
     if (sight.tools.length > 0) {
       // It was given everything in its prompt. A checker that went looking elsewhere is not independent of what it found.
       return { ...base, status: "failed", error: `the checker used a tool (${sight.tools.slice(0, 3).join(", ")}); its answer is discarded`, answer: sight.reply?.slice(0, MAX_KEPT_ANSWER) ?? null };
@@ -212,7 +225,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
           runs.push(run);
           continue;
         }
-        const { unreadable, ...judged } = await judge(run, record.brief);
+        const { unreadable, ...judged } = await judge(run, record);
         if (judged.status !== "running") over.push(run.threadId);
         runs.push(unreadable && judged.status === "failed" && (judged.attempt ?? 1) < 2 ? await again(record, judged) : judged);
       }
@@ -233,8 +246,9 @@ export function createBriefs(deps: BriefDeps): Briefs {
         throw new Refusal("check_running", `a check of ${threadId}'s brief v${record.version} is already running`, "Wait for it: `bb cow brief show` says when it is done.");
       }
       const settings = await deps.settings();
-      const model = overrides.model === undefined ? settings.model : overrides.model;
-      const provider = overrides.provider === undefined ? settings.provider : overrides.provider;
+      // The thread that submitted the brief ran on its provider, so that one works here; bb's default may not.
+      const own = await deps.execution(threadId).catch(() => ({ provider: null, model: null }));
+      const { provider, model, chosen } = chooseChecker(overrides, settings, own);
       const count = Math.min(MAX_RUNS, Math.max(1, Math.trunc(overrides.runs ?? settings.runs)));
       const thread = await deps.thread(threadId);
       const prompt = checkerPrompt(record.brief, deps.newId());
@@ -246,13 +260,13 @@ export function createBriefs(deps: BriefDeps): Briefs {
           await kv.set(`${RUN_PREFIX}${checker}`, { threadId, version: record.version });
           runs.push({ status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 1 });
         } catch (cause) {
-          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), attempt: 1, answer: null, error: `the checker could not be started: ${cause instanceof Error ? cause.message : String(cause)}` });
+          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), attempt: 1, answer: null, error: startFailedText({ provider, model, cause: cause instanceof Error ? cause.message : String(cause), threadId }) });
         }
       }
       // A new check may say something new, so the brief is the person's to read again.
       // What the check being replaced disputed, and the person has not read, is not lost with it.
       const earlierDisputes = record.readAt !== null ? 0 : Math.max(record.earlierDisputes, disputeCount(briefView(record).mark));
-      const next = { ...record, check: { model, provider, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null, earlierDisputes };
+      const next = { ...record, check: { model, provider, chosen, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null, earlierDisputes };
       await write(next);
       return next;
     });

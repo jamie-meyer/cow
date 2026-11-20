@@ -2,6 +2,7 @@
 // and the order a person should read things in. Pure, for the CLI and the page.
 
 import type { Brief, Claim, Label } from "./brief.ts";
+import { type ChosenBy, checkerOn } from "./provider.ts";
 
 /** The checker's verdict on one claim. Only this is ever shown as verification. */
 export const VERDICTS = ["supported", "not-supported", "cannot-tell"] as const;
@@ -36,6 +37,8 @@ export interface Check {
   model: string | null;
   /** The provider it ran on; null or absent for bb's default. */
   provider?: string | null;
+  /** Where the provider and the model came from; absent on checks recorded before 0.2.12. */
+  chosen?: { provider: ChosenBy; model: ChosenBy };
   startedAt: number;
   runs: CheckRun[];
 }
@@ -82,6 +85,9 @@ export type CheckState =
 export interface Review {
   state: CheckState;
   model: string | null;
+  provider: string | null;
+  /** The provider and model in words, saying when they are the submitting thread's. */
+  checker: string;
   runs: { done: number; failed: number; running: number };
   /** Why each failed run failed. */
   failures: string[];
@@ -93,6 +99,15 @@ export interface Review {
   /** The claims that are not disputed, in the brief's order. */
   claims: ReviewedClaim[];
   notDone: string[];
+}
+
+/** "claude-code, model claude-opus-5-5, the submitting thread's". */
+function checkerText(check: Check | null): string {
+  const on = checkerOn(check?.provider ?? null, check?.model ?? null);
+  const chosen = check?.chosen;
+  if (chosen?.provider === "inherited" && chosen.model !== "given" && chosen.model !== "setting") return `${on}, as the submitting thread ran`;
+  if (chosen?.provider === "inherited") return `${on}, on the submitting thread's provider`;
+  return on;
 }
 
 /** Read a brief against its check. */
@@ -122,6 +137,8 @@ export function review(brief: Brief, check: Check | null): Review {
   return {
     state,
     model: check?.model ?? null,
+    provider: check?.provider ?? null,
+    checker: checkerText(check),
     runs: { done: done.length, failed: failed.length, running },
     failures: failed.map((run) => run.error),
     failed: failed.map((run) => ({ error: run.error, answer: run.answer ?? null, retried: (run.attempt ?? 1) > 1 })),
@@ -222,7 +239,8 @@ const LABEL_TEXT: Record<Label, string> = { checked: "checked", inferred: "infer
 
 const cut = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
 
-export const SHOW_LIMITS = { disputes: 30, claims: 30, text: 300, answer: 4000 } as const;
+/** `error` is long enough for a failure's cause and the command that runs the check elsewhere. */
+export const SHOW_LIMITS = { disputes: 30, claims: 30, text: 300, error: 1200, answer: 4000 } as const;
 
 function claimLines(entry: ReviewedClaim): string[] {
   const { claim, verdict } = entry;
@@ -241,13 +259,13 @@ function claimLines(entry: ReviewedClaim): string[] {
  */
 export function reviewText(head: { threadId: string; version: number; summary: string; earlierDisputes?: number }, seen: Review): string {
   const out: string[] = [`Brief v${head.version} from ${head.threadId}`, `  ${cut(head.summary, 1200)}`, ""];
-  const checker = seen.model ?? "bb's default model";
+  const checker = seen.checker;
   if (seen.state === "unchecked") out.push("NOT CHECKED: no checker has audited this brief. Nothing below is verified.");
   else if (seen.state === "running") out.push(`Check running (${seen.runs.running} of ${seen.runs.running + seen.runs.done + seen.runs.failed} runs still going). Nothing below is verified yet.`);
   else if (seen.state === "failed") out.push("CHECK FAILED: no run of the checker gave a usable answer. Nothing below is verified.");
   else out.push(`Checked by ${checker}: ${seen.runs.done} ${seen.runs.done === 1 ? "run" : "runs"}${seen.runs.failed > 0 ? `, and ${seen.runs.failed} that failed` : ""}.`);
   for (const failure of seen.failed.slice(0, 5)) {
-    out.push(`  failed run${failure.retried ? " (the second try: the first answer could not be read either)" : ""}: ${cut(failure.error, SHOW_LIMITS.text)}`);
+    out.push(`  failed run${failure.retried ? " (the second try: the first answer could not be read either)" : ""}: ${cut(failure.error, SHOW_LIMITS.error)}`);
     if (failure.answer !== null) {
       out.push(`  what the checker answered (${failure.answer.length} characters${failure.answer.length > SHOW_LIMITS.answer ? `, the first ${SHOW_LIMITS.answer} shown` : ""}):`);
       out.push(...failure.answer.slice(0, SHOW_LIMITS.answer).split("\n").map((line) => `    | ${line}`));
