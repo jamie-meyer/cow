@@ -2,7 +2,8 @@
 // through cow, one row is written for it in cow's own storage, so it outlives
 // the thread: its model and effort, how long it took to its first report, how
 // many times it was steered before that report, how many turns it ran, and
-// the outcome someone judged it to have. It holds no title, no prompt, no
+// the outcome someone judged it to have, and the label its dispatcher gave
+// it: one short word for the kind of job. It holds no title, no prompt, no
 // message text and no reason. Pure: storage is in ledger-store.ts.
 
 import { z } from "zod";
@@ -34,6 +35,25 @@ export const judgementsSchema = z.array(judgementSchema);
 /** At most this many judgements per worker; after that a change is refused. */
 export const MAX_JUDGEMENTS = 50;
 
+/** A label: one short word-like value naming the kind of job, so the ledger still holds no free text. */
+export const LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,23}$/;
+export const LABEL_RULE = "a label is one short word: lower-case letters, digits and hyphens, starting with a letter or digit, at most 24 characters, such as lookup, draft or code-change";
+
+/** A label as given, lower-cased; or why it is no label. */
+export function labelOf(value: string): { ok: true; label: string } | { ok: false; why: string } {
+  const label = value.trim().toLowerCase();
+  return LABEL_PATTERN.test(label) ? { ok: true, label } : { ok: false, why: `"${value}" is not a label: ${LABEL_RULE}` };
+}
+
+/** A worker's label: what, by whom, when. One the person set is not overwritten by a thread. */
+export const labelNoteSchema = z.object({ label: z.string().regex(LABEL_PATTERN), by: z.string().min(1).max(200), at: z.number() });
+export type LabelNote = z.infer<typeof labelNoteSchema>;
+
+/** Why `by` may not set or clear a label now, or null when it may. */
+export function labelRefusal(current: LabelNote | null, by: string): string | null {
+  return by !== PERSON && current?.by === PERSON ? `the person labelled it “${current.label}”, and a thread cannot change what the person set` : null;
+}
+
 /** THE ROW. Its keys are exactly these; a test holds them to it. */
 export const ROW_KEYS = [
   "threadId",
@@ -53,6 +73,7 @@ export const ROW_KEYS = [
   "outcomeChanges",
   "archivedAt",
   "archivedBy",
+  "label",
 ] as const;
 
 export const rowSchema = z.strictObject({
@@ -79,6 +100,8 @@ export const rowSchema = z.strictObject({
   outcomeChanges: z.number().int().min(0),
   archivedAt: z.number(),
   archivedBy: z.string(),
+  /** The kind of job its dispatcher (or the person) named it; null when none. A row written before labels reads as none. */
+  label: z.string().regex(LABEL_PATTERN).nullable().default(null),
 });
 export type LedgerRow = z.infer<typeof rowSchema>;
 
@@ -158,6 +181,7 @@ export function buildRow(
   facts: TurnFacts,
   archived: { at: number; by: string },
   judgements: readonly Judgement[],
+  label: string | null = null,
 ): LedgerRow | null {
   if (facts.firstReportAt === null) return null;
   return {
@@ -175,6 +199,7 @@ export function buildRow(
     ...outcomeFields(judgements),
     archivedAt: archived.at,
     archivedBy: archived.by,
+    label,
   };
 }
 
@@ -200,7 +225,7 @@ export function judge(judgements: readonly Judgement[], outcome: Outcome, by: st
 export const SMALL_GROUP = 5;
 
 export interface GroupSummary {
-  /** The model, or the dispatching thread's id; "unknown" or "none" when there is none. */
+  /** The model, the dispatching thread's id, or the label; "unknown", "none" or "(no label)" when there is none. */
   key: string;
   workers: number;
   outcomes: Record<Outcome | "unsaid", number>;
@@ -215,12 +240,26 @@ export interface GroupSummary {
   shares: { outcomes: Record<Outcome | "unsaid", number>; judgedByPerson: number } | null;
 }
 
+/** A label's group, and within it the same by model: is this kind of job on the right model? */
+export interface LabelGroupSummary extends GroupSummary {
+  byModel: GroupSummary[];
+}
+
+/** The key of the rows with no label; no label can look like it. */
+export const NO_LABEL = "(no label)";
+
+/** How the summary is grouped; `bb cow ledger --by`, and b in the L sheet. */
+export const GROUPINGS = ["model", "dispatcher", "label"] as const;
+export type Grouping = (typeof GROUPINGS)[number];
+export const GROUPING_TEXT: Record<Grouping, string> = { model: "By model", dispatcher: "By dispatching thread", label: "By label, then by model" };
+
 export interface LedgerSummary {
   days: number;
   since: number;
   rows: number;
   byModel: GroupSummary[];
   byDispatcher: GroupSummary[];
+  byLabel: LabelGroupSummary[];
 }
 
 export function median(values: readonly number[]): number | null {
@@ -259,6 +298,13 @@ function groups(rows: readonly LedgerRow[], keyOf: (row: LedgerRow) => string): 
   return [...by.entries()].map(([key, members]) => group(key, members)).sort((a, b) => b.workers - a.workers || a.key.localeCompare(b.key));
 }
 
+const modelOf = (row: LedgerRow) => row.model ?? "unknown";
+
+function byLabel(rows: readonly LedgerRow[]): LabelGroupSummary[] {
+  const of = (row: LedgerRow) => row.label ?? NO_LABEL;
+  return groups(rows, of).map((summary) => ({ ...summary, byModel: groups(rows.filter((row) => of(row) === summary.key), modelOf) }));
+}
+
 /** The rows archived in the last `days` days, newest first. */
 export function inWindow(rows: readonly LedgerRow[], now: number, days: number): LedgerRow[] {
   const since = now - days * 86_400_000;
@@ -271,8 +317,9 @@ export function summarize(rows: readonly LedgerRow[], now: number, days: number)
     days,
     since: now - days * 86_400_000,
     rows: within.length,
-    byModel: groups(within, (row) => row.model ?? "unknown"),
+    byModel: groups(within, modelOf),
     byDispatcher: groups(within, (row) => row.dispatchedBy ?? "none"),
+    byLabel: byLabel(within),
   };
 }
 
@@ -309,21 +356,28 @@ export const whoText = (by: string | null): string => (by === null ? "–" : by 
 export function rowText(row: LedgerRow): string {
   const outcome = row.outcome === null ? "unsaid" : `${row.outcome} (judged by ${whoText(row.judgedBy)}${row.outcomeChanges > 0 ? `, changed ${row.outcomeChanges}×` : ""})`;
   const model = `${row.model ?? "model unknown"}${row.effort ? ` · ${row.effort}` : ""}`;
-  return `${row.threadId} · ${model} · first report after ${durationText(row.toFirstReportMs)} · steered ${row.steersByPerson} by the person, ${row.steersByThreads} by threads · ${row.turns} ${row.turns === 1 ? "turn" : "turns"} · ${outcome} · dispatched by ${row.dispatchedBy ?? "none"} · archived by ${whoText(row.archivedBy)}`;
+  return `${row.threadId}${row.label ? ` · ${row.label}` : ""} · ${model} · first report after ${durationText(row.toFirstReportMs)} · steered ${row.steersByPerson} by the person, ${row.steersByThreads} by threads · ${row.turns} ${row.turns === 1 ? "turn" : "turns"} · ${outcome} · dispatched by ${row.dispatchedBy ?? "none"} · archived by ${whoText(row.archivedBy)}`;
 }
 
 export const LEDGER_ROWS_SHOWN = 30;
 
-export function ledgerText(summary: LedgerSummary, rows: readonly LedgerRow[]): string {
+export function ledgerText(summary: LedgerSummary, rows: readonly LedgerRow[], by: readonly Grouping[] = GROUPINGS): string {
   const out = [`The ledger: ${summary.rows} ${summary.rows === 1 ? "worker" : "workers"} archived through cow in the last ${summary.days} ${summary.days === 1 ? "day" : "days"}. It holds no titles, prompts or message text.`];
   if (summary.rows === 0) {
     out.push("", "Nothing yet: a row is written when a worker that finished a turn is archived through cow (e on the page, or bb cow archive).");
     return out.join("\n");
   }
-  out.push("", "By model");
-  for (const g of summary.byModel) out.push(`  ${groupText(g)}`);
-  out.push("", "By dispatching thread");
-  for (const g of summary.byDispatcher) out.push(`  ${groupText(g)}`);
+  for (const grouping of by) {
+    out.push("", GROUPING_TEXT[grouping]);
+    if (grouping === "model") for (const g of summary.byModel) out.push(`  ${groupText(g)}`);
+    if (grouping === "dispatcher") for (const g of summary.byDispatcher) out.push(`  ${groupText(g)}`);
+    if (grouping === "label") {
+      for (const g of summary.byLabel) {
+        out.push(`  ${groupText(g)}`);
+        for (const m of g.byModel) out.push(`    ${groupText(m)}`);
+      }
+    }
+  }
   out.push("", `Rows, newest first${rows.length > LEDGER_ROWS_SHOWN ? ` (the latest ${LEDGER_ROWS_SHOWN} of ${rows.length}; --json gives them all)` : ""}`);
   for (const row of rows.slice(0, LEDGER_ROWS_SHOWN)) out.push(`  ${rowText(row)}`);
   return out.join("\n");

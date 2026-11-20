@@ -4,6 +4,24 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.17
+
+- **Ledger labels: is each kind of job on the right model?** A dispatching
+  thread can give a worker a label of its own choosing, one short word for
+  the kind of job (`lookup`, `draft`, `code-change`): `bb cow label <thread>
+  <label>`, or `--label` on `bb cow archive` and `bb cow outcome`. Who may
+  set one is who may set an outcome, and a thread never overwrites yours.
+  The ledger's row has one more key, `label`; older rows read as none. `L`
+  and `bb cow ledger` group by label too, with "(no label)" for the rest and
+  each label's workers by model beneath it; `b` in the sheet, and
+  `--by model|dispatcher|label` on the command, show one grouping.
+- **The capabilities sheet keeps its place.** Acknowledging, deleting,
+  approving or refusing the line under the cursor, or a change from
+  elsewhere while the sheet is open, leaves the cursor on the line that
+  slides into its place (or the last one), not back at the top.
+- **The filter's Enter unfolds the line it keeps.** `/name`, Enter, then `j`
+  reaches that line's first subthread even when it was folded.
+
 ## 0.2.16
 
 - **Open cow from anywhere.** Ctrl+Option+C (Ctrl+Alt+C off macOS) opens

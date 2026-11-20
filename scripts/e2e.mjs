@@ -1787,7 +1787,7 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   const ledger = async () => rpc("ledger_read", { days: 14 });
   const rowOf = async (id) => (await ledger()).rows.find((row) => row.threadId === id) ?? null;
   const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
-  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy"].sort();
+  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy", "label"].sort();
 
   // -- a project is not asked --
   await page.waitFor(`!!${lineEl(lproj)} && !!${lineEl(lone)} && !!${lineEl(ltwo)}`, { label: "the three lines" });
@@ -1825,10 +1825,21 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   check("the page's outcome is in cow's log, under the key that signed it", logged.includes("outcome-set") && logged.includes(lone));
 
   // -- archived by its dispatcher, with an outcome --
-  const byCli = await cowAs(lmain, "archive", ltwo, "--reason", "merged", "--outcome", "done");
+  const badLabel = await cowAs(lmain, "label", ltwo, "two words");
+  check("bb cow label refuses anything but one short word, with the rule", badLabel.code !== 0 && /lower-case letters, digits and hyphens/.test(badLabel.stdout + badLabel.stderr), (badLabel.stdout + badLabel.stderr).trim());
+  const early = await cowAs(lmain, "label", ltwo, "Draft");
+  check("its dispatcher labels a worker before it is archived, lower-cased", early.code === 0 && early.stdout.includes(": draft") && JSON.parse((await cowAs(lmain, "label", ltwo, "--json")).stdout).label === "draft", (early.stdout + early.stderr).trim());
+  const byCli = await cowAs(lmain, "archive", ltwo, "--reason", "merged", "--outcome", "done", "--label", "code-change");
   check("bb cow archive --outcome, run by the thread that dispatched it", byCli.code === 0 && byCli.stdout.includes("came to: done"), (byCli.stdout + byCli.stderr).trim());
   const two = await rowOf(ltwo);
   check("its row says the dispatcher judged and archived it", two?.outcome === "done" && two?.judgedBy === lmain && two?.archivedBy === lmain && two?.outcomeChanges === 0, JSON.stringify(two));
+  check("archive --label is in the row", two?.label === "code-change", JSON.stringify(two?.label));
+  check("the row archived from the page before it had a label says none", (await rowOf(lone))?.label === null, JSON.stringify((await rowOf(lone))?.label));
+  const personLabel = await cow("label", lone, "lookup");
+  check("a label set after archiving updates the row; outside any thread it is the person's", personLabel.code === 0 && (await rowOf(lone))?.label === "lookup", (personLabel.stdout + personLabel.stderr).trim());
+  const labelOverwrite = await cowAs(lmain, "label", lone, "draft");
+  const labelClear = await cowAs(lmain, "label", lone, "--clear");
+  check("a thread cannot overwrite or clear the person's label, and is told so", labelOverwrite.code !== 0 && labelClear.code !== 0 && /the person labelled it “lookup”/.test(labelOverwrite.stdout + labelOverwrite.stderr) && (await rowOf(lone))?.label === "lookup", (labelOverwrite.stdout + labelOverwrite.stderr).trim());
 
   // -- changed later, from each side --
   const threadChange = await cowAs(lmain, "outcome", ltwo, "redone");
@@ -1857,7 +1868,15 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   check("bb cow status shows the outcome beside an archived line", status.includes(`(${ltwo})`) && status.includes("[outcome: dropped, judged by the person]"), status.split("\n").filter((l) => l.includes(ltwo)).join(" / "));
   const text = (await cow("ledger")).stdout;
   check("bb cow ledger summarises by model and by dispatcher, and calls a group of two too small to compare", text.includes("By model") && text.includes("By dispatching thread") && text.includes(`${lmain}:`) && /too small to compare/.test(text) && text.includes(lone) && text.includes(ltwo) && !text.includes(TITLE), text.split("\n").slice(0, 8).join(" / "));
+  const byLabelText = (await cow("ledger", "--by", "label")).stdout;
+  console.log(`note: bb ${PLUGIN} ledger --by label:\n${byLabelText}`);
+  check(
+    "bb cow ledger --by label groups by label, then by model within it, and shows no other grouping",
+    byLabelText.includes("By label, then by model") && !byLabelText.includes("By model\n") && /\n  code-change: 1 worker[^\n]*\n    [^\n]+: 1 worker/.test(byLabelText) && /\n  lookup: 1 worker/.test(byLabelText),
+    byLabelText.split("\n").slice(0, 8).join(" / "),
+  );
   const json = JSON.parse((await cow("ledger", "--days", "1", "--json")).stdout);
+  check("--json has the summary by label, each with its models", json.summary.byLabel?.some((group) => group.key === "code-change" && group.outcomes.dropped === 1 && group.byModel.length === 1) && json.summary.byLabel.some((group) => group.key === "lookup"), JSON.stringify(json.summary.byLabel?.map((group) => [group.key, group.workers])));
   const dispatcher = json.summary.byDispatcher.find((group) => group.key === lmain);
   check("--json gives the rows and the summary; the small group has counts and no percentages", json.ok === true && json.rows.some((row) => row.threadId === lone) && dispatcher?.workers === 2 && dispatcher?.small === true && dispatcher?.shares === null && dispatcher?.outcomes.redone === 1 && dispatcher?.outcomes.dropped === 1, JSON.stringify(dispatcher));
   await page.key("L");
@@ -1865,6 +1884,15 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   check("L opens the ledger sheet with the latest rows and their outcomes", (await page.eval(`document.querySelector('[data-cow-ledger-row="${ltwo}"]')?.dataset.cowLedgerOutcome`)) === "dropped" && (await page.eval(`document.querySelector('[data-cow-ledger-row="${lone}"]')?.dataset.cowLedgerOutcome`)) === "redone");
   check("the sheet's groups say a small one is too small to compare", await page.eval(`!!document.querySelector('[data-cow-ledger-group="${lmain}"][data-cow-ledger-small]')`));
   await shot("ledger-sheet");
+  for (const key of ["b", "b", "b"]) await page.key(key);
+  await page.waitFor(`document.querySelector("[data-cow-ledger]")?.dataset.cowLedgerBy === "label"`, { label: "the sheet by label" });
+  check(
+    "b steps the sheet to its grouping by label, with each label's models under it, and no other grouping",
+    (await page.eval(`!!document.querySelector('[data-cow-ledger-label="code-change"] [data-cow-ledger-model-in="code-change"]')`)) && (await page.eval(`!!document.querySelector('[data-cow-ledger-label="lookup"]')`)) && !(await page.eval(`!!document.querySelector('[data-cow-ledger-group="${lmain}"]')`)),
+  );
+  await shot("ledger-sheet-by-label");
+  await page.key("b");
+  await page.waitFor(`document.querySelector("[data-cow-ledger]")?.dataset.cowLedgerBy === "all"`, { label: "every grouping again" });
   await page.key("q");
   await page.waitFor(`${mode} === "normal" && !document.querySelector("[data-cow-ledger]")`, { label: "closed with q" });
   await page.key("L");
@@ -4496,6 +4524,30 @@ async function capsChecks(page, ids, shot, chooseMain) {
   await sleep(1500);
   await page.waitFor(`${screen} === "overview" && !!${lineEl(chead)}`, { label: "the page back at full width" });
 
+  // -- the cursor keeps its place when its line leaves -------------------------------
+  const placed = [];
+  for (const letter of ["a", "b", "c", "d"]) {
+    placed.push(await signer.must("cap_create", { name: `cow test place ${letter}`, note: null, rule: { kind: "command", mode: "exact", text: `echo cow place ${letter}` }, scope: { kind: "thread", threadId: ckid }, via: "sheet", sourceThreadId: null, askId: null }));
+  }
+  for (const notice of (await capState()).notices) if (placed.some((capability) => capability.id === notice.capabilityId)) await signer.must("cap_ack", { noticeId: notice.id });
+  await page.key("C");
+  await page.waitFor(`!!${sheet}`, { label: "the sheet, for its cursor" });
+  await sheetRow(page, `[data-cow-cap="${placed[1].id}"]`);
+  await page.key("x");
+  await page.waitFor(`!!${sheet}.querySelector('[data-cow-sheet-confirm="delete"]')`, { label: "the middle one's deletion, to confirm" });
+  await page.key("y");
+  await page.waitFor(`!${sheet}.querySelector('[data-cow-cap="${placed[1].id}"]')`, { label: "the middle one gone", timeout: 20_000 });
+  await sleep(300);
+  const afterSheet = await page.eval(sheetCursor);
+  check("with the cursor on a middle line, deleting it leaves the cursor on the line that followed", afterSheet === placed[2].id, String(afterSheet));
+  await signer.must("cap_delete", { id: placed[2].id });
+  await page.waitFor(`!${sheet}.querySelector('[data-cow-cap="${placed[2].id}"]')`, { label: "deleted from elsewhere", timeout: 20_000 });
+  await sleep(300);
+  const afterElsewhere = await page.eval(sheetCursor);
+  check("and when its line is removed from elsewhere while the sheet is open, the same", afterElsewhere === placed[3].id, String(afterElsewhere));
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the sheet closed" });
+
   // -- put away ---------------------------------------------------------------------
   await restoreCaps();
   await page.waitFor(`!document.querySelector("[data-cow-notice]") && !${lineEl(chead)}?.dataset.cowCaps`, { label: "the capabilities gone from the page", timeout: 20_000 });
@@ -5091,6 +5143,18 @@ async function main() {
     "keeping a match inside a folded group unfolds what hides it",
     (await page.eval(isCursor(ids.fails))) && (await page.eval(lineData(ids.quiet, "cowFold"))) === "open",
   );
+  // A folded head kept with Enter is unfolded too, so j goes on to its first subthread.
+  await goTo(ids.quiet);
+  await page.key("h");
+  await page.waitFor(`${lineData(ids.quiet, "cowFold")} === "folded"`, { label: "the head folded" });
+  await page.key("/");
+  await page.type(TITLE);
+  await page.waitFor(`${matchCount} === ${allLines.length}`, { label: "its name matching" });
+  await page.key("Enter");
+  await page.waitFor(`${mode} === "normal"`, { label: "the filter closed" });
+  const keptOpen = await page.eval(lineData(ids.quiet, "cowFold"));
+  await page.key("j");
+  check("Enter unfolds the folded line it keeps: j then goes to its first subthread", keptOpen === "open" && (await page.eval(isCursor(ids.fails))), String(keptOpen));
   await page.key("/");
   await page.type("zzzz");
   await page.waitFor(`${matchCount} === 0`, { label: "no match" });

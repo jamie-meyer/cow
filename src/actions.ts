@@ -41,7 +41,7 @@ import {
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { AUTOMATIONS_PLUGIN, type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
 import { Refusal } from "./kv.ts";
-import { type Judgement, type LedgerRow, type LedgerSummary, type Outcome, PERSON, inWindow, summarize } from "./ledger.ts";
+import { type Judgement, type LabelNote, type LedgerRow, type LedgerSummary, type Outcome, PERSON, inWindow, labelOf, summarize } from "./ledger.ts";
 import type { LedgerStore } from "./ledger-store.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
@@ -130,9 +130,16 @@ export interface Actions {
   /** The verbs as the CLI runs them: the page's rules first, then the same action. */
   /** `callerId`: the thread that ran the command, or null for the person. Outside Main, only Main, the person, or the thread itself archives. */
   /** `outcome`: what the worker came to, judged by the caller; refused before anything is archived when it cannot be given. */
-  archiveChecked(args: { callerId: string | null; threadId: string; reason: string | null; outcome?: Outcome | null }): Promise<{ title: string; under: number; outside: boolean }>;
-  /** Judge what a worker came to, open or archived, under archive's rule of who may. `callerId` null: the person. */
-  outcomeChecked(args: { callerId: string | null; threadId: string; outcome: Outcome }): Promise<{ title: string; archived: boolean; judgement: Judgement; changes: number; row: boolean }>;
+  /** `label`: the kind of job, set under `labelChecked`'s rule; refused before anything is archived when it cannot be set. */
+  archiveChecked(args: { callerId: string | null; threadId: string; reason: string | null; outcome?: Outcome | null; label?: string | null }): Promise<{ title: string; under: number; outside: boolean }>;
+  /** Judge what a worker came to, open or archived, under archive's rule of who may. `callerId` null: the person. `label` as on archive. */
+  outcomeChecked(args: { callerId: string | null; threadId: string; outcome: Outcome; label?: string | null }): Promise<{ title: string; archived: boolean; judgement: Judgement; changes: number; row: boolean }>;
+  /**
+   * A worker's label, the kind of job: shown (`label` undefined), set, or cleared (null). Who may set it is who may
+   * set its outcome: archive's rule of where it stands, and a thread never overwrites or clears the person's.
+   * It can be set before the worker finished a turn, and after it is archived; its row follows.
+   */
+  labelChecked(args: { callerId: string | null; threadId: string; label?: string | null }): Promise<{ title: string; archived: boolean; label: LabelNote | null; row: boolean }>;
   /** The ledger's rows archived in the last `days` days, newest first, their summary, and the latest outcome of every worker that has one. */
   ledger(days: number): Promise<{ rows: LedgerRow[]; summary: LedgerSummary; outcomes: Record<string, Judgement> }>;
   /** `callerId`: the thread that ran the command, or null for one run outside any thread (the person). An agent that parks what waited on the person leaves a trace. */
@@ -428,6 +435,33 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     if (refused !== null) throw new CowError(refused.code, `${lead}: ${refused.message}`, verb === "archive" ? hint : refused.hint);
   };
 
+  /** The label as given, checked; refused when `by` may not set it now. Null: clear it. */
+  const labelable = async (target: ThreadFacts, label: string | null, by: string): Promise<string | null> => {
+    if (!ledger) throw new CowError("no_ledger", "cow keeps no ledger here");
+    let checked: string | null = null;
+    if (label !== null) {
+      const parsed = labelOf(label);
+      if (!parsed.ok) throw new CowError("bad_label", parsed.why);
+      checked = parsed.label;
+    }
+    const refused = await ledger.labelRefusal(target.id, by);
+    if (refused !== null) throw new CowError(refused.code, `cannot label “${target.title}” (${target.id}): ${refused.message}`, refused.hint);
+    return checked;
+  };
+
+  /** Where a thread stands for an outcome or a label: archive's rule. Returns the threads and the target. */
+  const judgePlace = async (callerId: string | null, threadId: string, lead: (title: string) => string, check = true) => {
+    const { threads } = await listThreads(reader);
+    const target = threads.find((thread) => thread.id === threadId);
+    if (!target) throw new CowError("thread_not_found", `there is no thread ${threadId}`, "Run `bb thread list` to see thread ids.");
+    const mains = await readMains();
+    const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
+    const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
+    const place = archivePlace(threads, mains.mains, callerId, ownProject, threadId);
+    if (check && place.why !== null) throw new CowError("cannot_judge", `${lead(target.title)}: ${place.why}`, insteadFromCli(place.why) || undefined);
+    return { threads, target };
+  };
+
   const refuse = (verb: string, line: Line, why: string): never => {
     throw new CowError(`cannot_${verb}`, `cannot ${verb} “${line.thread.title}” (${line.thread.id}): ${why}`, insteadFromCli(why) || undefined);
   };
@@ -492,7 +526,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       return { title: target.title, ...(await todo(threadId, checked)) };
     },
 
-    async archiveChecked({ callerId, threadId, reason, outcome = null }) {
+    async archiveChecked({ callerId, threadId, reason, outcome = null, label }) {
       const { line, isMain, threads, now, mains } = await lineFor(threadId);
       const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
       const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
@@ -503,27 +537,41 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
       const by = callerId ?? PERSON;
       // An outcome that cannot be given refuses the whole archive, before anything is done.
       if (outcome !== null) await judgeable(threads, line.thread, by, "archive");
+      const labelled = label === undefined ? undefined : await labelable(line.thread, label, by);
       const under = descendantIds(threads, threadId).length;
+      // The label first, so the row is written with it.
+      if (labelled !== undefined && ledger) await asCow(() => ledger.setLabel(threadId, labelled, by, now));
       await archive({ threadId, reason, dropped: false, at: now, by });
       if (outcome !== null && ledger) await asCow(() => ledger.judge(threadId, outcome, by, Date.now()));
       return { title: line.thread.title, under, outside: place.outside };
     },
 
-    async outcomeChecked({ callerId, threadId, outcome }) {
+    async outcomeChecked({ callerId, threadId, outcome, label }) {
       if (!ledger) throw new CowError("no_ledger", "cow keeps no ledger here");
-      const { threads } = await listThreads(reader);
-      const target = threads.find((thread) => thread.id === threadId);
-      if (!target) throw new CowError("thread_not_found", `there is no thread ${threadId}`, "Run `bb thread list` to see thread ids.");
-      const mains = await readMains();
-      const caller = callerId === null ? undefined : threads.find((thread) => thread.id === callerId);
-      const ownProject = callerId === null ? mains.currentProjectId : (caller?.projectId ?? null);
-      const place = archivePlace(threads, mains.mains, callerId, ownProject, threadId);
-      if (place.why !== null) throw new CowError("cannot_judge", `cannot set what “${target.title}” (${threadId}) came to: ${place.why}`, insteadFromCli(place.why) || undefined);
+      const { threads, target } = await judgePlace(callerId, threadId, (title) => `cannot set what “${title}” (${threadId}) came to`);
       const by = callerId ?? PERSON;
       await judgeable(threads, target, by, "outcome");
+      const labelled = label === undefined ? undefined : await labelable(target, label, by);
       const judged = await asCow(() => ledger.judge(threadId, outcome, by, Date.now()));
+      if (labelled !== undefined) await asCow(() => ledger.setLabel(threadId, labelled, by, Date.now()));
       const judgement = judged.judgements[judged.judgements.length - 1] as Judgement;
       return { title: target.title, archived: target.archivedAt !== null, judgement, changes: judged.judgements.length - 1, row: judged.row !== null };
+    },
+
+    async labelChecked({ callerId, threadId, label }) {
+      if (!ledger) throw new CowError("no_ledger", "cow keeps no ledger here");
+      // Anyone may read a label; setting one is under archive's rule.
+      const { target } = await judgePlace(callerId, threadId, (title) => `cannot label “${title}” (${threadId})`, label !== undefined);
+      const archived = target.archivedAt !== null;
+      if (label === undefined) {
+        const note = await ledger.label(threadId);
+        const row = (await ledger.rows()).some((r) => r.threadId === threadId);
+        return { title: target.title, archived, label: note, row };
+      }
+      const by = callerId ?? PERSON;
+      const checked = await labelable(target, label, by);
+      const set = await asCow(() => ledger.setLabel(threadId, checked, by, Date.now()));
+      return { title: target.title, archived, label: set.label, row: set.row !== null };
     },
 
     async ledger(days) {

@@ -66,7 +66,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
       { keys: "h l", does: "fold, unfold a group, or the To settle, Kept, Automations and Outside Main sections on their headings, or an automation's runs on its row; on a member, h goes to its group's head or its section's heading, and on a run to its automation (left, right arrows too)" },
       { keys: "Tab", does: "next entry in the queue of what waits on you (Shift+Tab previous)" },
       { keys: "1 to 9", does: "jump to that entry in the queue" },
-      { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels" },
+      { keys: "/", does: "filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, shown and unfolded so j reaches what is under it, Esc cancels" },
       { keys: "f", does: "letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader, and one on a link to a thread opens that thread in the pane" },
     ],
   },
@@ -109,7 +109,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     title: "What finished work came to",
     keys: [
       { keys: "o", does: "on a line under Archived or To settle, say what the worker came to, or change it: 1 done (the work was used as it came back), 2 partial (some of it was used, or it needed a second worker), 3 redone (it was wrong, and you or another thread redid it), 4 dropped (it was not used); any other key cancels. Signed as yours: no thread can overwrite it" },
-      { keys: "L", does: "the ledger over the page: for the last 14 days, by model and by dispatching thread, how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. j k scroll, q or Esc closes" },
+      { keys: "L", does: "the ledger over the page: for the last 14 days, by model, by dispatching thread and by label (the kind of job, then by model within it), how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. b shows one grouping at a time, j k scroll, q or Esc closes" },
     ],
   },
   {

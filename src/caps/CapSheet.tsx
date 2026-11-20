@@ -98,8 +98,17 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
     for (const key of signer.keys?.keys ?? []) found.push({ kind: "key", id: `key:${key.fingerprint}`, key });
     return found;
   }, [caps.capabilities, caps.notices, signer.keys]);
-  const at = Math.max(0, rows.findIndex((row) => row.id === cursor));
+  // The cursor holds a row by its id, and keeps its place in the list: when that row leaves (acknowledged,
+  // deleted, approved, refused, or changed from elsewhere), the row that slides into its place is the
+  // current one, or the last row when it was last.
+  const lastAt = useRef(0);
+  const found = rows.findIndex((row) => row.id === cursor);
+  const at = found >= 0 ? found : Math.max(0, Math.min(lastAt.current, rows.length - 1));
+  lastAt.current = at;
   const current = rows[at] ?? null;
+  useEffect(() => {
+    if (cursor !== null && found < 0 && current !== null) setCursor(current.id);
+  }, [cursor, found, current]);
 
   // The log is read when it is shown, and again whenever anything changes.
   useEffect(() => {
@@ -482,7 +491,7 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
               : `Showing ${shownEntries.length}: the entries of this Main's threads, and those about no thread${log.entries.length > shownEntries.length ? `; ${log.entries.length - shownEntries.length} about other threads are left out` : ""}.`}
           </span>
         </p>
-        {shownEntries.length === 0 ? <p className="cow-bf-none">Nothing has happened here yet. Each capability made or deleted, each request one allowed, each decision and message made on this page, and each key enrolled is written here.</p> : shownEntries.map((entry, index) => logLine(entry, index === logCursor))}
+        {shownEntries.length === 0 ? <p className="cow-bf-none">Nothing has happened here yet. Each capability made or deleted, each request one allowed, each decision and message made on this page, and each key enrolled is written here.</p> : shownEntries.map((entry, index) => logLine(entry, index === Math.min(logCursor, shownEntries.length - 1)))}
       </>
     );
 

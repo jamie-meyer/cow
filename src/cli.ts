@@ -9,12 +9,12 @@ import { pickUpText } from "./park.ts";
 import { formatDay } from "./pickup.ts";
 import { MAX_NEXT, MAX_TODOS, MAX_WAIT_FOR, MAX_WAIT_ON, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
-import { OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, ledgerText, whoText } from "./ledger.ts";
+import { GROUPINGS, type Grouping, LABEL_RULE, OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, labelOf, ledgerText, whoText } from "./ledger.ts";
 import { statusText, withCapabilities } from "./status.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
-  Partial<Pick<Actions, "outcomeChecked" | "ledger">>;
+  Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">>;
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -52,11 +52,61 @@ function outcomeOf(value: string): Outcome {
   return outcome;
 }
 
+function labelText(value: string): string {
+  const parsed = labelOf(value);
+  if (!parsed.ok) throw new PluginCliError(parsed.why, { code: "bad_label", hint: `The rule: ${LABEL_RULE}.` });
+  return parsed.label;
+}
+
+const labelOption = {
+  type: "string",
+  description: "The kind of job, one short word such as lookup, draft or code-change, for grouping the ledger. Optional",
+} as const;
+
+function groupingsOf(value: string | undefined): readonly Grouping[] {
+  if (value === undefined) return GROUPINGS;
+  const by = value.trim().toLowerCase();
+  if (!(GROUPINGS as readonly string[]).includes(by)) {
+    throw new PluginCliError(`"${value}" is not a grouping`, { code: "bad_grouping", hint: `--by ${GROUPINGS.join(", --by ")}; without it, all three.` });
+  }
+  return [by as Grouping];
+}
+
 /** The ledger commands: what a finished worker came to, and the rows and summary. */
 function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof cliCommand>> {
-  const { outcomeChecked, ledger } = actions;
+  const { outcomeChecked, ledger, labelChecked } = actions;
   if (!outcomeChecked || !ledger) return {};
   return {
+    ...(labelChecked
+      ? {
+          label: cliCommand({
+            summary: "Show, set or clear a worker's label: the kind of job, such as lookup, draft or code-change",
+            description:
+              `The ledger (\`bb cow ledger --by label\`) groups by it, and by model within it, so you can see whether each kind of job is on the right model. ${LABEL_RULE}. ` +
+              "Set it when you dispatch a worker; it can be set before or after the worker is archived. Who may set it is who may set its outcome: " +
+              "a thread may for a thread under a parent, and outside Main only Main or the thread itself. A label the person set is never overwritten by a thread.",
+            positionals: [thread, { name: "label", description: "The label; without it, the label is shown" }],
+            options: { clear: { type: "boolean", description: "Remove the label" }, json },
+            async run(input, ctx) {
+              const id = threadId(input.positionals.thread);
+              const given = input.positionals.label;
+              if (input.options.clear && given !== undefined) throw new PluginCliError("give the label, or --clear, not both", { code: "bad_label" });
+              const label = input.options.clear ? null : given === undefined ? undefined : labelText(given);
+              const done = await acting(() => labelChecked({ callerId: ctx.threadId ?? null, threadId: id, ...(label === undefined ? {} : { label }) }));
+              const note = done.label;
+              const text =
+                label === undefined
+                  ? note
+                    ? `“${done.title}” (${id}) is labelled ${note.label} · set by ${whoText(note.by)}`
+                    : `“${done.title}” (${id}) has no label`
+                  : note
+                    ? `labelled “${done.title}” (${id}): ${note.label}${done.row ? " · its ledger row says so too" : ""}`
+                    : `cleared the label of “${done.title}” (${id})`;
+              return print(input.options.json, { threadId: id, title: done.title, label: note?.label ?? null, labelledBy: note?.by ?? null, labelledAt: note?.at ?? null, archived: done.archived, row: done.row }, text);
+            },
+          }),
+        }
+      : {}),
     outcome: cliCommand({
       summary: "Say what a finished worker came to: done, partial, redone or dropped",
       description:
@@ -64,32 +114,39 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
         "Works on an open thread and on an archived one, under the same rule as archive; it can be changed later, and each change " +
         "keeps who made it and when. An outcome the person set is never overwritten by a thread. It goes in cow's ledger (`bb cow ledger`).",
       positionals: [thread, { name: "outcome", description: "done, partial, redone or dropped", required: true }],
-      options: { json },
+      options: { ...(labelChecked ? { label: labelOption } : {}), json },
       async run(input, ctx) {
         const id = threadId(input.positionals.thread);
         const outcome = outcomeOf(input.positionals.outcome);
-        const done = await acting(() => outcomeChecked({ callerId: ctx.threadId ?? null, threadId: id, outcome }));
+        const given = (input.options as { label?: string }).label;
+        const label = given === undefined ? undefined : labelText(given);
+        const done = await acting(() => outcomeChecked({ callerId: ctx.threadId ?? null, threadId: id, outcome, ...(label === undefined ? {} : { label }) }));
         return print(
           input.options.json,
-          { threadId: id, title: done.title, outcome: done.judgement.outcome, judgedBy: done.judgement.by, judgedAt: done.judgement.at, changes: done.changes, archived: done.archived },
-          `“${done.title}” (${id}) came to: ${outcome} (${OUTCOME_TEXT[outcome]}) · judged by ${whoText(done.judgement.by)}${done.changes > 0 ? ` · changed ${done.changes}×` : ""}${done.archived ? "" : " · it is kept for its ledger row, written when it is archived"}`,
+          { threadId: id, title: done.title, outcome: done.judgement.outcome, judgedBy: done.judgement.by, judgedAt: done.judgement.at, changes: done.changes, archived: done.archived, ...(label === undefined ? {} : { label }) },
+          `“${done.title}” (${id}) came to: ${outcome} (${OUTCOME_TEXT[outcome]}) · judged by ${whoText(done.judgement.by)}${done.changes > 0 ? ` · changed ${done.changes}×` : ""}${label === undefined ? "" : ` · labelled ${label}`}${done.archived ? "" : " · it is kept for its ledger row, written when it is archived"}`,
         );
       },
     }),
     ledger: cliCommand({
-      summary: "What finished workers came to: rows, and a summary by model and by dispatching thread",
+      summary: "What finished workers came to: rows, and a summary by model, by dispatching thread and by label",
       description:
         "One row per worker archived through cow: its model and effort, time to its first report, how many times the person and other threads " +
         "steered it before that report, how many turns it ran, its outcome and who judged it. No titles, prompts or message text. " +
-        "Groups of fewer than 5 workers are counted, not compared.",
-      options: { days: { type: "string", description: "How many days back to read. Default: 14" }, json },
+        "Groups of fewer than 5 workers are counted, not compared. By label, each label's workers are also grouped by model; rows with no label are under (no label).",
+      options: {
+        days: { type: "string", description: "How many days back to read. Default: 14" },
+        by: { type: "string", description: `Only one grouping: ${GROUPINGS.join(", ")}. Default: all three` },
+        json,
+      },
       async run(input) {
         const raw = input.options.days ?? "14";
         if (!/^[1-9][0-9]{0,3}$/.test(raw.trim())) throw new PluginCliError(`"${raw}" is not a number of days`, { code: "bad_days", hint: "--days 14" });
+        const by = groupingsOf(input.options.by);
         const read = await acting(() => ledger(Number(raw.trim())));
         return input.options.json
           ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, summary: read.summary, rows: read.rows })}\n` }
-          : { exitCode: 0, stdout: `${ledgerText(read.summary, read.rows)}\n` };
+          : { exitCode: 0, stdout: `${ledgerText(read.summary, read.rows, by)}\n` };
       },
     }),
   };
@@ -309,6 +366,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           ...(actions.outcomeChecked
             ? { outcome: { type: "string", description: `What a worker you dispatched came to, honestly: ${OUTCOME_LIST}. Optional` } as const }
             : {}),
+          ...(actions.labelChecked ? { label: labelOption } : {}),
           json,
         },
         async run(input, ctx) {
@@ -316,12 +374,16 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           const reason = reasonText(input.options.reason ?? "", false);
           const given = (input.options as { outcome?: string }).outcome;
           const outcome = given === undefined ? null : outcomeOf(given);
-          const done = await acting(() => actions.archiveChecked({ callerId: ctx.threadId ?? null, threadId: id, reason, ...(outcome === null ? {} : { outcome }) }));
+          const givenLabel = (input.options as { label?: string }).label;
+          const label = givenLabel === undefined ? undefined : labelText(givenLabel);
+          const done = await acting(() =>
+            actions.archiveChecked({ callerId: ctx.threadId ?? null, threadId: id, reason, ...(outcome === null ? {} : { outcome }), ...(label === undefined ? {} : { label }) }),
+          );
           const with_ = done.under === 0 ? "" : ` with the ${done.under === 1 ? "thread" : `${done.under} threads`} under it`;
           return print(
             input.options.json,
-            { threadId: id, title: done.title, reason, archivedUnder: done.under, outside: done.outside, ...(outcome === null ? {} : { outcome }) },
-            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}${outcome === null ? "" : ` · came to: ${outcome}`}${done.outside ? " · it was outside Main: it is listed under Archived for two days" : ""}`,
+            { threadId: id, title: done.title, reason, archivedUnder: done.under, outside: done.outside, ...(outcome === null ? {} : { outcome }), ...(label === undefined ? {} : { label }) },
+            `archived “${done.title}” (${id})${with_}${reason === null ? "" : `: ${reason}`}${outcome === null ? "" : ` · came to: ${outcome}`}${label === undefined ? "" : ` · labelled ${label}`}${done.outside ? " · it was outside Main: it is listed under Archived for two days" : ""}`,
           );
         },
       }),

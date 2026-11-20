@@ -1,16 +1,19 @@
 // Where the ledger is kept: cow's own key-value storage, one key per worker
-// for its row and one for the judgements of its outcome, so a row outlives
+// for its row, one for the judgements of its outcome and one for its label, so a row outlives
 // its thread and an agent cannot rewrite it through the thread's metadata.
 
 import { type Kv, Refusal, serial } from "./kv.ts";
 import {
   type Judgement,
+  type LabelNote,
   type LedgerRow,
   type Outcome,
   TURN_EVENT_TYPES,
   buildRow,
   judge,
   judgementsSchema,
+  labelNoteSchema,
+  labelRefusal,
   outcomeFields,
   readTurns,
   rowSchema,
@@ -18,6 +21,7 @@ import {
 
 export const ROW_PREFIX = "ledger:row:";
 export const JUDGED_PREFIX = "ledger:judged:";
+export const LABEL_PREFIX = "ledger:label:";
 /** Published when a row or an outcome changes. */
 export const LEDGER_CHANGED = "cow.ledger.changed";
 
@@ -59,6 +63,12 @@ export interface LedgerStore {
   /** Whether the outcome could be judged by `by` now; the refusal it would get, or null. */
   refusal(threadId: string, by: string): Promise<Refusal | null>;
   judgements(threadId: string): Promise<Judgement[]>;
+  /** A worker's label, open or archived, or null. */
+  label(threadId: string): Promise<LabelNote | null>;
+  /** Set (or with null, clear) a worker's label. Refused when a thread would overwrite or clear the person's. Its row, if it has one, follows. */
+  setLabel(threadId: string, label: string | null, by: string, at: number): Promise<{ label: LabelNote | null; row: LedgerRow | null }>;
+  /** Whether `by` could set the label now; the refusal it would get, or null. */
+  labelRefusal(threadId: string, by: string): Promise<Refusal | null>;
   /** The latest outcome of every worker that has one. */
   outcomes(): Promise<Map<string, Judgement>>;
   rows(): Promise<LedgerRow[]>;
@@ -74,6 +84,14 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
     const parsed = rowSchema.safeParse(await kv.get(ROW_PREFIX + threadId));
     return parsed.success ? parsed.data : null;
   };
+  const labelOf = async (threadId: string): Promise<LabelNote | null> => {
+    const parsed = labelNoteSchema.safeParse(await kv.get(LABEL_PREFIX + threadId));
+    return parsed.success ? parsed.data : null;
+  };
+  const labelRefusalFor = (current: LabelNote | null, by: string): Refusal | null => {
+    const why = labelRefusal(current, by);
+    return why === null ? null : new Refusal("person_labelled", why, "Only the person changes it now: `bb cow label` run outside any thread.");
+  };
   const refusalFor = (judgements: readonly Judgement[], by: string): Refusal | null => {
     const tried = judge(judgements, "done", by, 0);
     return tried.ok ? null : new Refusal(tried.code, tried.why, tried.code === "person_judged" ? "Only the person changes it now: o on its line on cow's page, or `bb cow outcome` run outside any thread." : undefined);
@@ -83,7 +101,7 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
     record: (thread, archived) =>
       one(thread.id, async () => {
         const facts = readTurns(await turnEvents(read, thread.id));
-        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id));
+        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id), (await labelOf(thread.id))?.label ?? null);
         if (row === null) return null;
         await kv.set(ROW_PREFIX + thread.id, row);
         changed();
@@ -110,6 +128,24 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
     refusal: async (threadId, by) => refusalFor(await judgementsOf(threadId), by),
 
     judgements: judgementsOf,
+
+    label: labelOf,
+
+    labelRefusal: async (threadId, by) => labelRefusalFor(await labelOf(threadId), by),
+
+    setLabel: (threadId, label, by, at) =>
+      one(threadId, async () => {
+        const refused = labelRefusalFor(await labelOf(threadId), by);
+        if (refused !== null) throw refused;
+        const note = label === null ? null : labelNoteSchema.parse({ label, by, at });
+        if (note === null) await kv.delete(LABEL_PREFIX + threadId);
+        else await kv.set(LABEL_PREFIX + threadId, note);
+        const was = await rowOf(threadId);
+        const row = was === null ? null : { ...was, label: note?.label ?? null };
+        if (row !== null) await kv.set(ROW_PREFIX + threadId, row);
+        changed();
+        return { label: note, row };
+      }),
 
     outcomes: async () => {
       const found = new Map<string, Judgement>();

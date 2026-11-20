@@ -639,8 +639,10 @@ match stays on the page, dimmed, so the match keeps its context, and a
 match inside a folded group is shown. While the input is open every letter
 is text, `j` and `k` included: `Ctrl+n`, `Ctrl+p` and the arrows move among
 the matches. `Enter` closes the filter with the cursor on the chosen line
-and the whole list back, unfolding only what would hide that line. `Esc`
-cancels: the cursor and the folds are as they were.
+and the whole list back, unfolding what would hide that line, and the line
+itself when it has threads under it, so `j` goes on to its first one; every
+other fold is left as it was. `Esc` cancels: the cursor and the folds are as
+they were.
 
 ## Scrolling the chat
 
@@ -1319,6 +1321,25 @@ as a whole, and nothing is archived. You can change anyone's. On the page
 it is a signed call (`outcome_set`), written to cow's log under the key
 that signed it.
 
+**Labels.** A dispatching thread can give a worker a label of its own
+choosing, the kind of job, such as `lookup`, `draft` or `code-change`, so
+the ledger can show whether each kind of job is on the right model: one
+model does several kinds of work, and grouped by model alone a bad run of
+code changes and a good run of lookups average out. `bb cow label <thread>
+[<label>] [--clear] [--json]` shows, sets or clears it; `bb cow archive` and
+`bb cow outcome` take `--label <label>` too. A label is lower-cased and must
+then be one short word: `^[a-z0-9][a-z0-9-]{0,23}$` (letters, digits and
+hyphens, starting with a letter or digit, at most 24 characters); anything
+else is refused with that rule, so the ledger still holds no free text.
+Who may set one is exactly who may set an outcome: the rule of where the
+thread stands that `archive` has (any thread for a thread under a parent;
+outside Main only Main, the thread itself or you; never a Main, or a thread
+above one), and a label you set is never overwritten or cleared by a thread.
+Unlike an outcome, it can be set before the worker has finished a turn: at
+dispatch. It can be set before or after the worker is archived; a row
+already written is updated, as a later outcome updates it. The page does not
+show it on the thread's line.
+
 **A worker** is a thread that finished a turn and is not a project, a Main
 or an automation's run. Anything else gets no row, and an outcome for it
 is refused.
@@ -1341,22 +1362,29 @@ given, and updated when the outcome changes. It holds, and only holds:
 - how many turns it ran in all;
 - the outcome, who judged it, when, and how many times it was changed after
   it was first given;
-- when it was archived, and by whom: you or a thread's id.
+- when it was archived, and by whom: you or a thread's id;
+- its label, or null when it has none (a row written before 0.2.17 reads as
+  none).
 
 **It holds no title, no prompt, no message text and no reason.** Threads
 archived before 0.2.11, or with bb's own `bb thread archive`, have no row.
 Undoing an archive leaves the row; archiving the thread again writes it
 anew. The threads bb archives along with a worker get no row of their own.
 
-**Reading it.** `bb cow ledger [--days 14] [--json]` lists the rows archived
-in the window and a summary, by model and by dispatching thread: how many
+**Reading it.** `bb cow ledger [--days 14] [--by model|dispatcher|label]
+[--json]` lists the rows archived in the window and a summary, by model, by
+dispatching thread and by label (`--by` shows one grouping; `--json` always
+gives all three, as `summary.byModel`, `summary.byDispatcher` and
+`summary.byLabel`). By label, the rows with no label are under "(no label)",
+and each label's workers are grouped by model again beneath it. Each group says how many
 workers, how many of each outcome and how many unsaid, the median time to
 first report, the median steers before it, and how many you judged. A group
 of fewer than 5 workers shows its counts and says it is too small to
 compare, with no percentages. `L` on the page opens the same summary for
 the last 14 days over the page, with the latest 20 rows (the page adds each
-thread's title as bb has it now; the row holds none). `j` `k` scroll it, `q`
-or `Esc` closes it. `bb cow status` shows an archived worker's outcome at
+thread's title as bb has it now; the row holds none). `b` steps through
+every grouping, by model, by dispatching thread and by label; `j` `k` scroll
+it, `q` or `Esc` closes it. `bb cow status` shows an archived worker's outcome at
 the end of its line: `[outcome: done, judged by the person]`; the page
 shows "came to: done" on a line under Archived or To settle.
 

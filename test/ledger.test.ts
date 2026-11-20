@@ -14,6 +14,7 @@ import {
   durationText,
   groupText,
   judge,
+  labelOf,
   ledgerText,
   median,
   outcomeFields,
@@ -21,7 +22,7 @@ import {
   rowSchema,
   summarize,
 } from "../src/ledger.ts";
-import { JUDGED_PREFIX, ROW_PREFIX, createLedgerStore, turnEvents } from "../src/ledger-store.ts";
+import { JUDGED_PREFIX, LABEL_PREFIX, ROW_PREFIX, createLedgerStore, turnEvents } from "../src/ledger-store.ts";
 import { Refusal } from "../src/kv.ts";
 import { DAY, HOUR, MINUTE, NOW } from "./fixtures.ts";
 import { memoryKv } from "./memory.ts";
@@ -110,6 +111,9 @@ test("the row's keys are exactly the allowed set: no title, prompt, message text
   assert.equal(row.dispatchedBy, "thr_lead");
   assert.equal(row.archivedBy, "thr_lead");
   assert.equal(row.outcome, "done");
+  assert.equal(row.label, null, "no label: null");
+  const { label: _label, ...old } = row;
+  assert.equal(rowSchema.parse(old).label, null, "a row written before labels reads as no label");
   for (const value of Object.values(row)) assert.ok(typeof value !== "string" || value.length <= 200);
 });
 
@@ -169,6 +173,7 @@ const row = (overrides: Partial<LedgerRow>): LedgerRow => ({
   outcomeChanges: 0,
   archivedAt: NOW - HOUR,
   archivedBy: PERSON,
+  label: null,
   ...overrides,
 });
 
@@ -364,4 +369,86 @@ test("bb cow ledger reads 14 days unless told, as text or JSON, and refuses a ba
   assert.deepEqual(json.rows, []);
   assert.deepEqual(calls, [["ledger", 14], ["ledger", 30]]);
   assert.notEqual((await run(null, "ledger", "--days", "0")).exitCode, 0);
+});
+
+// ---- labels ---------------------------------------------------------------------------
+
+test("a label is one short word, lower-cased; anything else is refused with the rule", () => {
+  assert.deepEqual(labelOf(" Code-Change "), { ok: true, label: "code-change" });
+  assert.deepEqual(labelOf("lookup2"), { ok: true, label: "lookup2" });
+  for (const bad of ["", "-draft", "two words", "a".repeat(25), "draft!", "naïve", "x_y"]) {
+    const parsed = labelOf(bad);
+    assert.equal(parsed.ok, false, bad);
+    if (!parsed.ok) assert.match(parsed.why, /lower-case letters, digits and hyphens/);
+  }
+  assert.ok(labelOf("a".repeat(24)).ok);
+});
+
+test("a label set before archiving is in the row; one set after updates it; a thread cannot overwrite or clear the person's", async () => {
+  const kv = memoryKv();
+  const store = createLedgerStore(kv, served(workerLog()).read);
+  await store.setLabel(thread.id, "lookup", "thr_lead", NOW - 2 * HOUR);
+  assert.equal((await store.record(thread, { at: NOW - HOUR, by: "thr_lead" }))?.label, "lookup");
+  const later = await store.setLabel(thread.id, "draft", "thr_lead", NOW);
+  assert.equal(later.row?.label, "draft");
+  assert.equal((await store.rows())[0]?.label, "draft");
+  await store.setLabel(thread.id, "code-change", PERSON, NOW);
+  assert.ok((await store.labelRefusal(thread.id, "thr_lead")) instanceof Refusal);
+  await assert.rejects(store.setLabel(thread.id, "draft", "thr_lead", NOW), (cause: unknown) => cause instanceof Refusal && cause.code === "person_labelled");
+  await assert.rejects(store.setLabel(thread.id, null, "thr_lead", NOW), (cause: unknown) => cause instanceof Refusal);
+  assert.equal((await store.label(thread.id))?.label, "code-change");
+  const cleared = await store.setLabel(thread.id, null, PERSON, NOW);
+  assert.equal(cleared.row?.label, null);
+  assert.equal(kv.data.has(LABEL_PREFIX + thread.id), false);
+});
+
+test("the summary groups by label, with (no label), and by model within each label; the text can show one grouping", () => {
+  const rows = [
+    row({ label: "code-change", model: "claude-opus-5-5", outcome: "done" }),
+    row({ label: "code-change", model: "claude-haiku-5-5", outcome: "redone" }),
+    row({ label: "code-change", model: "claude-haiku-5-5", outcome: "redone" }),
+    row({ label: "lookup", model: "claude-haiku-5-5", outcome: "done" }),
+    row({ model: "claude-haiku-5-5" }),
+  ];
+  const summary = summarize(rows, NOW, 14);
+  assert.deepEqual(summary.byLabel.map((g) => [g.key, g.workers]), [["code-change", 3], ["(no label)", 1], ["lookup", 1]]);
+  const code = summary.byLabel[0]!;
+  assert.deepEqual(code.outcomes, { done: 1, partial: 0, redone: 2, dropped: 0, unsaid: 0 });
+  assert.deepEqual(code.byModel.map((g) => [g.key, g.workers, g.outcomes.redone]), [["claude-haiku-5-5", 2, 2], ["claude-opus-5-5", 1, 0]]);
+  const all = ledgerText(summary, rows);
+  assert.match(all, /By model\n[\s\S]*By dispatching thread\n[\s\S]*By label, then by model\n  code-change: 3 workers[^\n]*\n    claude-haiku-5-5: 2 workers/);
+  const only = ledgerText(summary, rows, ["label"]);
+  assert.doesNotMatch(only, /By model\n/);
+  assert.match(only, /\(no label\): 1 worker/);
+});
+
+test("bb cow label shows, sets and clears, refuses a bad label with the rule, and archive and outcome take --label", async () => {
+  const labelCalls: unknown[] = [];
+  const { calls, run } = cli({
+    labelChecked: async (args) => (
+      labelCalls.push(args),
+      { title: "T", archived: false, label: args.label ? { label: args.label, by: args.callerId ?? PERSON, at: NOW } : args.label === undefined ? { label: "lookup", by: PERSON, at: NOW } : null, row: false }
+    ),
+  });
+  assert.match((await run("thr_lead", "label", "thr_w", "Code-Change")).stdout, /labelled “T” \(thr_w\): code-change/);
+  assert.match((await run("thr_lead", "label", "thr_w")).stdout, /is labelled lookup · set by the person/);
+  assert.match((await run(null, "label", "thr_w", "--clear")).stdout, /cleared the label/);
+  assert.deepEqual(labelCalls, [
+    { callerId: "thr_lead", threadId: "thr_w", label: "code-change" },
+    { callerId: "thr_lead", threadId: "thr_w" },
+    { callerId: null, threadId: "thr_w", label: null },
+  ]);
+  const bad = await run("thr_lead", "label", "thr_w", "two words");
+  assert.notEqual(bad.exitCode, 0);
+  assert.match(bad.stdout + bad.stderr, /lower-case letters, digits and hyphens/);
+  assert.notEqual((await run("thr_lead", "label", "thr_w", "x", "--clear")).exitCode, 0);
+  await run("thr_lead", "archive", "thr_w", "--label", "draft");
+  await run("thr_lead", "outcome", "thr_w", "done", "--label", "lookup");
+  assert.deepEqual(calls, [
+    ["archive", { callerId: "thr_lead", threadId: "thr_w", reason: null, label: "draft" }],
+    ["outcome", { callerId: "thr_lead", threadId: "thr_w", outcome: "done", label: "lookup" }],
+  ]);
+  assert.notEqual((await run("thr_lead", "archive", "thr_w", "--label", "Bad Label")).exitCode, 0);
+  assert.notEqual((await run(null, "ledger", "--by", "kind")).exitCode, 0);
+  assert.match((await run(null, "ledger", "--by", "label")).stdout, /in the last 14 days/);
 });

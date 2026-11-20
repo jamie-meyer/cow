@@ -16,6 +16,7 @@ import {
   nextMove,
   todoRowId,
   unfoldAround,
+  unfoldOpen,
   visibleRows,
   waitingInside,
 } from "../src/tree.ts";
@@ -190,6 +191,16 @@ test("going to a row inside folded groups unfolds exactly the groups around it",
   // Nothing to unfold: the same set, so nothing re-renders.
   assert.equal(unfoldAround(overview, folded, "solo"), folded);
   assert.equal(unfoldAround(overview, folded, "proj"), folded);
+});
+
+test("the filter's Enter shows the kept line unfolded: the groups around it, and its own; nothing else", () => {
+  const overview = build(three());
+  const folded = new Set(["proj", "w2", "elsewhere"]);
+  assert.deepEqual(unfoldOpen(overview, folded, "w2"), new Set(["elsewhere"]));
+  assert.deepEqual(unfoldOpen(overview, folded, "proj"), new Set(["w2", "elsewhere"]));
+  assert.deepEqual(unfoldOpen(overview, folded, "w2a"), new Set(["elsewhere"]));
+  // A line with nothing under it, in no folded group: the same set.
+  assert.equal(unfoldOpen(overview, folded, "solo"), folded);
 });
 
 test("a folded head still knows how many inside wait on the user", () => {

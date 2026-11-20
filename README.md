@@ -168,8 +168,12 @@ one with `bb cow archive --outcome`, and can never overwrite yours. Each
 worker archived through cow gets one row in cow's storage: its model and
 effort, its time to first report, how many times you and other threads
 steered it before that report, its turns, its outcome and who judged it.
-No titles, prompts or message text. `L` shows the last 14 days by model
-and by dispatching thread; `bb cow ledger` gives the same, and the rows.
+No titles, prompts or message text. A dispatching thread can give a worker
+a label, one short word for the kind of job (`bb cow label <thread>
+code-change`), so you can see whether each kind of job is on the right
+model. `L` shows the last 14 days by model, by dispatching thread and by
+label (and by model within each label; `b` shows one grouping at a time);
+`bb cow ledger [--by label]` gives the same, and the rows.
 Details are under [The ledger](docs/reference.md#the-ledger).
 
 **Kept.** For a thread you want around without it asking for anything, an
@@ -292,7 +296,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | `h` `l` | fold, unfold a group, or the To settle, Kept, Automations and Outside Main sections on their headings, or an automation's runs on its row; on a member, h goes to its group's head or its section's heading, and on a run to its automation (left, right arrows too) |
 | `Tab` | next entry in the queue of what waits on you (Shift+Tab previous) |
 | `1` to `9` | jump to that entry in the queue |
-| `/` | filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, Esc cancels |
+| `/` | filter: type to narrow the page to matching lines; Ctrl+n, Ctrl+p or arrows move, Enter keeps the line, shown and unfolded so j reaches what is under it, Esc cancels |
 | `f` | letter hints on every line, action, link and button in view, the chat's included; again for a menu it opened. A hint on a file opens it in the reader, and one on a link to a thread opens that thread in the pane |
 
 **Reading a thread and talking to it**
@@ -335,7 +339,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | Key | Does |
 | --- | --- |
 | `o` | on a line under Archived or To settle, say what the worker came to, or change it: 1 done (the work was used as it came back), 2 partial (some of it was used, or it needed a second worker), 3 redone (it was wrong, and you or another thread redid it), 4 dropped (it was not used); any other key cancels. Signed as yours: no thread can overwrite it |
-| `L` | the ledger over the page: for the last 14 days, by model and by dispatching thread, how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. j k scroll, q or Esc closes |
+| `L` | the ledger over the page: for the last 14 days, by model, by dispatching thread and by label (the kind of job, then by model within it), how many workers, each outcome, the median time to first report and steers before it, and how many you judged; then the latest rows. It holds no titles, prompts or message text. b shows one grouping at a time, j k scroll, q or Esc closes |
 
 **Capabilities and this page's key**
 
@@ -409,9 +413,10 @@ bb cow todo add|done|rm|list <thread> ...        # work not started
 bb cow project <thread> [--clear]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
-bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
-bb cow outcome <thread> done|partial|redone|dropped   # what a worker came to, open or archived
-bb cow ledger [--days 14] [--json]               # what finished workers came to
+bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped] [--label <label>]
+bb cow outcome <thread> done|partial|redone|dropped [--label <label>]   # what a worker came to, open or archived
+bb cow label <thread> [<label>] [--clear]        # the kind of job, for grouping the ledger
+bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]   # what finished workers came to
 bb cow workspace [<folder>]                      # workspace files: approved or not, each repository's last sync
 bb cow workspace add <folder>                    # propose one: you approve its file on the page
 bb cow workspace sync [<folder>] [--only <as>]   # run the approved sync commands
@@ -443,7 +448,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, and when and by whom it was archived; and each judgement of its outcome. No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
 | the same database, table `plugin_settings` | the four settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -573,8 +578,9 @@ An agent **can**, through cow:
   cannot take a brief out of your queue: disputes you have not read keep it
   there whatever the new check says;
 - say what a worker came to, for the ledger (`bb cow archive --outcome`,
-  `bb cow outcome`). The ledger records that thread as the judge, and an
-  outcome you set is refused. Run with the variable that names its thread
+  `bb cow outcome`), and label it with the kind of job (`bb cow label`,
+  `--label`). The ledger records that thread as the judge, and an
+  outcome or label you set is refused. Run with the variable that names its thread
   cleared, it is taken for you, as every command is: only an outcome set on
   the page is certainly yours (it is signed, and in the log);
 - read everything: the overview, asks, briefs, capabilities, the ledger and the log;

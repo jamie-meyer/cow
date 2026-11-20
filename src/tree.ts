@@ -686,6 +686,20 @@ export function unfoldAround(overview: Overview, folded: ReadonlySet<string>, id
   return next;
 }
 
+/** The fold state after making the row `id` visible and open: every group around it unfolded, and its own group too when it heads one. */
+export function unfoldOpen(overview: Overview, folded: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const around = unfoldAround(overview, folded, id);
+  const row = overview.rows.find((other) => other.id === id);
+  if (row?.kind === "line" && row.line.members > 0 && around.has(id)) {
+    const next = new Set(around);
+    next.delete(id);
+    return next;
+  }
+  const group = overview.automations.groups.find((other) => other.id === id);
+  if (group && group.runs.length > 0 && automationFolded(around, id)) return new Set([...around, id]);
+  return around;
+}
+
 export type FoldMove =
   /** Change what is folded; the cursor stays. */
   | { kind: "fold"; folded: ReadonlySet<string> }

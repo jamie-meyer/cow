@@ -1,11 +1,12 @@
-// The ledger on the page: L opens a sheet over it with the summary by model
-// and by dispatching thread, and the latest rows. Keyboard only; q or Esc
+// The ledger on the page: L opens a sheet over it with the summary by model,
+// by dispatching thread and by label (b shows one grouping at a time), and
+// the latest rows. Keyboard only; q or Esc
 // closes it. The rows hold no titles: a title shown here is bb's, read now.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
-import { type GroupSummary, type Judgement, type LedgerRow, type LedgerSummary, OUTCOMES, OUTCOME_TEXT, SMALL_GROUP, durationText, whoText } from "./ledger.ts";
+import { GROUPINGS, GROUPING_TEXT, type GroupSummary, type Grouping, type Judgement, type LedgerRow, type LedgerSummary, OUTCOMES, OUTCOME_TEXT, SMALL_GROUP, durationText, whoText } from "./ledger.ts";
 import { LEDGER_CHANGED } from "./ledger-store.ts";
 
 /** The window the sheet reads, as `bb cow ledger` does by default. */
@@ -41,12 +42,24 @@ export function useLedger(): LedgerData {
   return data;
 }
 
+/** Which groupings the sheet shows: all, or one; b steps through them. */
+export type LedgerBy = Grouping | "all";
+const BY_ORDER: readonly LedgerBy[] = ["all", ...GROUPINGS];
+export const nextLedgerBy = (by: LedgerBy): LedgerBy => BY_ORDER[(BY_ORDER.indexOf(by) + 1) % BY_ORDER.length] as LedgerBy;
+
 const percent = (share: number) => `${Math.round(share * 100)}%`;
 const steersText = (value: number | null) => (value === null ? "–" : Number.isInteger(value) ? String(value) : value.toFixed(1));
 
-function Group({ group, name }: { group: GroupSummary; name: string }) {
+function Group({ group, name, under }: { group: GroupSummary; name: string; under?: string }) {
   return (
-    <div className="cow-row" data-cow-ledger-group={group.key} data-cow-ledger-small={group.small || undefined}>
+    <div
+      className="cow-row"
+      data-cow-ledger-group={under === undefined ? group.key : undefined}
+      data-cow-ledger-model-in={under}
+      data-cow-ledger-model={under === undefined ? undefined : group.key}
+      data-cow-ledger-small={group.small || undefined}
+      style={under === undefined ? undefined : { paddingLeft: "2em" }}
+    >
       <span>
         <b>{group.workers}</b>
       </span>
@@ -68,20 +81,22 @@ function Group({ group, name }: { group: GroupSummary; name: string }) {
   );
 }
 
-export function LedgerSheet({ data, titleOf, onClose }: { data: LedgerData; titleOf: (threadId: string) => string | null; onClose: () => void }) {
+export function LedgerSheet({ data, titleOf, onClose, by = "all" }: { data: LedgerData; titleOf: (threadId: string) => string | null; onClose: () => void; by?: LedgerBy }) {
   const { summary, rows, error } = data;
+  const shown = (grouping: Grouping) => by === "all" || by === grouping;
   const name = (id: string) => (id === "none" || id === "unknown" ? id : (titleOf(id) ?? id));
   return (
-    <div className="cow-help" data-cow-ledger="" onClick={onClose}>
+    <div className="cow-help" data-cow-ledger="" data-cow-ledger-by={by} onClick={onClose}>
       <div className="cow-card" onClick={(event) => event.stopPropagation()}>
         <h3>
-          The ledger · the last {LEDGER_DAYS} days · j k scroll, q or Esc closes it
+          The ledger · the last {LEDGER_DAYS} days · {by === "all" ? "every grouping" : GROUPING_TEXT[by].toLowerCase()} · b the next grouping, j k scroll, q or Esc closes it
         </h3>
         <p className="cow-ledger-about">
           One row per worker archived through cow: its model and effort, its time to first report, how many times it was steered before that
           report, its turns, and what it came to. It holds no titles, prompts or message text. The outcomes:{" "}
           {OUTCOMES.map((outcome) => `${outcome}, ${OUTCOME_TEXT[outcome]}`).join("; ")}. <kbd>o</kbd> on a line under Archived or To settle sets
-          or changes one. Groups of fewer than {SMALL_GROUP} are counted, not compared.
+          or changes one. A label is the kind of job its dispatcher named it (<code>bb cow label</code>); within each label its workers are grouped by
+          model again. Groups of fewer than {SMALL_GROUP} are counted, not compared.
         </p>
         {error ? <p data-cow-ledger-error="">could not read the ledger: {error}</p> : null}
         {summary === null ? (
@@ -90,14 +105,35 @@ export function LedgerSheet({ data, titleOf, onClose }: { data: LedgerData; titl
           <p data-cow-ledger-empty="">Nothing yet: a row is written when a worker that finished a turn is archived through cow.</p>
         ) : (
           <>
-            <h3>By model</h3>
-            {summary.byModel.map((group) => (
-              <Group key={group.key} group={group} name={group.key} />
-            ))}
-            <h3>By dispatching thread</h3>
-            {summary.byDispatcher.map((group) => (
-              <Group key={group.key} group={group} name={name(group.key)} />
-            ))}
+            {shown("model") ? (
+              <>
+                <h3>{GROUPING_TEXT.model}</h3>
+                {summary.byModel.map((group) => (
+                  <Group key={group.key} group={group} name={group.key} />
+                ))}
+              </>
+            ) : null}
+            {shown("dispatcher") ? (
+              <>
+                <h3>{GROUPING_TEXT.dispatcher}</h3>
+                {summary.byDispatcher.map((group) => (
+                  <Group key={group.key} group={group} name={name(group.key)} />
+                ))}
+              </>
+            ) : null}
+            {shown("label") ? (
+              <div data-cow-ledger-labels="">
+                <h3>{GROUPING_TEXT.label}</h3>
+                {(summary.byLabel ?? []).map((group) => (
+                  <div key={group.key} data-cow-ledger-label={group.key}>
+                    <Group group={group} name={group.key} />
+                    {group.byModel.map((model) => (
+                      <Group key={model.key} group={model} name={model.key} under={group.key} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <h3>
               Latest rows{rows.length > ROWS_SHOWN ? ` (${ROWS_SHOWN} of ${rows.length}; bb cow ledger lists them all)` : ""}
             </h3>
@@ -107,7 +143,8 @@ export function LedgerSheet({ data, titleOf, onClose }: { data: LedgerData; titl
                   <b>{row.outcome ?? "unsaid"}</b>
                 </span>
                 <span>
-                  {titleOf(row.threadId) ?? row.threadId} · {row.model ?? "model unknown"}
+                  {titleOf(row.threadId) ?? row.threadId}
+                  {row.label ? ` · ${row.label}` : ""} · {row.model ?? "model unknown"}
                   {row.effort ? ` · ${row.effort}` : ""} · first report after {durationText(row.toFirstReportMs)} · steered {row.steersByPerson} by you,{" "}
                   {row.steersByThreads} by threads · {row.turns} {row.turns === 1 ? "turn" : "turns"}
                   {row.outcome ? ` · judged by ${row.judgedBy === "person" ? "you" : name(row.judgedBy ?? "")}${row.outcomeChanges > 0 ? `, changed ${row.outcomeChanges}×` : ""}` : ""} · archived
@@ -122,9 +159,10 @@ export function LedgerSheet({ data, titleOf, onClose }: { data: LedgerData; titl
   );
 }
 
-/** The sheet's keys: q or Esc closes; j k, g G and Space scroll. */
-export function ledgerKey(key: string, close: () => void): true {
+/** The sheet's keys: q or Esc closes; b the next grouping; j k, g G and Space scroll. */
+export function ledgerKey(key: string, close: () => void, nextGrouping: () => void = () => undefined): true {
   if (key === "Escape" || key === "q" || key === "L") close();
+  if (key === "b") nextGrouping();
   const card = document.querySelector<HTMLElement>("[data-cow-ledger] .cow-card");
   if (card) {
     if (key === "j" || key === "ArrowDown") card.scrollBy({ top: 60 });

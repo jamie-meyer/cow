@@ -99,6 +99,7 @@ import {
   sectionOf,
   settleHeadingHeat,
   unfoldAround,
+  unfoldOpen,
   unread,
   visibleRows,
   waitingInside,
@@ -114,7 +115,7 @@ import type { FileRef } from "./reader/link.ts";
 import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
-import { LedgerSheet, ledgerKey, useLedger } from "./LedgerSheet.tsx";
+import { type LedgerBy, LedgerSheet, ledgerKey, nextLedgerBy, useLedger } from "./LedgerSheet.tsx";
 import { backConfirmText, reviewTarget, useWorkspaceSheet, useWorkspaces } from "./workspace/WorkspaceSheet.tsx";
 import type { Judgement } from "./ledger.ts";
 import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
@@ -1599,12 +1600,14 @@ function OverviewScreen({
   useEffect(() => {
     if (filter !== null) filterRef.current?.focus();
   }, [filter !== null]);
-  /** Close the filter: on the line chosen, or back where the cursor was. */
+  /** Close the filter: on the line chosen, shown and unfolded, or back where the cursor was. */
   const endFilter = (keep: boolean) => {
     if (filter === null) return;
-    const to = keep && selected !== null ? selected : filter.cursorBefore;
     setFilter(null);
-    setCursor(to);
+    if (keep && selected !== null) {
+      setFolded((current) => unfoldOpen(overview, current, selected));
+      setCursorRaw(selected);
+    } else setCursor(filter.cursorBefore);
     focusOverview();
   };
   const moveInFilter = (by: 1 | -1) => setCursorRaw(step(order, selected, by));
@@ -1638,6 +1641,7 @@ function OverviewScreen({
   const [sending, setSending] = useState(false);
   const [help, setHelp] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [ledgerBy, setLedgerBy] = useState<LedgerBy>("all");
   const ledger = useLedger();
   const [message, setMessage] = useState("");
   const sidebarIndex = useSidebarIndex();
@@ -2249,7 +2253,7 @@ function OverviewScreen({
       : help
       ? (key) => helpKey(key, () => setHelp(false))
       : ledgerOpen
-      ? (key) => ledgerKey(key, () => setLedgerOpen(false))
+      ? (key) => ledgerKey(key, () => setLedgerOpen(false), () => setLedgerBy(nextLedgerBy))
       : workspaceSheet.open
       ? (key) => workspaceSheet.onKey(key)
       : capSteps.onKey
@@ -2958,7 +2962,7 @@ function OverviewScreen({
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
       {workspaceSheet.node}
-      {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} /> : null}
+      {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} by={ledgerBy} /> : null}
     </div>
   );
 }

@@ -144,9 +144,10 @@ verified.
 
 ```sh
 bb cow status [--main <thread>] [--json]
-bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
-bb cow outcome <thread> done|partial|redone|dropped
-bb cow ledger [--days 14] [--json]
+bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped] [--label <label>]
+bb cow outcome <thread> done|partial|redone|dropped [--label <label>]
+bb cow label <thread> [<label>] [--clear]
+bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -222,6 +223,9 @@ open ask: the user answers it, or the thread closes or withdraws it. Refused unl
 idle or failed (or blocked on a permission with no turn running), and refused
 while threads under it are still open: archive or park those first. bb
 archives the threads under it along with it.
+
+**When you start a worker, label it with the kind of job**: `bb cow label <thread> lookup` (or `draft`, `code-change`, …; one short lower-case word).
+The ledger groups by label, then by model, so the user can see whether each kind of job is on the right model.
 
 **When you archive a worker you dispatched, give its outcome, honestly**,
 with `--outcome`:
