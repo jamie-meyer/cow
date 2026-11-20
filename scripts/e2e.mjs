@@ -57,6 +57,8 @@
 //   --model <id>        fixture model (default claude-haiku-5-5)
 //   --only-raised       only the asks and briefs checks
 //   --only-caps         only the capability checks: three fixtures
+//   --only-workspace    only the workspace file on the page: one fixture, and a
+//                       throwaway workspace folder under the system temp folder
 //   --only-reader       only the reader, projects, asks answered in chat and
 //                       chat scrolling: four fixtures, and --environment must
 //                       be a checkout of cow, whose files the fixture links to
@@ -270,6 +272,10 @@ const WAITING = ["wmain", "wkid", "wlink", "wother"];
 const SETTLING = ["smain", "sjob", "schat"];
 /** The fixtures of the ledger checks: a Main of their own, two workers under it, and a project under it. */
 const LEDGER = ["lmain", "lone", "ltwo", "lproj"];
+/** Refusals of signed calls a check provokes on purpose: the page logs each as a failed request. */
+let expectedRefusals = 0;
+/** The workspace file's checks: a Main of their own, for the page to open on. */
+const WORKSPACING = ["wmain"];
 /** The fixtures of the Outside Main checks: a stand-in Main, a thread with no parent, and another with one thread under it. */
 const OUTSIDE = ["omain", "ostray", "ohead", "okid"];
 const AUTOMATING = ["umain"];
@@ -307,7 +313,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-workspace") ? WORKSPACING : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -343,6 +349,7 @@ async function fixtures() {
   await make("smain", { prompt: QUIET });
   await make("sjob", { prompt: QUIET, parent: ids.smain });
   await make("schat", { prompt: QUIET, parent: ids.smain });
+  await make("wmain", { prompt: QUIET });
   await make("lmain", { prompt: QUIET });
   await make("lone", { prompt: QUIET, parent: ids.lmain });
   await make("ltwo", { prompt: QUIET, parent: ids.lmain });
@@ -389,7 +396,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -1569,6 +1576,75 @@ async function prepareSettle(ids) {
 // ---- The ledger ------------------------------------------------------------------
 
 /** What finished workers came to: from the page and the CLI, who may overwrite whom, the rows, the sheet, and a project not asked. */
+/**
+ * The workspace file on the page: its notice when it is new or changed, the
+ * review in the reader with the new commands first, a approving exactly what
+ * was shown, an approval refused when the file changed after it was shown,
+ * and W's sheet. The folder is a throwaway one under the system temp folder;
+ * its commands are `true` and `echo`, written here, and none is run.
+ */
+async function workspaceChecks(page, ids, shot, chooseMain) {
+  const base = mkdtempSync(join(tmpdir(), "cow-e2e-wsfile-"));
+  try {
+    const ws = join(base, "ws");
+    const api = join(base, "api");
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(api, { recursive: true });
+    const write = (file) => writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(file, null, 2)}\n`);
+    const first = { bring: [{ path: "../api", as: "api", sync: "true" }], sync: "echo first" };
+    write(first);
+    const added = JSON.parse((await run("bb", [PLUGIN, "workspace", "add", ws, "--json"])).stdout);
+    const folder = added.folder;
+    check("bb <id> workspace add proposes the folder, approving nothing", added.status === "new", JSON.stringify(added));
+    await waitForThread(ids.wmain, (t) => t.status === "idle", "wmain idle");
+    await chooseMain(page, ids.wmain);
+    await page.send("Page.bringToFront");
+    const notice = `document.querySelector('[data-cow-workspace-notice="${folder}"]')`;
+    const readerText = `(document.querySelector("[data-cow-reader]")?.textContent ?? "")`;
+    const view = async () => (await rpc("workspace_state", null)).workspaces.find((entry) => entry.folder === folder);
+    await page.waitFor(`!!${notice}`, { label: "the workspace notice", timeout: 30_000 });
+    check("the notice says the file is waiting", /is new and is waiting for you/.test(await page.eval(`${notice}.textContent`)));
+    await page.eval(`${notice}.click(); true`);
+    await page.waitFor(`${readerText}.includes("Commands that would newly run")`, { label: "the review in the reader" });
+    const firstText = await page.eval(readerText);
+    check("the reader lists the commands first, then the whole file", firstText.indexOf("echo first") < firstText.indexOf("The file:") && firstText.includes("api: sync"), firstText.slice(0, 300));
+    await shot("workspace-review");
+    await page.key("a");
+    await page.waitFor(`!document.querySelector("[data-cow-reader]") && !${notice}`, { label: "approved: the reader and the notice gone" });
+    const approved = await view();
+    check("a approves exactly the content shown", approved.status === "approved" && approved.approvedHash === approved.currentHash);
+
+    // A change: the notice comes back, the review shows the diff with the new command first.
+    write({ ...first, bring: [{ ...first.bring[0], setup: "echo second" }] });
+    await page.waitFor(`!!${notice}`, { label: "the notice for the changed file", timeout: 30_000 });
+    check("the changed file's notice counts its new command", /changed and is waiting for you: 1 command would newly run/.test(await page.eval(`${notice}.textContent`)));
+    await page.eval(`${notice}.click(); true`);
+    await page.waitFor(`${readerText}.includes("The change")`, { label: "the diff in the reader" });
+    const diffText = await page.eval(readerText);
+    check("the reader shows the new command first, then the diff of approved against current", diffText.indexOf("api: setup") < diffText.indexOf("The change") && /\+\s+"setup": "echo second"/.test(diffText), diffText.slice(0, 400));
+    // The file changes again while the review is open: approving what was shown is refused.
+    write({ ...first, sync: "echo third" });
+    expectedRefusals += 1;
+    await page.key("a");
+    await page.waitFor(`/changed after it was shown/.test(document.querySelector("[data-cow-reader-note]")?.textContent ?? "")`, { label: "the stale approval refused" });
+    const stale = await view();
+    check("a stale approval is refused, and the approved content is unchanged", stale.status === "changed" && stale.approvedHash === approved.approvedHash);
+    await page.key("q");
+    await page.waitFor(`!document.querySelector("[data-cow-reader]")`, { label: "the reader closed" });
+
+    // The sheet lists the repositories.
+    await page.key("W");
+    await page.waitFor(`${mode} === "workspaces" && !!document.querySelector('[data-cow-workspace="${folder}"] [data-cow-workspace-repo="api"]')`, { label: "the workspaces sheet" });
+    const sheet = await page.eval(`document.querySelector('[data-cow-workspace="${folder}"]').textContent`);
+    check("W lists the workspace's repositories, their state and which commands they have, not their text", /api/.test(sheet) && /never synced/.test(sheet) && /commands: sync/.test(sheet) && !sheet.includes("echo"), sheet);
+    await shot("workspace-sheet");
+    await page.key("q");
+    await page.waitFor(`${mode} === "normal"`, { label: "the sheet closed" });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 async function ledgerChecks(page, ids, shot, chooseMain) {
   const { lmain, lone, ltwo, lproj } = ids;
   for (const name of LEDGER) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
@@ -4284,7 +4360,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -4304,6 +4380,7 @@ async function main() {
       await restoreStored();
     };
     if (flag("only-caps")) await capsChecks(page, ids, shot, chooseMain);
+    else if (flag("only-workspace")) await workspaceChecks(page, ids, shot, chooseMain);
     else if (flag("only-waiting")) await waitingChecks(page, ids, shot, chooseMain);
     else if (flag("only-settle")) await settleChecks(page, ids, shot, chooseMain);
     else if (flag("only-ledger")) await ledgerChecks(page, ids, shot, chooseMain);
@@ -6521,7 +6598,9 @@ async function main() {
   const consoleErrors = page.consoleErrors.filter((entry) => !EXPECTED_ERRORS.some((pattern) => pattern.test(entry)));
   check("no console errors", consoleErrors.length === 0, consoleErrors.join(" | "));
   // bb polls services of its own that may be down; only cow's requests count.
-  const failedRequests = page.networkErrors.filter((entry) => entry.includes(`/plugins/${PLUGIN}`));
+  // A refusal a check provoked on purpose (a stale approval, say) is counted, and only that many are let through.
+  let provoked = expectedRefusals;
+  const failedRequests = page.networkErrors.filter((entry) => entry.includes(`/plugins/${PLUGIN}`)).filter((entry) => !(/409 \(Conflict\).*\/rpc\/signed/.test(entry) && provoked-- > 0));
   check("no failed requests to cow", failedRequests.length === 0, failedRequests.join(" | "));
   if (page.networkErrors.length > failedRequests.length) {
     console.log(`note: ${page.networkErrors.length - failedRequests.length} failed requests of bb's own, e.g. ${page.networkErrors[0]}`);
