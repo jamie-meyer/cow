@@ -144,6 +144,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     title: "The page itself",
     keys: [
       { keys: "M", does: "choose a different Main for this window" },
+      { keys: "Ctrl+Option+C", does: "from anywhere in bb (a thread's chat, another page, settings): open cow's page. On the page it does nothing, so the open chat and the selection stay. Ctrl+Alt+C off macOS; rebind it in bb's keyboard settings as \"🐄 cow: open cow's page\", which is in bb's command palette too" },
       { keys: "?", does: "this legend; ?, q or Esc closes it" },
     ],
   },

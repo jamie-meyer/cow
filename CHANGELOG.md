@@ -4,6 +4,15 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.16
+
+- **Open cow from anywhere.** Ctrl+Option+C (Ctrl+Alt+C off macOS) opens
+  cow's page from wherever you are in bb: a thread's chat, another plugin's
+  page, settings. It is a bb command, "🐄 cow: open cow's page", so it is in
+  the command palette too and you can rebind it in bb's keyboard settings.
+  The window is not reloaded, and bb's back takes you to where you were. On
+  cow's page it does nothing: the open chat and the selection stay.
+
 ## 0.2.15
 
 A workspace file: your repositories kept in sync, set up in each clone, and a

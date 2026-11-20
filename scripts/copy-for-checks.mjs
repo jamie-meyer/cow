@@ -54,5 +54,18 @@ if (existsSync(lock)) {
   writeFileSync(lock, `${JSON.stringify(locked, null, 2)}\n`);
 }
 const app = join(to, "app.tsx");
-writeFileSync(app, readFileSync(app, "utf8").replace('title: "cow"', `title: "${id}"`).replace("🐄 cow: choose the Main thread", `${id}: choose the Main thread`));
+// Two plugins asking for the same default shortcut leave both unbound, the
+// installed cow's too. So the copy asks for another, Shift added, which the
+// checks press.
+const source = readFileSync(app, "utf8");
+const copied = source
+  .replace('title: "cow"', `title: "${id}"`)
+  .replace("🐄 cow: open cow's page", `${id}: open its page`)
+  .replace("🐄 cow: choose the Main thread", `${id}: choose the Main thread`)
+  .replace('defaultShortcut: { key: "c", control: true, alt: true }', 'defaultShortcut: { key: "c", control: true, alt: true, shift: true }');
+if ([...copied.matchAll(/defaultShortcut: \{[^}]*\}/g)].some(([found]) => !found.includes("shift: true"))) {
+  console.error("app.tsx names a default shortcut the copy would share with cow: update scripts/copy-for-checks.mjs");
+  process.exit(1);
+}
+writeFileSync(app, copied);
 console.log(`${id} is in ${to}\n  bb plugin install ${to} --yes\n  npm run e2e -- ${id === "cow-check" ? "" : `--plugin ${id} `}--project … --environment …\n  bb plugin remove ${id}`);

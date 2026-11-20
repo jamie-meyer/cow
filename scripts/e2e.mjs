@@ -116,6 +116,13 @@
 //                       and three actions only on "cow test" threads; the
 //                       actions write to its own metadata on the fixture,
 //                       which the run clears
+//   --only-open         only the command that opens cow's page from anywhere:
+//                       one fixture, a stand-in Main. The shortcut is pressed
+//                       from the fixture's chat in bb, from bb's settings and
+//                       from cow's page with a chat open, and the command is
+//                       run once from bb's command palette. The copy's
+//                       default shortcut is Ctrl+Option+Shift+C (cow's own,
+//                       without Shift, would clash with an installed cow)
 
 import { execFile } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -292,6 +299,8 @@ const PLUGGED = ["bmain", "bkid"];
 const TRACING = ["tmain", "tpark", "tidle", "task", "thead", "tkid"];
 /** The fixtures of the context card checks: a Main of their own, two threads under it, and a thread under no Main in a folder that is not a git checkout, which has nothing to show. */
 const CARDED = ["kmain", "kone", "ktwo", "knone"];
+/** The fixture of the checks of the command that opens the page: a Main of its own. */
+const OPENING = ["xmain"];
 /** That folder, made for the run and removed after it. */
 let cardFolder = null;
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
@@ -318,7 +327,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-workspace") ? WORKSPACING : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-open") ? OPENING : flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-workspace") ? WORKSPACING : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -370,6 +379,7 @@ async function fixtures() {
   await make("ha", { prompt: QUIET, parent: ids.hmain });
   await make("hb", { prompt: LINKER, parent: ids.hmain });
   await make("hc", { prompt: QUIET, parent: ids.hmain });
+  await make("xmain", { prompt: QUIET });
   await make("tmain", { prompt: QUIET });
   await make("tpark", { prompt: QUIET, parent: ids.tmain });
   await make("tidle", { prompt: QUIET, parent: ids.tmain });
@@ -401,7 +411,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) return;
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -2953,6 +2963,77 @@ async function historyChecks(page, ids, shot, chooseMain) {
   check("an archived thread's id opens its chat, as Enter on its line would", !(await page.eval(message)).includes("not a thread"));
 }
 
+// ---- opening the page from anywhere ------------------------------------------
+
+/**
+ * The copy's shortcut, Ctrl+Option+Shift+C, pressed as macOS sends it: with
+ * Option held the key is a symbol ("Ç"), so bb matches it by the physical key.
+ */
+async function pressOpen(page) {
+  const base = { key: "Ç", code: "KeyC", windowsVirtualKeyCode: 67, modifiers: 1 | 2 | 8 };
+  await page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  await sleep(250);
+}
+
+async function openChecks(page, ids, shot, chooseMain) {
+  const { xmain } = ids;
+  await waitForThread(xmain, (t) => t.status === "idle", "idle");
+  await chooseMain(page, xmain);
+  const pageAt = `/plugins/${PLUGIN}/main`;
+  const onPage = `location.pathname === "${pageAt}" && ${screen} === "overview" && document.querySelector(".cow-mainline")?.dataset.cowLine === "${xmain}"`;
+  const pane = `(document.querySelector("[data-cow-pane]")?.dataset.cowPane ?? null)`;
+  const project = PROJECT_OF.xmain ?? PROJECT;
+
+  // -- from a thread's chat in bb, outside cow --
+  await page.goto(`${BB}/projects/${project}/threads/${xmain}`);
+  await page.waitFor(`location.pathname.includes("/threads/${xmain}") && !${ROOT}`, { label: "the fixture's chat in bb", timeout: 30_000 });
+  await sleep(1500);
+  await page.eval("window.cowOpenMark = true; true");
+  await pressOpen(page);
+  await page.waitFor(onPage, { label: "cow's page from a chat", timeout: 20_000 });
+  check("the shortcut, from a thread's chat in bb, opens cow's page with its list", true);
+  check("it gets there without a reload: the window keeps what it held", (await page.eval("window.cowOpenMark === true")) === true);
+  await page.eval("history.back(); true");
+  await page.waitFor(`location.pathname.includes("/threads/${xmain}")`, { label: "back to the chat" });
+  check("bb's back from there returns to the chat", true);
+
+  // -- from a bb screen with no thread --
+  await page.goto(`${BB}/settings`);
+  await page.waitFor(`location.pathname.startsWith("/settings") && !${ROOT}`, { label: "bb's settings", timeout: 30_000 });
+  await sleep(1500);
+  await pressOpen(page);
+  await page.waitFor(onPage, { label: "cow's page from settings", timeout: 20_000 });
+  check("the shortcut, from bb's settings, opens cow's page with its list", true);
+
+  // -- the palette lists it, and running it from there works too --
+  await page.goto(`${BB}/settings`);
+  await page.waitFor(`location.pathname.startsWith("/settings") && !${ROOT}`, { label: "bb's settings again", timeout: 30_000 });
+  await sleep(1500);
+  const palette = { key: "P", code: "KeyP", windowsVirtualKeyCode: 80, modifiers: 4 | 8 };
+  await page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...palette });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...palette });
+  await sleep(500);
+  await page.type(`${PLUGIN}: open its page`);
+  const row = `[...document.querySelectorAll('[role="option"]')].find((el) => el.textContent.includes("${PLUGIN}: open its page"))`;
+  await page.waitFor(`!!${row}`, { label: "the command in the palette" });
+  check("bb's command palette lists the command", true);
+  await page.key("Enter");
+  await page.waitFor(onPage, { label: "cow's page from the palette", timeout: 20_000 });
+  check("run from the palette, it opens cow's page", true);
+
+  // -- on cow's page with a chat open, it changes nothing --
+  await page.key("m");
+  await page.waitFor(`${pane} === "${xmain}"`, { label: "Main's chat open", timeout: 20_000 });
+  const cursor = `(document.querySelector(".cow-cur")?.dataset.cowLine ?? null)`;
+  const was = { path: await page.eval("location.pathname"), pane: await page.eval(pane), cursor: await page.eval(cursor), length: await page.eval("history.length") };
+  await pressOpen(page);
+  await sleep(1500);
+  const now = { path: await page.eval("location.pathname"), pane: await page.eval(pane), cursor: await page.eval(cursor), length: await page.eval("history.length") };
+  check("on cow's page with a chat open, the shortcut leaves the page, the chat and the selection as they were", JSON.stringify(now) === JSON.stringify(was) && now.pane === xmain, `${JSON.stringify(was)} → ${JSON.stringify(now)}`);
+  await shot("open-unchanged");
+}
+
 // ---- what an agent takes out of the queue -------------------------------------
 
 /** Acknowledge every trace about a fixture, and withdraw (as the person, leaving none) every ask a fixture still has open. */
@@ -4474,7 +4555,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card")) {
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -4504,6 +4585,7 @@ async function main() {
     else if (flag("only-history")) await historyChecks(page, ids, shot, chooseMain);
     else if (flag("only-traces")) await traceChecks(page, ids, shot, chooseMain);
     else if (flag("only-card")) await cardChecks(page, ids, shot, chooseMain);
+    else if (flag("only-open")) await openChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }

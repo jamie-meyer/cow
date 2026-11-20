@@ -378,6 +378,7 @@ about it: see [The context card](docs/reference.md#the-context-card).
 | Key | Does |
 | --- | --- |
 | `M` | choose a different Main for this window |
+| `Ctrl+Option+C` | from anywhere in bb (a thread's chat, another page, settings): open cow's page. On the page it does nothing, so the open chat and the selection stay. Ctrl+Alt+C off macOS; rebind it in bb's keyboard settings as "🐄 cow: open cow's page", which is in bb's command palette too |
 | `?` | this legend; ?, q or Esc closes it |
 
 A confirmation takes `y`; any other key cancels it. Keys with Cmd, Ctrl or
@@ -735,6 +736,7 @@ uses one that is not listed.
 | `experimental_useAppPanel` (page) | closing a file tab bb opened on cow's page, to show the file in the reader |
 | `experimental_usePanelTabs` (page) | seeing that file tab open |
 | `experimental_useSidebarThreads` (page) | bb's own copy of each thread, which other plugins' badges and actions are drawn for |
+| `experimental_appOverlay` (page) | opening cow's page from anywhere: a component bb mounts in every window, drawing nothing, that holds the navigate the command uses |
 | `experimental_ThreadRowMetadata` (page) | other plugins' badges at the end of a thread's line, drawn by them |
 | `experimental_useThreadActions` (page) | the actions other plugins offer for the selected thread, listed by . and run by them |
 | `experimental_usePluginId` (page) | leaving cow's own registrations, if any, out of that list |
@@ -861,6 +863,11 @@ Other plugins' badges and actions are checked by `npm run e2e --
 --only-plugins`, with a throwaway plugin in `scripts/cow-check-badge` that
 the run installs as `cow-check-badge` and removes when it finishes or fails.
 It shows something only on "cow test" threads.
+
+The command that opens cow's page from anywhere is checked by `npm run e2e --
+--only-open`. The copy asks for Ctrl+Option+Shift+C rather than cow's own
+shortcut: two plugins asking for the same default leave both unbound, so a
+copy with cow's own would take an installed cow's shortcut away.
 
 Screenshots taken while developing can show your own threads. The three in
 `docs/img` were made from invented fixture threads and checked by eye; do not

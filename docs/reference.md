@@ -615,6 +615,14 @@ stray digit cannot answer a question there. Keys with Cmd, Ctrl or Alt are
 left to bb. "🐄 cow: choose the Main thread" is also in bb's command palette
 while the page is open.
 
+"🐄 cow: open cow's page" is in the palette everywhere, and bound by default
+to Ctrl+Option+C (Ctrl+Alt+C off macOS); bb's keyboard settings rebind it.
+From a thread's chat, another plugin's page or bb's own screens it opens
+cow's page in place, without reloading the window, so bb's back returns to
+where you were. With cow's page already in view it does nothing: the open
+chat and the selection stay as they were. If another plugin asks for the
+same default shortcut, bb leaves both unbound until you bind one.
+
 ## Filtering
 
 `/` opens a small input in the status line. As you type, the page narrows
