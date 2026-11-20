@@ -100,15 +100,21 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   }, [caps.capabilities, caps.notices, signer.keys]);
   // The cursor holds a row by its id, and keeps its place in the list: when that row leaves (acknowledged,
   // deleted, approved, refused, or changed from elsewhere), the row that slides into its place is the
-  // current one, or the last row when it was last.
+  // current one, or the last row when it was last. That holds while the sheet is open: opened again,
+  // it starts on the row it was on, or the first when that one is gone.
   const lastAt = useRef(0);
+  /** The row the cursor was moved to because its own left; opened again on it, the sheet starts at the top, as it does when the row is gone. */
+  const slid = useRef<string | null>(null);
   const found = rows.findIndex((row) => row.id === cursor);
   const at = found >= 0 ? found : Math.max(0, Math.min(lastAt.current, rows.length - 1));
   lastAt.current = at;
   const current = rows[at] ?? null;
   useEffect(() => {
-    if (cursor !== null && found < 0 && current !== null) setCursor(current.id);
-  }, [cursor, found, current]);
+    if (open && cursor !== null && found < 0 && current !== null) {
+      slid.current = current.id;
+      setCursor(current.id);
+    }
+  }, [open, cursor, found, current]);
 
   // The log is read when it is shown, and again whenever anything changes.
   useEffect(() => {
@@ -565,7 +571,10 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   return {
     open,
     show: (noticeId) => {
+      lastAt.current = 0;
       if (noticeId !== undefined) setCursor(noticeId);
+      else if (cursor !== null && cursor === slid.current) setCursor(null);
+      slid.current = null;
       setOpen(true);
       setView("list");
       setNote("");
