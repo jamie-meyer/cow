@@ -115,6 +115,7 @@ import { attachFileClicks, usePanelFiles } from "./reader/trigger.ts";
 import { undoShort } from "./undo.ts";
 import { useVerbs } from "./useVerbs.tsx";
 import { LedgerSheet, ledgerKey, useLedger } from "./LedgerSheet.tsx";
+import { backConfirmText, reviewTarget, useWorkspaceSheet, useWorkspaces } from "./workspace/WorkspaceSheet.tsx";
 import type { Judgement } from "./ledger.ts";
 import { type ActionRow, ActionsProbe, MoreCard, type MoreState, RowBadges, useSidebarIndex } from "./OtherPlugins.tsx";
 import { pickAction, pickChoice } from "./plugins.ts";
@@ -1939,6 +1940,7 @@ function OverviewScreen({
     titleOf: (id) => titles.get(id) ?? "a thread that is not on this page",
     startHints: () => hintsRef.current(),
     onClose: focusOverview,
+    notify: (text) => setMessage(text),
     openInPanel: (file: FileRef, line) => {
       const target =
         file.root === "workspace" && file.environmentId
@@ -1955,6 +1957,9 @@ function OverviewScreen({
   });
   const readerRef = useRef(reader);
   readerRef.current = reader;
+  // Workspace files: their notices in the queue, their review in the reader, and W's sheet.
+  const workspaces = useWorkspaces(signer);
+  const workspaceSheet = useWorkspaceSheet({ data: workspaces, openReader: (target) => readerRef.current.open(target), say: setMessage });
   /** A changed file on the context card: in the reader, as a file link opens. */
   const openCardFile = (shown: { threadId: string; environmentId: string | null }, path: string) =>
     reader.open({ kind: "rooted", threadId: shown.threadId, environmentId: shown.environmentId, root: "workspace", relPath: path, lines: null });
@@ -2183,6 +2188,30 @@ function OverviewScreen({
       case "ledger":
         setMessage("");
         return setLedgerOpen(true);
+      case "workspaces":
+        setMessage("");
+        return workspaceSheet.show();
+      case "bring-back": {
+        if (!selectedLine) return setMessage("B brings a thread's work back from its copy-on-write workspace: select its line first");
+        const threadId = selectedLine.thread.id;
+        setMessage("looking at what it would bring back…");
+        void workspaces.backPlan(threadId).then(
+          (plan) => {
+            const label = backConfirmText(plan);
+            if (label === "") return setMessage("nothing to bring back: no repository in its clone has new commits");
+            setMessage("");
+            verbs.confirmPage({
+              mode: "BACK",
+              threadId,
+              label,
+              cancelled: "not brought back",
+              run: () => void workspaces.back(threadId).then(setMessage, (cause: unknown) => setMessage(`not brought back: ${cause instanceof Error ? cause.message : String(cause)}`)),
+            });
+          },
+          (cause: unknown) => setMessage(`cannot bring it back: ${cause instanceof Error ? cause.message : String(cause)}`),
+        );
+        return;
+      }
       case "outcome":
         if (!selectedLine || !judgedHere(selectedLine)) return setMessage("o says what a finished worker came to: select a line under Archived or To settle");
         return verbs.startOutcome(selectedLine);
@@ -2221,6 +2250,8 @@ function OverviewScreen({
       ? (key) => helpKey(key, () => setHelp(false))
       : ledgerOpen
       ? (key) => ledgerKey(key, () => setLedgerOpen(false))
+      : workspaceSheet.open
+      ? (key) => workspaceSheet.onKey(key)
       : capSteps.onKey
         ? (key) => {
             // The steps that make a capability hold the keyboard until they are saved or left.
@@ -2331,7 +2362,10 @@ function OverviewScreen({
   // What waits on the person: the lines in the queue, and the capabilities they have not acknowledged.
   // A page that asks for its key to be enrolled waits on the person too, on a page that can approve it.
   const keyRequests = signer.status === "enrolled" ? (signer.keys?.requests ?? []).filter((request) => request.status === "pending") : [];
-  const waiting = overview.queue.length + capNotices.length + traceNotices.length + keyRequests.length;
+  // A workspace file whose content changed, or was never approved: its commands wait for the person.
+  const workspaceNotices = workspaces.views.filter((view) => view.waiting);
+  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length;
+  const waiting = overview.queue.length + notices;
   const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
     const fold = flat || line.members === 0 ? null : !found && folded.has(line.thread.id) ? "folded" : "open";
@@ -2381,6 +2415,8 @@ function OverviewScreen({
               ? "help"
               : ledgerOpen
               ? "ledger"
+              : workspaceSheet.open
+              ? "workspaces"
               : capSteps.origin !== null
                 ? "cap"
                 : (verbs.mode?.toLowerCase() ?? (moreOpen !== null ? "more" : filter !== null ? "filter" : capSheet.open ? "caps" : sheet.threadId !== null ? "brief" : "normal"))
@@ -2623,8 +2659,23 @@ function OverviewScreen({
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
                 replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, oldest first.
               </p>
-              {capNotices.length + traceNotices.length + keyRequests.length > 0 ? (
-                <ul className="cow-queue cow-notices" data-cow-notices={capNotices.length + traceNotices.length + keyRequests.length}>
+              {notices > 0 ? (
+                <ul className="cow-queue cow-notices" data-cow-notices={notices}>
+                  {workspaceNotices.map((view) => (
+                    <li key={view.folder} className="cow-q cow-q-notice" data-cow-workspace-notice={view.folder} data-cow-hint="" onClick={() => reader.open(reviewTarget(workspaces, view))}>
+                      <span className="cow-qn">!</span>
+                      <span className="cow-gl" />
+                      <div>
+                        <p>
+                          the workspace file of {view.folder} {view.status === "new" ? "is new" : "changed"} and is waiting for you
+                          {view.fresh.length > 0 ? `: ${view.fresh.length} ${view.fresh.length === 1 ? "command" : "commands"} would newly run` : ""}
+                        </p>
+                        <small>
+                          workspace · <kbd>f</kbd> or a click opens it in the reader, then <kbd>a</kbd> approves exactly what it shows, <kbd>x</kbd> dismisses · <kbd>W</kbd> lists workspaces
+                        </small>
+                      </div>
+                    </li>
+                  ))}
                   {traceNotices.map((notice) => (
                     <li key={notice.id} className="cow-q cow-q-notice" data-cow-notice={notice.id} data-cow-notice-trace={notice.trace?.action ?? ""} data-cow-hint="" onClick={() => capSheet.show(notice.id)}>
                       <span className="cow-qn">!</span>
@@ -2667,7 +2718,7 @@ function OverviewScreen({
               ) : null}
               <ol className="cow-queue" data-cow-scroll="">
                 {overview.queue.length === 0 ? (
-                  <li className="cow-q-empty">{capNotices.length + traceNotices.length + keyRequests.length === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
+                  <li className="cow-q-empty">{notices === 0 ? "Nothing is waiting on you." : "No thread is waiting on you."}</li>
                 ) : (
                   overview.queue.map((line) => (
                     <li
@@ -2903,6 +2954,7 @@ function OverviewScreen({
       {reader.node}
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
+      {workspaceSheet.node}
       {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} /> : null}
     </div>
   );

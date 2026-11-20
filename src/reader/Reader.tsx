@@ -36,6 +36,8 @@ export interface ReaderHost {
   onClose: () => void;
   /** Show the same file in bb's own panel instead. */
   openInPanel: (file: FileRef, line: number | null) => boolean;
+  /** Say something on the page, after the reader closed. */
+  notify?: (text: string) => void;
 }
 
 export interface ReaderControl {
@@ -370,6 +372,19 @@ function Sheet({
       searchRef.current?.focus();
       return;
     }
+    const action = !ctrl && target.kind === "text" && keys.current.typed === "" ? target.actions?.find((entry) => entry.key === key) : undefined;
+    if (action) {
+      setNote(`${action.label}…`);
+      void action.run().then(
+        (done) => {
+          if (done.close) onClose();
+          else setNote(done.note);
+          if (done.close && done.note) host.notify?.(done.note);
+        },
+        (cause: unknown) => setNote(`${action.label} failed: ${errorText(cause)}`),
+      );
+      return;
+    }
     const read = keys.current.read(key, ctrl, Date.now());
     setTyped(keys.current.typed);
     if (read.kind === "pending" || read.kind === "none") return;
@@ -590,6 +605,15 @@ function Sheet({
             <kbd>N</kbd>
           </span>
         ) : null}
+        {target.kind === "text" && target.actions && target.actions.length > 0 ? (
+          <span data-cow-reader-actions="">
+            {target.actions.map((entry) => (
+              <span key={entry.key}>
+                <kbd>{entry.key}</kbd> {entry.label} ·{" "}
+              </span>
+            ))}
+          </span>
+        ) : null}
         {note ? (
           <span data-cow-reader-note="">{note}</span>
         ) : draft === null ? (
@@ -644,6 +668,7 @@ export function useReader(host: ReaderHost): ReaderControl {
       titleOf: (id) => live.current.titleOf(id),
       startHints: () => live.current.startHints(),
       onClose: () => live.current.onClose(),
+      notify: (text) => live.current.notify?.(text),
       openInPanel: (file, line) => {
         const opened = live.current.openInPanel(file, line);
         // bb's view takes its place: the reader steps aside entirely.

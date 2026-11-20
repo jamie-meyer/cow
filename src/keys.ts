@@ -50,7 +50,11 @@ export type Command =
   /** Say what a worker under Archived or To settle came to, or change it. */
   | { kind: "outcome" }
   /** Open the ledger sheet. */
-  | { kind: "ledger" };
+  | { kind: "ledger" }
+  /** Open the workspaces sheet. */
+  | { kind: "workspaces" }
+  /** Bring the selected clone thread's work back to its sources. */
+  | { kind: "bring-back" };
 
 /** The key map as the legend shows it: grouped by what the person is doing. */
 export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string; does: string }[] }[] = [
@@ -119,6 +123,14 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     title: "Reading a file",
     keys: [
       { keys: "(reader)", does: "a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back" },
+    ],
+  },
+  {
+    title: "Workspaces",
+    keys: [
+      { keys: "W", does: "the workspaces sheet over the page: each workspace folder cow knows, whether its cow.workspace.json is approved, and each repository with its last sync, whether it is dirty and which commands it has. j k move, s syncs the selected repository, S every approved workspace, Enter shows the selected one's last sync output in the reader (signed: output may hold secrets), or the file's change when it waits on you; q or Esc closes" },
+      { keys: "(workspace notice)", does: "a workspace file that is new or changed waits in the queue; a click or its hint opens it in the reader: the commands that would newly run first, then the change. There a approves exactly the content shown (refused if the file changed since), x dismisses it without approving until it changes again. Signed: no thread can approve" },
+      { keys: "B", does: "on a thread that runs in a copy-on-write workspace, bring its work back: names each repository with new commits and the approved back command it would run, then y runs them in the sources (signed)" },
     ],
   },
   {
@@ -221,6 +233,10 @@ export class KeyReader {
         return { kind: "outcome" };
       case "L":
         return { kind: "ledger" };
+      case "W":
+        return { kind: "workspaces" };
+      case "B":
+        return { kind: "bring-back" };
       case "w":
         return { kind: "wait" };
       case ";":

@@ -346,6 +346,16 @@ says why, and what to press instead. `?` shows this map on the page.
 | --- | --- |
 | in the reader | a file opens over the page, read-only: j k move, Ctrl+d Ctrl+u half a page, Ctrl+f Ctrl+b a page, gg G and 12G, { } by block, / searches with n N, f hints its links, r raw Markdown, u splits a diff, y Y copy the path, o opens it in bb's panel, q or Esc goes back |
 
+**Workspaces**
+
+See [Copy-on-write workspaces](docs/clone.md#the-workspace-file).
+
+| Key | Does |
+| --- | --- |
+| `W` | the workspaces sheet over the page: each workspace folder cow knows, whether its cow.workspace.json is approved, and each repository with its last sync, whether it is dirty and which commands it has. j k move, s syncs the selected repository, S every approved workspace, Enter shows the selected one's last sync output in the reader (signed: output may hold secrets), or the file's change when it waits on you; q or Esc closes |
+| on a workspace notice | a workspace file that is new or changed waits in the queue; a click or its hint opens it in the reader: the commands that would newly run first, then the change. There a approves exactly the content shown (refused if the file changed since), x dismisses it without approving until it changes again. Signed: no thread can approve |
+| `B` | on a thread that runs in a copy-on-write workspace, bring its work back: names each repository with new commits and the approved back command it would run, then y runs them in the sources (signed) |
+
 **Other plugins**
 
 Other plugins can put a short badge at the end of a thread's line, and offer

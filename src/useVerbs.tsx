@@ -130,6 +130,8 @@ export interface Verbs {
   startWait: (line: Line | null) => void;
   /** Ask, then bring a thread from Outside Main under Main. `u` takes it back. */
   startBring: (line: OutsideLine) => void;
+  /** Ask y to confirm something the page itself does (bring a thread's work back, say); any other key cancels. */
+  confirmPage: (args: { mode: string; threadId: string; label: string; cancelled: string; run: () => void }) => void;
   /** Ask for a reason, then archive a thread from Outside Main. `u` takes it back. */
   startArchiveOutside: (line: OutsideLine) => void;
   /** Ask what a worker under Archived or To settle came to, or change it: o. */
@@ -862,7 +864,8 @@ export function useVerbs(host: VerbHost): Verbs {
 
   // ---- the open prompt --------------------------------------------------
 
-  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, startArchiveOutside, startOutcome, startDeleteAutomation, removeTodo, moveTodo, undoable };
+  const confirmPage = (args: { mode: string; threadId: string; label: string; cancelled: string; run: () => void }) => setModal({ kind: "confirm", ...args });
+  const common = { start, startAsk, startUndo, markSeen, toggleProject, startWait, startBring, confirmPage, startArchiveOutside, startOutcome, startDeleteAutomation, removeTodo, moveTodo, undoable };
   if (modal === null) {
     return { mode: null, ...common, onKey: null, footer: null, card: null };
   }

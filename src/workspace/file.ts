@@ -13,6 +13,8 @@ import { checkPattern } from "../clone/glob.ts";
 import { folderName, relativePath } from "../clone/names.ts";
 
 export const WORKSPACE_FILE = "cow.workspace.json";
+/** Published when a workspace is proposed, approved, dismissed, synced or brought back. */
+export const WORKSPACES_CHANGED = "workspaces-changed";
 /** A larger file is refused unread. */
 export const MAX_FILE_BYTES = 256 * 1024;
 export const COMMAND_KINDS = ["sync", "setup", "back"] as const;

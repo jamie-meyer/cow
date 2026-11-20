@@ -165,5 +165,5 @@ test("every wrong source of a command is refused: unsigned calls, the file on di
   assert.deepEqual(w.ran, []);
   // From a terminal outside any thread it runs.
   await back.run({ positionals: { thread: "thr_clone" }, options: {} }, { cwd: "/Users/me" });
-  assert.deepEqual(w.ran.map((run) => run.call), ["back"]);
+  assert.deepEqual((w.ran as Array<{ call: string }>).map((run) => run.call), ["back"]);
 });

@@ -17,7 +17,14 @@ export type OpenTarget =
   /** A file change in a thread's timeline. */
   | { kind: "change"; threadId: string; rowId: string; path: string }
   /** Text cow already holds, with no file behind it: what a script automation printed. */
-  | { kind: "text"; threadId: null; title: string; content: string };
+  | { kind: "text"; threadId: null; title: string; content: string; actions?: readonly ReaderAction[] };
+
+/** A key a text the page shows offers besides reading it: approving it, say. What `run` resolves to is shown as a note; it closes the text unless it says to stay. */
+export interface ReaderAction {
+  key: string;
+  label: string;
+  run: () => Promise<{ note: string; close: boolean }>;
+}
 
 export type Loaded =
   | { type: "text"; content: string; sha: string; size: number; cut: boolean }

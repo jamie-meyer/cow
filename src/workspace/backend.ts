@@ -12,10 +12,11 @@ import type { LogStore } from "../caps/logstore.ts";
 import { Refusal } from "../kv.ts";
 import { sha256Hex } from "../signing/backend.ts";
 import { formatAge } from "../text.ts";
-import { WORKSPACE_FILE } from "./file.ts";
+import { WORKSPACES_CHANGED, WORKSPACE_FILE } from "./file.ts";
+
+export { WORKSPACES_CHANGED };
 import { type BackPlan, type HostPort, type WorkspaceView, type Workspaces, createWorkspaces } from "./service.ts";
 
-export const WORKSPACES_CHANGED = "workspaces-changed";
 const CALL_MS = 60_000;
 /** Sync runs each repository for up to 5 minutes, one after another. */
 const SYNC_MS = 60 * 60_000;
