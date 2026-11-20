@@ -1,9 +1,11 @@
 // End-to-end check of asks and briefs against a running bb. No browser.
 //
-// It makes two fixture threads titled "cow test" on the cheapest model, and
-// cow starts up to four hidden checker threads titled "cow check" for the
-// briefs they submit. It acts only on those, withdraws any ask it leaves
-// open, and archives the fixtures when it finishes.
+// It makes three fixture threads titled "cow test" on the cheapest model, and
+// cow starts hidden checker threads titled "cow check" for the briefs they
+// submit. The third fixture runs in a worktree of its own, which the check
+// creates and, once that fixture is archived, cleans up, to check a brief
+// whose thread's environment is gone. It acts only on those, withdraws any
+// ask it leaves open, and archives the fixtures when it finishes.
 //
 // Answering an ask is the person's, and is signed. The check holds a key of
 // its own: it resets cow's enrollment with the reset file when it starts, so
@@ -100,12 +102,13 @@ async function waitFor(label, probe, timeout = 180_000) {
 }
 const idle = (id) => waitFor(`${id} idle`, async () => ((await thread(id))?.status === "idle" ? true : null));
 
-async function spawn(prompt, parent) {
+/** A fixture thread: in the environment given, or with `ownWorktree` in a new worktree of its own. */
+async function spawn(prompt, parent, ownWorktree = false) {
   const made = await bbAs(
     null,
     "thread", "spawn", "--json",
     "--project", PROJECT,
-    "--environment", ENVIRONMENT,
+    ...(ownWorktree ? ["--new-environment", "worktree"] : ["--environment", ENVIRONMENT]),
     "--provider", PROVIDER,
     "--model", MODEL,
     "--title", TITLE,
@@ -175,6 +178,8 @@ async function main() {
   const was = { checkerModel: stored("checkerModel"), checkerProvider: stored("checkerProvider") };
   const ids = {};
   const checkers = new Set();
+  /** Environments this check created, to clean up if it stops before it does. */
+  const created = [];
   let failure = null;
   // This check's key is the first enrolled, as a page's is on a fresh cow.
   const signer = await createSigner(BB, "the asks end-to-end check", PLUGIN);
@@ -267,15 +272,18 @@ async function main() {
       oldRead.ok !== true && unsignedRead.ok === false && /only the person may do/.test(unsignedRead.error?.message ?? "") && (await markNow()).read === false,
       `${JSON.stringify(oldRead).slice(0, 100)} | ${JSON.stringify(unsignedRead.error?.message ?? unsignedRead).slice(0, 100)}`,
     );
-    // Anyone may order a check, and choose its model. One that cannot answer replaces the check that disputed the claim.
+    // Anyone may order a check, and choose its model. One that cannot answer replaces nothing: the check that disputed the claim stays.
     const rerun = await cow(null, "brief", "check", ids.briefer, "--model", "cow-test-no-such-model", "--runs", "1", "--wait", "--json");
-    for (const entry of (await rpc("brief_get", { threadId: ids.briefer })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
+    const rerunRecord = (await rpc("brief_get", { threadId: ids.briefer })).result.record;
+    for (const entry of rerunRecord.failedRecheck ? [] : (rerunRecord.check?.runs ?? [])) if (entry.threadId) checkers.add(entry.threadId);
     const rerunMark = await markNow();
+    const rerunText = (await cow(null, "brief", "show", ids.briefer)).stdout;
     check(
-      "a check run again before the person read the dispute does not take it out of their queue: the brief still waits, and says why",
-      rerun.code === 0 && rerunMark.state === "failed" && rerunMark.contradicted === 0 && rerunMark.earlierDisputes >= 1 && rerunMark.read === false && /NOTE: an earlier check of this version disputed \d+ claim/.test((await cow(null, "brief", "show", ids.briefer)).stdout),
+      "a check run again that fails keeps the check before it, disputes and all, and the brief still waits on the person",
+      rerun.code === 0 && rerunMark.state === "checked" && rerunMark.contradicted >= 1 && rerunMark.read === false && rerunRecord.failedRecheck?.model === "cow-test-no-such-model" && /\nChecked again on \d{4}-\d\d-\d\d \d\d:\d\d UTC: that attempt failed \(.+\); the check below is from \d{4}-/.test(rerunText) && rerunText.includes("CONTRADICTED  tests"),
       `${JSON.stringify(rerunMark)} ${rerun.stderr.trim().slice(0, 120)}`,
     );
+    console.log(`      | ${rerunText.split("\n").find((line) => line.startsWith("Checked again")) ?? ""}`);
     const signedRead = await signer.call("brief_read", readArgs);
     const readEntry = (await rpc("caps_log", { limit: 20 })).result.entries.find((entry) => entry.event.kind === "brief-read" && entry.event.threadId === ids.briefer);
     check(
@@ -297,29 +305,84 @@ async function main() {
       check("a checker told by the evidence to drop the form kept to it, and did not pass the claim", hostile.check.state === "checked" && !hostile.claims.some((entry) => entry.id === "tests" && entry.verdict === "supported"), JSON.stringify(hostile.disputes.map((entry) => [entry.id, entry.verdict])));
     }
 
+    // What a failed check says: of the check itself, or, when the check before it answered, of the attempt kept beside it.
+    const failuresOf = (shown) => (shown.failedRecheck ? shown.failedRecheck.errors : shown.check.failures);
     const broken = await rpc("brief_check", { threadId: ids.briefer, model: "cow-test-no-such-model", runs: 1 });
     for (const entry of broken.result?.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
     const failed = JSON.parse((await cow(null, "brief", "show", ids.briefer, "--wait", "--json")).stdout);
-    check("a checker that cannot answer is a failed check, shown as one", failed.check.state === "failed" && failed.disputes.length === 0 && failed.claims.every((entry) => entry.verdict === null), JSON.stringify(failed.check));
     const failedText = (await cow(null, "brief", "show", ids.briefer)).stdout;
-    check("a failed check is not a pass in `brief show`", /CHECK FAILED/.test(failedText));
+    if (hostile.check.state === "failed") {
+      check("a checker that cannot answer is a failed check, shown as one", failed.check.state === "failed" && failed.disputes.length === 0 && failed.claims.every((entry) => entry.verdict === null), JSON.stringify(failed.check));
+      check("a failed check is not a pass in `brief show`", /CHECK FAILED/.test(failedText));
+    } else {
+      check("a checker that cannot answer replaces nothing: the check before it stays, with the attempt beside it", failed.check.state === "checked" && failed.failedRecheck !== null && /Checked again on .+: that attempt failed/.test(failedText), JSON.stringify(failed.check));
+    }
     check(
       "the failure says where the checker ran, what bb said, and how to run it elsewhere",
-      /failed on claude-code, model cow-test-no-such-model: .*bb said: ".+"/.test(failed.check.failures[0] ?? "") && failedText.includes(`To check it on another provider: bb cow brief check ${ids.briefer} --provider <provider> --model <model>`),
-      failed.check.failures[0],
+      /failed on claude-code, model cow-test-no-such-model: .*bb said: ".+"/.test(failuresOf(failed)[0] ?? "") && failedText.includes(`To check it on another provider: bb cow brief check ${ids.briefer} --provider <provider> --model <model>`),
+      failuresOf(failed)[0],
     );
-    console.log(`      | ${failed.check.failures[0]}`);
+    console.log(`      | ${failuresOf(failed)[0]}`);
 
     // A provider that does not exist: refused at the start, or a failed turn; either way said plainly, and not run elsewhere instead.
     const nowhere = await cow(null, "brief", "check", ids.briefer, "--provider", "cow-test-no-such-provider", "--runs", "1", "--wait", "--json");
     for (const entry of (await rpc("brief_get", { threadId: ids.briefer })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
     const lost = nowhere.code === 0 ? JSON.parse(nowhere.stdout) : null;
+    const lostSaid = lost ? (failuresOf(lost)[0] ?? "") : "";
     check(
       "a check on a provider that does not exist fails, naming the provider and the way out",
-      lost?.check.state === "failed" && lost.check.provider === "cow-test-no-such-provider" && /on cow-test-no-such-provider, its default model: .+To check it on another provider: bb cow brief check /.test(lost.check.failures[0] ?? ""),
-      `${lost?.check.failures[0] ?? nowhere.stderr.trim()}`,
+      (lost?.failedRecheck ? lost.failedRecheck.provider === "cow-test-no-such-provider" : lost?.check.state === "failed" && lost.check.provider === "cow-test-no-such-provider") && /on cow-test-no-such-provider, its default model: .+To check it on another provider: bb cow brief check /.test(lostSaid),
+      `${lostSaid || nowhere.stderr.trim()}`,
     );
-    console.log(`      | ${lost?.check.failures[0]}`);
+    console.log(`      | ${lostSaid}`);
+
+    // ---- a brief whose thread is archived and whose worktree is gone -------
+    ids.archived = await spawn(BRIEFER, ids.asker, true);
+    await idle(ids.archived);
+    const archivedEnv = (await thread(ids.archived)).environmentId;
+    if (archivedEnv) created.push(archivedEnv);
+    const archivedStorage = join(dataDir, "thread-storage", ids.archived);
+    mkdirSync(archivedStorage, { recursive: true });
+    writeFileSync(join(archivedStorage, "config.txt"), "# service config\nrequest_timeout_seconds = 30\nretries = 2\n");
+    writeFileSync(join(archivedStorage, "brief.json"), JSON.stringify(BRIEF, null, 2));
+    await bbAs(null, "thread", "tell", ids.archived, "submit");
+    await waitFor("the worktree fixture's brief", async () => (await rpc("brief_get", { threadId: ids.archived })).result?.record ?? null);
+    const firstArchived = JSON.parse((await cow(null, "brief", "show", ids.archived, "--wait", "--json")).stdout);
+    for (const entry of (await rpc("brief_get", { threadId: ids.archived })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
+    const firstChecker = await thread((await rpc("brief_get", { threadId: ids.archived })).result.record.check.runs[0].threadId);
+    check(
+      "a fixture in a worktree of its own submitted a brief, and it was checked in a personal workspace, not that worktree",
+      firstArchived.check.state === "checked" && firstChecker?.environmentId !== archivedEnv && firstChecker?.projectId !== PROJECT,
+      JSON.stringify({ state: firstArchived.check.state, checkerEnv: firstChecker?.environmentId, checkerProject: firstChecker?.projectId, fixtureEnv: archivedEnv }),
+    );
+    await bbAs(null, "thread", "archive", ids.archived);
+    const cleaned = await bbAs(null, "environment", "cleanup", archivedEnv);
+    const envAfter = await bbAs(null, "environment", "show", archivedEnv, "--json");
+    const envState = envAfter.code === 0 ? JSON.parse(envAfter.stdout) : null;
+    check(
+      "the fixture is archived and its environment cleaned up",
+      cleaned.code === 0 && (await thread(ids.archived))?.archivedAt != null,
+      `${cleaned.stderr.trim() || cleaned.stdout.trim()} | ${envState ? `${envState.status} ${envState.lifecycle?.phase}` : envAfter.stderr.trim()}`,
+    );
+    const recheck = await cow(null, "brief", "check", ids.archived, "--runs", "1", "--wait", "--json");
+    const rechecked = recheck.code === 0 ? JSON.parse(recheck.stdout) : null;
+    for (const entry of (await rpc("brief_get", { threadId: ids.archived })).result.record.check?.runs ?? []) if (entry.threadId) checkers.add(entry.threadId);
+    check(
+      "the brief of an archived thread whose environment is gone is checked again, and the check runs",
+      rechecked?.check.state === "checked" && rechecked.check.runs.done === 1 && rechecked.failedRecheck === null,
+      JSON.stringify(rechecked?.check ?? recheck.stderr.trim()).slice(0, 300),
+    );
+    const usableAt = rechecked?.check.checkedAt;
+    const badRerun = await cow(null, "brief", "check", ids.archived, "--model", "cow-test-no-such-model", "--runs", "1", "--wait", "--json");
+    const kept = badRerun.code === 0 ? JSON.parse(badRerun.stdout) : null;
+    const keptRecord = (await rpc("brief_get", { threadId: ids.archived })).result.record;
+    const keptText = (await cow(null, "brief", "show", ids.archived)).stdout;
+    check(
+      "a rerun of it that fails keeps the check that ran, and says so",
+      kept?.check.state === "checked" && kept.check.checkedAt === usableAt && keptRecord.failedRecheck?.model === "cow-test-no-such-model" && /\nChecked again on .+: that attempt failed \(.+\); the check below is from /.test(keptText),
+      `${JSON.stringify(kept?.check ?? badRerun.stderr.trim()).slice(0, 200)}`,
+    );
+    console.log(`      | ${keptText.split("\n").find((line) => line.startsWith("Checked again")) ?? ""}`);
 
     // ---- the answer, as the page makes it: a signed call ------------------
     const old = await rpc("ask_answer", { id: ask.id, option: 2, text: null });
@@ -368,6 +431,11 @@ async function main() {
         const mine = await thread(id);
         if (mine?.title === TITLE && mine.archivedAt == null) await bbAs(null, "thread", "archive", id);
       }
+    }
+    // Only an environment this check made, and only once its fixture is archived.
+    for (const env of created) {
+      const owner = ids.archived ? await thread(ids.archived) : null;
+      if (owner?.archivedAt != null) await bbAs(null, "environment", "cleanup", env);
     }
     console.log(`\nthreads: ${Object.keys(ids).length} fixtures (${Object.values(ids).join(", ")}), ${checkers.size} checker runs (${[...checkers].join(", ")})`);
   }

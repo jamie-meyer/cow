@@ -123,8 +123,12 @@ bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
   checker whose answer could not be read is run once more by itself. Submitting again later stores a new version.
 - The checker runs on cow's checker settings, or when they are empty on the
   provider and model your thread runs on. When it could not run, the reason
-  names the provider and what bb said. The thread above you or the user can
-  run it elsewhere: `bb cow brief check <thread> --provider <id> --model <id>`.
+  names the provider and what bb said; when another provider could get past
+  it, the thread above you or the user can run it there: `bb cow brief check
+  <thread> --provider <id> --model <id>`. The checker starts in an empty
+  workspace of its own, so a brief can be checked after your thread is
+  archived and its worktree removed. A check run again that fails keeps the
+  check before it.
 - `--wait` waits for the checker and prints the result. Read the disputes:
   fetch the evidence a "cannot tell" asks for, correct a claim that was
   wrong, and submit again. You cannot run the check on your own brief

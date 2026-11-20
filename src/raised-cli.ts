@@ -73,7 +73,8 @@ function briefJson(record: BriefRecord) {
     version: record.version,
     submittedAt: record.submittedAt,
     summary: record.brief.summary,
-    check: { state: review.state, model: review.model, provider: review.provider, chosen: record.check?.chosen ?? null, runs: review.runs, failures: review.failures },
+    check: { state: review.state, model: review.model, provider: review.provider, chosen: record.check?.chosen ?? null, runs: review.runs, failures: review.failures, checkedAt: review.checkedAt },
+    failedRecheck: record.failedRecheck,
     mark,
     disputes: review.disputes.map(slim),
     judgementCalls: review.judgementCalls,
@@ -83,7 +84,17 @@ function briefJson(record: BriefRecord) {
 }
 
 const briefText = (record: BriefRecord): string =>
-  reviewText({ threadId: record.threadId, version: record.version, summary: record.brief.summary, earlierDisputes: record.earlierDisputes }, briefView(record).review);
+  reviewText(
+    {
+      threadId: record.threadId,
+      version: record.version,
+      summary: record.brief.summary,
+      earlierDisputes: record.earlierDisputes,
+      earlierContradicted: record.earlierContradicted,
+      failedRecheck: record.failedRecheck,
+    },
+    briefView(record).review,
+  );
 
 /** The overview with asks and briefs on it. */
 export async function attend(attention: Attention, report: StatusReport, projectId: string | null) {

@@ -1,6 +1,6 @@
 import type { Ask } from "../src/asks/ask.ts";
 import { type AskDeps, createAsks } from "../src/asks/service.ts";
-import { type BriefDeps, type CheckerSight, type CheckerSettings, createBriefs } from "../src/briefs/service.ts";
+import { type BriefDeps, type CheckerPlace, type CheckerSight, type CheckerSettings, createBriefs } from "../src/briefs/service.ts";
 import type { Kv } from "../src/kv.ts";
 import { NOW } from "./fixtures.ts";
 
@@ -48,14 +48,18 @@ export function world(kv: Kv = memoryKv()) {
 
   const files = new Map<string, string>();
   const checkers = new Map<string, CheckerSight>();
-  const started: { prompt: string; model: string | null; provider: string | null; environmentId: string | null }[] = [];
+  const started: { prompt: string; model: string | null; provider: string | null; place: CheckerPlace }[] = [];
+  /** Where bb refuses to start a checker, and what it says: "personal", "reuse". */
+  const refuse = new Map<CheckerPlace["type"], string>();
+  /** The submitting thread's environment; null when it has none. */
+  const env = { id: "env_1" as string | null };
   const discarded: string[] = [];
   const settings: CheckerSettings = { model: null, provider: null, runs: 1, onSubmit: true };
   /** The provider and model the submitting thread ran on. */
   const own: { provider: string | null; model: string | null } = { provider: null, model: null };
   const briefDeps: BriefDeps = {
     ...base,
-    thread: async (threadId) => (threadId in PARENTS ? { projectId: "proj_1", environmentId: "env_1" } : null),
+    thread: async (threadId) => (threadId in PARENTS ? { projectId: "proj_1", environmentId: env.id } : null),
     execution: async () => ({ ...own }),
     readEvidence: async (threadId, path) => {
       const text = files.get(`${threadId}/${path}`);
@@ -70,6 +74,8 @@ export function world(kv: Kv = memoryKv()) {
     settings: async () => ({ ...settings }),
     checker: {
       start: async (args) => {
+        const refused = refuse.get(args.place.type);
+        if (refused !== undefined) throw new Error(refused);
         started.push(args);
         const id = `chk_${started.length}`;
         checkers.set(id, { state: "running", reply: null, tools: [] });
@@ -82,5 +88,5 @@ export function world(kv: Kv = memoryKv()) {
   const briefs = createBriefs(briefDeps);
   /** Make a checker answer. */
   const reply = (id: string, text: string | null, tools: string[] = []) => checkers.set(id, { state: "idle", reply: text, tools });
-  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, own, reply };
+  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, own, reply, refuse, env };
 }

@@ -91,14 +91,44 @@ function causeText(failure: CheckerFailure | null): string {
   return plain ?? said ?? "bb recorded no cause";
 }
 
-/** A checker's failed turn, said plainly: where it ran, why it failed, and how to run it elsewhere. */
-export function turnFailedText(args: { provider: string | null; model: string | null; failure: CheckerFailure | null; threadId: string }): string {
-  return `the checker's turn failed on ${checkerOn(args.provider, args.model)}: ${causeText(args.failure)}. To check it on another provider: ${againCommand(args.threadId)}`;
+/** The failures another provider or model could get past: not signed in, no such model, billing, limits, a brief too long for the model. */
+const FIXABLE = new Set(["unauthorized", "billing", "rate-limit", "budget-exceeded", "overloaded", "context-window-exceeded"]);
+
+/** Could running the check on another provider fix this failed turn? */
+export function providerCouldFix(failure: CheckerFailure | null): boolean {
+  if (failure === null) return false;
+  if (failure.httpStatus === 401 || failure.httpStatus === 402 || failure.httpStatus === 429) return true;
+  if (failure.category === "bad-request" && failure.httpStatus === 404) return true;
+  return failure.category !== null && FIXABLE.has(failure.category);
 }
+
+/** Could another provider fix a refusal to start? Only when bb's words name the provider, the model, signing in, billing or a limit. */
+export function startCouldFix(cause: string): boolean {
+  return /\bprovider\b|\bmodel\b|unauthori[sz]ed|\bsign(?:ed)?[ -]?in\b|\blog(?:ged)?[ -]?in\b|\bbilling\b|\bquota\b|rate[ -]?limit|usage limit|\bbudget\b|\bHTTP (?:401|402|429)\b/i.test(cause);
+}
+
+const hint = (fixable: boolean, threadId: string) => (fixable ? ` To check it on another provider: ${againCommand(threadId)}` : "");
+
+/** A checker's failed turn, said plainly: where it ran and why it failed, and, when another provider could help, how to run it there. */
+export function turnFailedText(args: { provider: string | null; model: string | null; failure: CheckerFailure | null; threadId: string }): string {
+  return `the checker's turn failed on ${checkerOn(args.provider, args.model)}: ${causeText(args.failure)}.${hint(providerCouldFix(args.failure), args.threadId)}`;
+}
+
+const bare = (cause: string) => oneLine(cause).replace(/[.\s]+$/, "");
 
 /** A checker bb would not start, said the same way. */
 export function startFailedText(args: { provider: string | null; model: string | null; cause: string; threadId: string }): string {
-  return `the checker could not be started on ${checkerOn(args.provider, args.model)}: ${oneLine(args.cause).replace(/[.\s]+$/, "")}. To check it on another provider: ${againCommand(args.threadId)}`;
+  return `the checker could not be started on ${checkerOn(args.provider, args.model)}: ${bare(args.cause)}.${hint(startCouldFix(args.cause), args.threadId)}`;
+}
+
+/**
+ * A checker that had nowhere to start: bb would not make it a personal
+ * workspace, and the submitting thread's environment is gone or refused it
+ * too. Another provider would not help, so none is suggested.
+ */
+export function nowhereText(args: { personal: string; own: string | null }): string {
+  const own = args.own === null ? "" : `; and in the thread's own environment: ${bare(args.own)}`;
+  return `the checker could not be started: the thread's environment is gone, and there is nowhere else to start a check (bb would not make a personal workspace for it: ${bare(args.personal)}${own})`;
 }
 
 /** What bb recorded about a failed turn, read from the thread's events, newest first. */

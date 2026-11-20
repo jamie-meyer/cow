@@ -1037,13 +1037,27 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   (`chosen` in `--json`: `given`, `setting`, `inherited` or `default`), and
   the sheet and `bb cow brief show` name them, adding "as the submitting
   thread ran" when both were inherited.
+- **Where its thread starts.** The checker reads only its prompt, so it needs
+  no checkout. Its thread starts in a personal workspace: an empty folder of
+  its own in bb's personal project, which bb removes with the thread. It
+  never starts in the submitting thread's worktree unless bb will not make a
+  personal workspace; then it uses that environment if it is still there. A
+  brief from a thread that is archived, and whose worktree bb has removed,
+  is checked like any other. With nowhere to start, the check fails with
+  "the checker could not be started: the thread's environment is gone, and
+  there is nowhere else to start a check (bb would not make a personal
+  workspace for it: …)".
 - **When the checker cannot run.** A checker bb would not start, or whose
   turn failed, is a failed check whose reason says the provider and model it
   was started on, the cause in plain words where bb recorded one (such as
   "the provider is not signed in" or "the provider does not have that
-  model"), what bb said, and the way out: `To check it on another provider:
-  bb cow brief check <thread> --provider <provider> --model <model>`. cow
-  never retries on another provider by itself.
+  model"), and what bb said. When another provider or model could get past
+  it (not signed in, no such provider or model, billing, a usage limit or
+  budget, an overloaded provider, a brief too long for the model) it ends
+  with the way out: `To check it on another provider: bb cow brief check
+  <thread> --provider <provider> --model <model>`. Other failures (a
+  connection that dropped, the sandbox, an environment bb could not give)
+  do not suggest it. cow never retries on another provider by itself.
 - A failed check keeps the reason and what the checker answered, as it came.
   The sheet and `bb cow brief show` print both, so that you can see whether
   it was the checker or the brief that went wrong. None of it counts as a
@@ -1051,13 +1065,26 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
 - The thread a brief is from cannot order its own audit. The thread above it
   can, and so can you. That rule goes by the name the caller gives, which is
   the caller's own word, so cow does not rest on it: see the next point.
+- **A check run again that fails takes nothing away.** When no run of the
+  new check gives a usable answer, the check before it, if it had one, stays
+  the brief's check, verdicts and all, as read or unread as it was. The
+  failed attempt is kept beside it, and the sheet and `bb cow brief show`
+  say, above the check: "Checked again on <date>: that attempt failed
+  (<why>); the check below is from <date>" (dates in UTC; `failedRecheck` in
+  `--json`). Only the latest failed attempt is kept, and a check that
+  answers clears it. A check that answers replaces the one before.
 - Running a check again takes nothing out of your queue. If the check it
-  replaces disputed claims and you had not opened the brief, the brief keeps
-  waiting whatever the new check says (failed, or clean), and says "N
-  disputed by an earlier check that was run again unread"; the sheet and
-  `bb cow brief show` say the same above the new check's result. A
-  judgement call keeps waiting while the new check runs. Only you opening
-  the brief ends the wait.
+  replaces found claims to dispute and you had not opened the brief, the
+  brief keeps waiting whatever the new check says, and the sheet and `bb cow
+  brief show` say, above the new check's result, what the earlier one found
+  in the words of what was counted: "NOTE: an earlier check of this version
+  could not confirm 5 claims, and the check was run again before you had
+  read them. This check replaced that one." ("contradicted 1 claim",
+  "contradicted 1 claim and could not confirm 2 claims"; a check recorded
+  before 0.2.14 says "contradicted or could not confirm"). The thread's line
+  says "brief: an earlier check, run again unread, could not confirm 5
+  claims". A judgement call keeps waiting while the new check runs. Only you
+  opening the brief ends the wait.
 
 A claim is **disputed** when the checker's verdict is weaker than the agent's
 label warrants:
@@ -1096,7 +1123,7 @@ decision, puts nothing in the queue.
 | `l`, `Enter` | open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link that opens the file as it is now in the reader; `q` there returns to the brief |
 | `h` | close it |
 | `a` | answer the judgement call under the cursor, when it is open as an ask |
-| `c` | run the check again, after `y`: it costs a model run for each run in the settings and replaces the verdicts |
+| `c` | run the check again, after `y`: it costs a model run for each run in the settings, and replaces the verdicts once it gives an answer; if it fails, they stay |
 | `f` | hints on what is in the sheet |
 | `q`, `Esc` | close; the cursor returns to the line |
 
@@ -1728,7 +1755,7 @@ agent and stop no other.
 | `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
 | `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it moves it, once finished, from idle in the tree to done under To settle. Whose its replies are does not change: that is decided by who started each turn, for a project as for any thread |
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
-| `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's, which a caller can make fail by naming a model that does not exist. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
+| `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's once it answers. A caller who makes it fail, say by naming a model that does not exist, replaces nothing: the earlier check stays, with the failed attempt beside it. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
 
 Recording which thread is Main (`main_choose`) was one of these until 0.2.1.
 A window keeps the Main chosen in it, but a new window starts on the

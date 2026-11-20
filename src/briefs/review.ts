@@ -89,6 +89,8 @@ export interface Review {
   /** The provider and model in words, saying when they are the submitting thread's. */
   checker: string;
   runs: { done: number; failed: number; running: number };
+  /** When the check's last run finished; null while none has. */
+  checkedAt: number | null;
   /** Why each failed run failed. */
   failures: string[];
   /** The same runs, each with what the checker answered when it answered something unusable, and whether it was a second try. */
@@ -140,6 +142,7 @@ export function review(brief: Brief, check: Check | null): Review {
     provider: check?.provider ?? null,
     checker: checkerText(check),
     runs: { done: done.length, failed: failed.length, running },
+    checkedAt: runs.some((run) => run.finishedAt !== null) ? Math.max(...runs.map((run) => run.finishedAt ?? 0)) : null,
     failures: failed.map((run) => run.error),
     failed: failed.map((run) => ({ error: run.error, answer: run.answer ?? null, retried: (run.attempt ?? 1) > 1 })),
     disputes: reviewed.filter((entry) => entry.dispute !== null).sort((a, b) => rank(a) - rank(b)),
@@ -167,13 +170,15 @@ export interface BriefMark {
    * queue, so the brief waits on the person whatever the new check says.
    */
   earlierDisputes?: number;
+  /** With `earlierDisputes`: how many of them the evidence contradicted, the rest it could not confirm. Null when not recorded (before 0.2.14). */
+  earlierContradicted?: number | null;
   /** Set when this is not the version's first check: a check that was run again. */
   rechecked?: true;
 }
 
-export function markOf(version: number, seen: Review, at = 0, read = false, earlierDisputes = 0, rechecked = false): BriefMark {
+export function markOf(version: number, seen: Review, at = 0, read = false, earlierDisputes = 0, rechecked = false, earlierContradicted: number | null = null): BriefMark {
   return {
-    ...(earlierDisputes > 0 ? { earlierDisputes } : {}),
+    ...(earlierDisputes > 0 ? { earlierDisputes, earlierContradicted } : {}),
     ...(rechecked ? { rechecked: true as const } : {}),
     version,
     state: seen.state,
@@ -205,10 +210,47 @@ export function briefWaits(mark: BriefMark): boolean {
   return disputeCount(mark) > 0 || mark.judgementCalls > 0;
 }
 
+const claims = (n: number) => `${n} ${n === 1 ? "claim" : "claims"}`;
+
+/**
+ * What an earlier check found, in the words of what was counted: claims the
+ * evidence contradicted, and claims it could not confirm. Both put a brief in
+ * front of the person; only the first is the evidence saying a claim is wrong.
+ * "contradicted 1 claim and could not confirm 2 claims".
+ */
+export function foundText(count: number, contradicted: number | null): string {
+  if (contradicted === null) return `contradicted or could not confirm ${claims(count)}`;
+  const unconfirmed = Math.max(0, count - contradicted);
+  const parts = [...(contradicted > 0 ? [`contradicted ${claims(contradicted)}`] : []), ...(unconfirmed > 0 ? [`could not confirm ${claims(unconfirmed)}`] : [])];
+  return parts.join(" and ");
+}
+
 /** What a brief says of disputes an earlier check found and the person never read; empty when there are none. */
-export function earlierDisputesText(count: number): string {
+export function earlierDisputesText(count: number, contradicted: number | null = null): string {
   if (count <= 0) return "";
-  return `an earlier check of this version disputed ${count} ${count === 1 ? "claim" : "claims"}, and the check was run again before you had read ${count === 1 ? "it" : "them"}`;
+  return `an earlier check of this version ${foundText(count, contradicted)}, and the check was run again before you had read ${count === 1 ? "it" : "them"}`;
+}
+
+/** "2026-11-19 14:03 UTC": the same on every machine, so the CLI and the page agree. */
+export function dateText(ms: number): string {
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/** A run of the check again that gave no usable answer, kept beside the check it did not replace. */
+export interface FailedRecheck {
+  startedAt: number;
+  finishedAt: number;
+  provider: string | null;
+  model: string | null;
+  errors: string[];
+}
+
+/** "checked again on <date>: that attempt failed (<cause>); the check below is from <date>". */
+export function failedRecheckText(failed: FailedRecheck, checkedAt: number | null): string {
+  const causes = [...new Set(failed.errors)];
+  const cause = causes.length === 0 ? "no run gave a usable answer" : causes.join("; ");
+  const kept = checkedAt === null ? "is the one before it" : `is from ${dateText(checkedAt)}`;
+  return `checked again on ${dateText(failed.startedAt)}: that attempt failed (${cause}); the check below ${kept}`;
 }
 
 /** What a waiting brief's line says. */
@@ -218,7 +260,7 @@ export function briefWaitText(mark: BriefMark): string {
   if (disputed > 0) parts.push(`${disputed} disputed`);
   if (mark.judgementCalls > 0) parts.push(`${mark.judgementCalls} ${mark.judgementCalls === 1 ? "judgement call" : "judgement calls"}`);
   const earlier = mark.earlierDisputes ?? 0;
-  if (earlier > 0) parts.push(`${earlier} disputed by an earlier check that was run again unread`);
+  if (earlier > 0) parts.push(`an earlier check, run again unread, ${foundText(earlier, mark.earlierContradicted ?? null)}`);
   return `brief: ${parts.join(", ")}`;
 }
 
@@ -257,8 +299,12 @@ function claimLines(entry: ReviewedClaim): string[] {
  * claims, then what was left undone. The agent's label is given as what the
  * agent says, never as a check.
  */
-export function reviewText(head: { threadId: string; version: number; summary: string; earlierDisputes?: number }, seen: Review): string {
+export function reviewText(
+  head: { threadId: string; version: number; summary: string; earlierDisputes?: number; earlierContradicted?: number | null; failedRecheck?: FailedRecheck | null },
+  seen: Review,
+): string {
   const out: string[] = [`Brief v${head.version} from ${head.threadId}`, `  ${cut(head.summary, 1200)}`, ""];
+  if (head.failedRecheck) out.push(`${cut(failedRecheckText(head.failedRecheck, seen.checkedAt), SHOW_LIMITS.error)}`.replace(/^c/, "C"));
   const checker = seen.checker;
   if (seen.state === "unchecked") out.push("NOT CHECKED: no checker has audited this brief. Nothing below is verified.");
   else if (seen.state === "running") out.push(`Check running (${seen.runs.running} of ${seen.runs.running + seen.runs.done + seen.runs.failed} runs still going). Nothing below is verified yet.`);
@@ -272,7 +318,7 @@ export function reviewText(head: { threadId: string; version: number; summary: s
     }
   }
 
-  const earlier = earlierDisputesText(head.earlierDisputes ?? 0);
+  const earlier = earlierDisputesText(head.earlierDisputes ?? 0, head.earlierContradicted ?? null);
   if (earlier !== "") out.push(`  NOTE: ${earlier}. This check replaced that one.`);
 
   out.push("", `Disputes (${seen.disputes.length})`);

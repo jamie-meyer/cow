@@ -7,7 +7,7 @@ import { storagePath } from "../asks/ask.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { BRIEF_LIMITS, BRIEF_SHAPE, type Brief, type Evidence, briefSchema, clip, validateBrief } from "./brief.ts";
 import { checkerPrompt, parseCheckerReply } from "./checker.ts";
-import { type CheckerFailure, chooseChecker, startFailedText, turnFailedText } from "./provider.ts";
+import { type CheckerFailure, chooseChecker, nowhereText, startCouldFix, startFailedText, turnFailedText } from "./provider.ts";
 import { type BriefMark, type CheckRun, type Review, VERDICTS, disputeCount, markOf, review } from "./review.ts";
 
 const PREFIX = "brief:";
@@ -47,6 +47,25 @@ const checkSchema = z.object({
   ),
 });
 
+/** A run of the check again that gave no usable answer, kept beside the check it did not replace. */
+const failedRecheckSchema = z.object({
+  startedAt: z.number(),
+  finishedAt: z.number(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  /** Why each of its runs failed. */
+  errors: z.array(z.string()),
+});
+
+/** What a check being run again would replace, kept until it answers: if no run of it does, this is put back. */
+const replacedSchema = z.object({
+  check: checkSchema,
+  readAt: z.number().nullable(),
+  earlierChecks: z.number().int().min(0),
+  earlierDisputes: z.number().int().min(0),
+  earlierContradicted: z.number().int().min(0).nullable(),
+});
+
 export const briefRecordSchema = z.object({
   threadId: z.string(),
   projectId: z.string(),
@@ -69,8 +88,22 @@ export const briefRecordSchema = z.object({
    * when a check is run again after they have read it.
    */
   earlierDisputes: z.number().int().min(0).default(0),
+  /** How many of `earlierDisputes` the evidence contradicted; the rest it could not confirm. Null on records from before 0.2.14. */
+  earlierContradicted: z.number().int().min(0).nullable().default(null),
+  /** While a check runs again: the usable check it would replace. */
+  replaced: replacedSchema.nullable().default(null),
+  /** The latest run of the check again that gave no usable answer, when the check before it was kept. */
+  failedRecheck: failedRecheckSchema.nullable().default(null),
 });
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
+
+/**
+ * Where a checker's thread starts. It reads only its prompt, so it needs no
+ * checkout: a personal workspace is an empty directory of its own, in bb's
+ * personal project, that bb removes with the thread. The submitting thread's
+ * environment is used only when bb will not make one.
+ */
+export type CheckerPlace = { type: "personal" } | { type: "reuse"; projectId: string; environmentId: string };
 
 export interface CheckerSettings {
   /** Null when not set: the submitting thread's provider and model are used, or failing those bb's default. */
@@ -108,7 +141,7 @@ export interface BriefDeps {
   settings(): Promise<CheckerSettings>;
   checker: {
     /** Start a checker in a hidden thread of its own, given only `prompt`. Returns the thread's id. */
-    start(args: { projectId: string; environmentId: string | null; prompt: string; model: string | null; provider: string | null }): Promise<string>;
+    start(args: { place: CheckerPlace; prompt: string; model: string | null; provider: string | null }): Promise<string>;
     look(threadId: string): Promise<CheckerSight>;
     /** Stop and archive a checker's thread. */
     discard(threadId: string): Promise<void>;
@@ -168,6 +201,57 @@ export function createBriefs(deps: BriefDeps): Briefs {
     deps.changed();
   };
 
+  const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+  /**
+   * Start one checker: in a personal workspace, or failing that in the
+   * submitting thread's environment. Throws an Error whose message is the
+   * failure in words. A refusal another provider could get past is not tried
+   * elsewhere: it would be refused there too.
+   */
+  const launch = async (record: BriefRecord, prompt: string, model: string | null, provider: string | null): Promise<string> => {
+    const said = (cause: string) => new Error(startFailedText({ provider, model, cause, threadId: record.threadId }));
+    let personal: string;
+    try {
+      return await deps.checker.start({ place: { type: "personal" }, prompt, model, provider });
+    } catch (cause) {
+      personal = message(cause);
+      if (startCouldFix(personal)) throw said(personal);
+    }
+    const thread = await deps.thread(record.threadId).catch(() => null);
+    if (!thread?.environmentId) throw new Error(nowhereText({ personal, own: null }));
+    try {
+      return await deps.checker.start({ place: { type: "reuse", projectId: thread.projectId, environmentId: thread.environmentId }, prompt, model, provider });
+    } catch (cause) {
+      const own = message(cause);
+      if (startCouldFix(own)) throw said(own);
+      throw new Error(nowhereText({ personal, own }));
+    }
+  };
+
+  /**
+   * A check that has finished with no usable answer, when it was run again
+   * over one that had one: the earlier check is put back, as it was, and the
+   * attempt is kept beside it. Anything else is returned as it is.
+   */
+  const keepEarlier = (record: BriefRecord): BriefRecord => {
+    const { check, replaced } = record;
+    if (replaced === null || check === null) return record;
+    if (check.runs.some((run) => run.status === "running")) return record;
+    if (check.runs.some((run) => run.status === "done")) return { ...record, replaced: null, failedRecheck: null };
+    const errors = check.runs.flatMap((run) => (run.status === "failed" ? [run.error] : []));
+    const finishedAt = Math.max(check.startedAt, ...check.runs.map((run) => run.finishedAt ?? 0));
+    return {
+      ...record,
+      check: replaced.check,
+      readAt: replaced.readAt,
+      earlierChecks: replaced.earlierChecks,
+      earlierDisputes: replaced.earlierDisputes,
+      earlierContradicted: replaced.earlierContradicted,
+      replaced: null,
+      failedRecheck: { startedAt: check.startedAt, finishedAt, provider: check.provider, model: check.model, errors },
+    };
+  };
+
   /** Where one running run stands now: still running, or its final state. `unreadable`: it answered, and the answer could not be read. */
   const judge = async (run: CheckRun, record: BriefRecord): Promise<CheckRun & { unreadable?: true }> => {
     const { brief } = record;
@@ -197,18 +281,11 @@ export function createBriefs(deps: BriefDeps): Briefs {
   /** Run a checker again, once, when its answer could not be read: a slip in its JSON is not a verdict on the brief. */
   const again = async (record: BriefRecord, failed: CheckRun & { status: "failed" }): Promise<CheckRun> => {
     try {
-      const thread = await deps.thread(record.threadId);
-      const checker = await deps.checker.start({
-        projectId: record.projectId,
-        environmentId: thread?.environmentId ?? null,
-        prompt: checkerPrompt(record.brief, deps.newId()),
-        model: record.check?.model ?? null,
-        provider: record.check?.provider ?? null,
-      });
+      const checker = await launch(record, checkerPrompt(record.brief, deps.newId()), record.check?.model ?? null, record.check?.provider ?? null);
       await kv.set(`${RUN_PREFIX}${checker}`, { threadId: record.threadId, version: record.version });
       return { status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 2 };
     } catch (cause) {
-      return { ...failed, error: `${failed.error}; and it could not be run again: ${cause instanceof Error ? cause.message : String(cause)}` };
+      return { ...failed, error: `${failed.error}; and it could not be run again: ${message(cause)}` };
     }
   };
 
@@ -230,7 +307,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
         runs.push(unreadable && judged.status === "failed" && (judged.attempt ?? 1) < 2 ? await again(record, judged) : judged);
       }
       if (over.length === 0) return record;
-      const next = { ...record, check: { ...record.check, runs } };
+      const next = keepEarlier({ ...record, check: { ...record.check, runs } });
       await write(next);
       for (const threadId of over) {
         await deps.checker.discard(threadId).catch(() => undefined);
@@ -250,23 +327,40 @@ export function createBriefs(deps: BriefDeps): Briefs {
       const own = await deps.execution(threadId).catch(() => ({ provider: null, model: null }));
       const { provider, model, chosen } = chooseChecker(overrides, settings, own);
       const count = Math.min(MAX_RUNS, Math.max(1, Math.trunc(overrides.runs ?? settings.runs)));
-      const thread = await deps.thread(threadId);
       const prompt = checkerPrompt(record.brief, deps.newId());
       const startedAt = deps.now();
       const runs: CheckRun[] = [];
       for (let n = 0; n < count; n += 1) {
         try {
-          const checker = await deps.checker.start({ projectId: record.projectId, environmentId: thread?.environmentId ?? null, prompt, model, provider });
+          const checker = await launch(record, prompt, model, provider);
           await kv.set(`${RUN_PREFIX}${checker}`, { threadId, version: record.version });
           runs.push({ status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 1 });
         } catch (cause) {
-          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), attempt: 1, answer: null, error: startFailedText({ provider, model, cause: cause instanceof Error ? cause.message : String(cause), threadId }) });
+          runs.push({ status: "failed", threadId: "", startedAt, finishedAt: deps.now(), attempt: 1, answer: null, error: message(cause) });
         }
       }
       // A new check may say something new, so the brief is the person's to read again.
       // What the check being replaced disputed, and the person has not read, is not lost with it.
-      const earlierDisputes = record.readAt !== null ? 0 : Math.max(record.earlierDisputes, disputeCount(briefView(record).mark));
-      const next = { ...record, check: { model, provider, chosen, startedAt, runs }, earlierChecks: record.earlierChecks + (record.check ? 1 : 0), readAt: null, earlierDisputes };
+      const mark = briefView(record).mark;
+      const earlier =
+        record.readAt !== null ? { earlierDisputes: 0, earlierContradicted: null }
+        : disputeCount(mark) > record.earlierDisputes ? { earlierDisputes: disputeCount(mark), earlierContradicted: mark.contradicted }
+        : { earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted };
+      // A check that gave an answer is kept until the new one gives one: a rerun that fails takes nothing away.
+      const usable = record.check?.runs.some((run) => run.status === "done") ?? false;
+      const replaced =
+        usable && record.check ?
+          { check: record.check, readAt: record.readAt, earlierChecks: record.earlierChecks, earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted }
+        : null;
+      const next = keepEarlier({
+        ...record,
+        check: { model, provider, chosen, startedAt, runs },
+        earlierChecks: record.earlierChecks + (record.check ? 1 : 0),
+        readAt: null,
+        ...earlier,
+        replaced,
+        failedRecheck: null,
+      });
       await write(next);
       return next;
     });
@@ -343,6 +437,9 @@ export function createBriefs(deps: BriefDeps): Briefs {
           earlierChecks: 0,
           readAt: null,
           earlierDisputes: 0,
+          earlierContradicted: null,
+          replaced: null,
+          failedRecheck: null,
         };
         await write(made);
         return made;
@@ -414,5 +511,5 @@ export function createBriefs(deps: BriefDeps): Briefs {
 export function briefView(record: BriefRecord): { record: BriefRecord; review: Review; mark: BriefMark } {
   const seen = review(record.brief, record.check);
   const at = Math.max(record.submittedAt, ...(record.check?.runs ?? []).map((run) => run.finishedAt ?? 0));
-  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0) };
+  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0, record.earlierContradicted) };
 }

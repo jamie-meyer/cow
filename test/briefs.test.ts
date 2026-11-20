@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Brief, validateBrief } from "../src/briefs/brief.ts";
 import { checkerPrompt, parseCheckerReply } from "../src/briefs/checker.ts";
-import { type Check, type ClaimVerdict, briefWaitText, briefWaits, disputeOf, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
+import { type Check, type ClaimVerdict, briefWaits, disputeOf, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
 import { CHECK_TIMEOUT_MS, briefView } from "../src/briefs/service.ts";
 import { Refusal } from "../src/kv.ts";
 import { NOW } from "./fixtures.ts";
@@ -228,7 +228,8 @@ test("submitting stores the brief with its evidence copied, and starts the check
   assert.equal(record.check?.runs[0]?.status, "running");
   assert.equal(w.started.length, 1);
   assert.match(w.started[0]?.prompt ?? "", /\+ rate = 5\/min/);
-  assert.equal(w.started[0]?.environmentId, "env_1");
+  // It starts in a personal workspace, not in the thread's worktree.
+  assert.deepEqual(w.started[0]?.place, { type: "personal" });
   assert.equal(briefView(record).mark.state, "running");
 
   // The file changing later does not change what was submitted.
@@ -514,16 +515,17 @@ test("running a check again cannot take a dispute the person has not read out of
   assert.deepEqual([running.state, running.earlierDisputes, briefWaits(running)], ["running", count, true]);
   w.checkers.set("chk_2", { state: "error", reply: null, tools: [] });
   await w.briefs.checkerStopped("chk_2");
+  // The rerun failed, so the check that answered is back, disputes and all.
   const failed = briefView(await w.briefs.get("child"));
-  assert.deepEqual([failed.mark.state, failed.mark.contradicted + failed.mark.notEstablished, failed.mark.earlierDisputes], ["failed", 0, count]);
+  assert.deepEqual([failed.mark.state, failed.mark.contradicted + failed.mark.notEstablished], ["checked", count]);
   assert.equal(briefWaits(failed.mark), true);
-  assert.match(briefWaitText(failed.mark), /disputed by an earlier check that was run again unread/);
+  assert.equal(failed.record.failedRecheck?.errors.length, 1);
   // Nor does a check that comes back clean, however many times it is run.
   await w.briefs.check({ caller: "main", threadId: "child" });
   w.reply("chk_3", answerAll("supported"));
   const clean = briefView(await w.briefs.get("child"));
   assert.deepEqual([clean.mark.state, clean.mark.contradicted + clean.mark.notEstablished, clean.mark.earlierDisputes, briefWaits(clean.mark)], ["checked", 0, count, true]);
-  assert.match(reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: clean.record.earlierDisputes }, clean.review), /NOTE: an earlier check of this version disputed/);
+  assert.match(reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: clean.record.earlierDisputes, earlierContradicted: clean.record.earlierContradicted }, clean.review), /NOTE: an earlier check of this version contradicted 2 claims, and the check was run again before you had read them\. This check replaced that one\./);
   // The person opening it is what ends the wait; a check they order after that starts from nothing.
   await w.briefs.read("child", 1);
   assert.equal(briefWaits(briefView(await w.briefs.get("child")).mark), false);

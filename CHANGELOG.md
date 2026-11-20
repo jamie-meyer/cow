@@ -4,6 +4,35 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.14
+
+A check that can always start, and a failed rerun that loses nothing.
+
+- **Checking a brief after its thread is archived works.** The checker reads
+  only its prompt, so its thread now starts in an empty personal workspace
+  of its own (in bb's personal project, removed with it) instead of the
+  submitting thread's worktree. A brief whose thread is archived and whose
+  worktree bb has removed is checked like any other. The checker still uses
+  no tools, and an answer from one that did is still thrown away.
+- **A failure that says what failed.** If there is nowhere to start a
+  checker, the check says "the thread's environment is gone, and there is
+  nowhere else to start a check", with what bb said. "To check it on another
+  provider" is now added only where another provider could help: not signed
+  in, no such provider or model, billing, a usage limit or budget, an
+  overloaded provider, a brief too long for the model.
+- **A check run again that fails keeps the one before.** When no run of the
+  new check gives a usable answer, the earlier check stays, verdicts and
+  all, and the brief says above it "Checked again on <date>: that attempt
+  failed (<why>); the check below is from <date>". A check run again that
+  answers replaces the earlier one, as before.
+- **The note about an earlier check says what it counted.** A claim the
+  agent called checked and the checker could not confirm keeps a brief in
+  front of you, and was counted as "disputed". The note now says "could not
+  confirm 5 claims", "contradicted 1 claim", or both.
+- **Not recoverable.** A check that a failed rerun overwrote before this
+  version cannot be brought back: cow did not keep it. Run the check again;
+  for a brief whose thread is archived that now works.
+
 ## 0.2.13
 
 A copy-on-write workspace for a thread, on macOS.

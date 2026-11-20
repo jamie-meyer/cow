@@ -9,7 +9,7 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Ask } from "./asks/ask.ts";
 import type { Label } from "./briefs/brief.ts";
-import { type ReviewedClaim, type Verdict, earlierDisputesText, review } from "./briefs/review.ts";
+import { type ReviewedClaim, type Verdict, earlierDisputesText, failedRecheckText, review } from "./briefs/review.ts";
 import type { BriefRecord } from "./briefs/service.ts";
 import { type SheetItem, checkLine, moveStop, sheetItems } from "./briefs/sheet.ts";
 import type { Command } from "./keys.ts";
@@ -20,6 +20,7 @@ import { formatAge } from "./text.ts";
 const LABEL_TEXT: Record<Label, string> = { checked: "checked", inferred: "inferred", "not-checked": "not checked" };
 const VERDICT_TEXT: Record<Verdict, string> = { supported: "supported", "not-supported": "not supported", "cannot-tell": "cannot tell" };
 
+const upper = (text: string): string => `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;
 const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
 export interface SheetHost {
@@ -215,10 +216,14 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <p className={`cow-bf-check cow-bf-check-${check.tone}`} data-cow-brief-check={seen.state} data-cow-brief-runs={seen.runs.done}>
           {check.text}
         </p>
+        {record.failedRecheck ? (
+          <p className="cow-bf-check" data-cow-brief-recheck-failed="">
+            {upper(failedRecheckText(record.failedRecheck, seen.checkedAt))}.
+          </p>
+        ) : null}
         {record.earlierDisputes > 0 ? (
           <p className="cow-bf-check cow-bf-check-bad" data-cow-brief-earlier={record.earlierDisputes}>
-            {earlierDisputesText(record.earlierDisputes)[0]?.toUpperCase()}
-            {earlierDisputesText(record.earlierDisputes).slice(1)}. This check replaced that one.
+            {upper(earlierDisputesText(record.earlierDisputes, record.earlierContradicted))}. This check replaced that one.
           </p>
         ) : null}
         {seen.failed.map((failure, index) => (
@@ -278,7 +283,7 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
       <div className="cow-sheet-foot">
         {open.confirming ? (
           <span data-cow-sheet-confirm="">
-            <b>Run the check again?</b> It starts a new audit and costs a model run for each run in cow's settings; the verdicts above are replaced. <kbd>y</kbd> run it · any other key cancels
+            <b>Run the check again?</b> It starts a new audit and costs a model run for each run in cow's settings; the verdicts above are replaced once it gives an answer, and stay if it fails. <kbd>y</kbd> run it · any other key cancels
           </span>
         ) : (
           <span>

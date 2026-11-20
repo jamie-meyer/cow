@@ -33,6 +33,7 @@ const markSchema = z.object({
   at: z.number(),
   read: z.boolean(),
   earlierDisputes: z.number().optional(),
+  earlierContradicted: z.number().nullable().optional(),
   rechecked: z.literal(true).optional(),
 });
 
@@ -130,6 +131,15 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
   });
 
   const changed = () => bb.realtime.publish(RAISED_CHANGED, {});
+  let personal: string | null = null;
+  /** bb's personal project, where a checker's personal workspace is made. */
+  const personalProject = async (): Promise<string> => {
+    if (personal !== null) return personal;
+    const found = (await bb.sdk.projects.list({ includePersonal: true })).find((project) => project.kind === "personal");
+    if (!found) throw new Error("bb has no personal project to make a personal workspace in");
+    personal = found.id;
+    return personal;
+  };
   const thread = async (threadId: string) => {
     const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
     return found ? { projectId: found.projectId, environmentId: found.environmentId ?? null } : null;
@@ -215,10 +225,16 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
       // nobody, hidden, and in the mode where bb refuses whatever would
       // need the user's permission. It is told to use no tool, and its
       // answer is thrown away if it used one.
-      start: async ({ projectId, environmentId, prompt, model, provider }) => {
+      // It reads nothing but its prompt, so it starts in a personal
+      // workspace: an empty directory of its own in bb's personal project,
+      // removed with the thread, with nothing in it to read or change. Only
+      // when bb will not make one does it start in the submitting thread's
+      // environment (see `launch` in briefs/service.ts).
+      start: async ({ place, prompt, model, provider }) => {
         const spawned = await bb.sdk.threads.spawn({
-          projectId,
-          environment: environmentId === null ? { type: "project-default" } : { type: "reuse", environmentId },
+          ...(place.type === "personal" ?
+            { projectId: await personalProject(), environment: { type: "host" as const, workspace: { type: "personal" as const } } }
+          : { projectId: place.projectId, environment: { type: "reuse" as const, environmentId: place.environmentId } }),
           prompt,
           title: CHECKER_TITLE,
           visibility: "hidden",

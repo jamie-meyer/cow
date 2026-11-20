@@ -53,13 +53,13 @@ test("a failed turn says where it ran, why, and how to run it elsewhere", () => 
   assert.match(turnFailedText({ provider: null, model: null, failure: http401, threadId: "thr_a" }), /on bb's default provider and model: the provider is not signed in \(bb said: "HTTP 401"\)/);
 
   const onlyTurn = failureOf([{ type: "turn/completed", data: { status: "failed", error: { message: "boom" } } }]);
-  assert.match(turnFailedText({ provider: "codex", model: null, failure: onlyTurn, threadId: "thr_a" }), /on codex, its default model: bb said: "boom"\. To check/);
+  assert.match(turnFailedText({ provider: "codex", model: null, failure: onlyTurn, threadId: "thr_a" }), /on codex, its default model: bb said: "boom"\.$/);
 
   const odd = failureOf([{ type: "provider/error", data: { errorInfo: { category: "something-new" } } }]);
-  assert.match(turnFailedText({ provider: "codex", model: null, failure: odd, threadId: "thr_a" }), /: the provider reported an error \(something-new\)\. To check/);
+  assert.match(turnFailedText({ provider: "codex", model: null, failure: odd, threadId: "thr_a" }), /: the provider reported an error \(something-new\)\.$/);
 
   assert.equal(failureOf([{ type: "turn/completed", data: { status: "failed" } }]), null);
-  assert.match(turnFailedText({ provider: "codex", model: null, failure: null, threadId: "thr_a" }), /: bb recorded no cause\. To check/);
+  assert.match(turnFailedText({ provider: "codex", model: null, failure: null, threadId: "thr_a" }), /: bb recorded no cause\.$/);
 });
 
 test("a check records the inherited provider, and its failure says it failed there", async () => {
