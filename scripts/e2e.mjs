@@ -1654,6 +1654,8 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     check("W lists the workspace's repositories, their state and which commands they have, not their text", /api/.test(sheet) && /never synced/.test(sheet) && /commands: sync/.test(sheet) && !sheet.includes("echo"), sheet);
     await shot("workspace-sheet");
 
+    // The file changed and is not approved (above): Enter still shows output, and r opens the change.
+    check("the sheet's workspace is still waiting on a change, for what follows", (await view()).status === "changed");
     // Enter on a repository that never ran says so, through the signed call.
     const selectedRepo = `(document.querySelector('[data-cow-workspace="${folder}"] [data-cow-selected]')?.dataset.cowWorkspaceRepo ?? null)`;
     const selectRepo = async (as, key) => {
@@ -1681,6 +1683,13 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     const unsignedOutput = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/workspace_output`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folder, as: "api", kind: "sync" }) }).then((r) => r.json());
     const forgedOutput = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "workspace_output", args: { folder, as: "api", kind: "sync" } }) }).then((r) => r.json());
     check("the output is read only through the signed call: there is no unsigned one, and an unsigned envelope is refused", unsignedOutput.ok === false && forgedOutput.ok === false, JSON.stringify([unsignedOutput, forgedOutput]).slice(0, 300));
+    await page.key("q");
+    await page.waitFor(`!document.querySelector("[data-cow-reader]") && ${mode} === "normal"`, { label: "the reader closed" });
+    await page.key("W");
+    await page.waitFor(`${mode} === "workspaces"`, { label: "the sheet, for r" });
+    await page.key("r");
+    await page.waitFor(`${readerText}.includes("The change")`, { label: "r: the file's change in the reader" });
+    check("r in the sheet opens the workspace file's change", /"sync": "echo third"/.test(await page.eval(readerText)));
     await page.key("q");
     await page.waitFor(`!document.querySelector("[data-cow-reader]") && ${mode} === "normal"`, { label: "the reader closed" });
 

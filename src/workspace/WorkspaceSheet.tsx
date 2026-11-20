@@ -150,21 +150,24 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
     else if (key === "s") {
       if (!chosen) setNote("nothing to sync");
       else report(data.sync(chosen.folder, chosen.as ?? "."), `syncing ${chosen.as ?? "the workspace folder"}…`);
-    } else if (key === "Enter") {
-      if (!chosen) return true;
-      const view = data.views.find((entry) => entry.folder === chosen.folder);
-      if (view?.waiting || (view && view.status !== "approved" && view.review)) {
+    } else if (key === "r") {
+      // The file's change, whether or not its notice was dismissed: the approved content runs until it is approved.
+      const view = chosen ? data.views.find((entry) => entry.folder === chosen.folder) : undefined;
+      if (!view || view.status === "approved" || !view.review) setNote("its workspace file has not changed since you approved it");
+      else {
         close();
         args.openReader(reviewTarget(data, view));
-      } else {
-        data.output(chosen.folder, chosen.as).then(
-          (content) => {
-            close();
-            args.openReader({ kind: "text", threadId: null, title: `last sync of ${chosen.as ?? "the workspace folder"}`, content });
-          },
-          (cause: unknown) => setNote(`could not read the output: ${errorText(cause)}`),
-        );
       }
+    } else if (key === "Enter") {
+      // Always the selected repository's output: a file waiting on you does not hide it.
+      if (!chosen) return true;
+      data.output(chosen.folder, chosen.as).then(
+        (content) => {
+          close();
+          args.openReader({ kind: "text", threadId: null, title: `last sync of ${chosen.as ?? "the workspace folder"}`, content });
+        },
+        (cause: unknown) => setNote(`could not read the output: ${errorText(cause)}`),
+      );
     }
     return true;
   };
@@ -173,7 +176,7 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
   const node: ReactNode = open ? (
     <div className="cow-help" data-cow-workspaces="" onClick={close}>
       <div className="cow-card" onClick={(event) => event.stopPropagation()}>
-        <h3>Workspaces · j k move · s syncs the selected repository, S every approved workspace · Enter shows its last output, or a file waiting on you · q or Esc closes</h3>
+        <h3>Workspaces · j k move · s syncs the selected repository, S every approved workspace · Enter shows its last output · r opens its workspace's file when it changed · q or Esc closes</h3>
         <p className="cow-ledger-about">
           Each workspace folder cow knows, from its {WORKSPACE_FILE}. Its commands run with your full access, outside any sandbox, and only as you last approved them;
           `bb cow workspace add &lt;folder&gt;` proposes one, and a change waits in your queue until you approve it.

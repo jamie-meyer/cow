@@ -43,7 +43,8 @@ thread's work brought back, with commands you write and approve.
   whose work is ready says so with `bb cow ask`.
 - **Seeing it.** `W` lists each workspace and repository with its last sync,
   whether it is dirty and which commands it has; `s` syncs the selected
-  repository, `S` all, `Enter` shows the last output, to you only.
+  repository, `S` all, `Enter` shows the last output, to you only (also
+  while a change to the file waits on you), and `r` opens that change.
   `bb cow workspace` shows the same without the output.
 - **A narrow page keeps its list's room with two notices showing.** The
   notices above the list (the key's banner, and an aside such as "bb is

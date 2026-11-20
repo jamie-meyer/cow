@@ -235,7 +235,9 @@ Anyone may run sync: it runs only approved commands, with fixed arguments.
 So a bb automation can keep the clean bases current, for example a script
 automation that runs `bb cow workspace sync` every hour (see `bb guide
 automations`). On the page, `W` lists each workspace; `s` syncs the selected
-repository and `S` every approved workspace.
+repository and `S` every approved workspace; `Enter` shows the selected
+repository's last sync output, to you only (a signed call), and `r` opens
+its workspace's file when it has changed since you approved it.
 
 ### Bringing work back
 
@@ -262,9 +264,9 @@ plan, each repository with its new commits and the command that would run,
 and says how you bring it back (`--json` gives the plan as JSON):
 
 ```
-thr_abc123 (branch cow/thr_abc123), workspace /Users/you/work
-  api            2 new commits · would run: git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH" · in /Users/you/work/api
-  web            nothing new · nothing to bring back · in /Users/you/work/web
+thr_abc123 (branch cow/thr_abc123), workspace ~/work
+  api            2 new commits · would run: git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH" · in ~/work/api
+  web            nothing new · nothing to bring back · in ~/work/web
 Nothing was run. The user brings it back with B on the thread's line on cow's page.
 ```
 
