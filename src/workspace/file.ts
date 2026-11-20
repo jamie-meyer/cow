@@ -1,10 +1,11 @@
 // The workspace file, `cow.workspace.json` at the top of a workspace folder:
 // which repositories a thread brings, and the commands the person wrote to
-// keep them in sync, set a clone up, and bring a thread's work back. Pure:
+// keep them in sync, set a clone up, bring a thread's work back, and tear a
+// clone down before it is removed. Pure:
 // the page, the server and the host entry all read it the same way.
 //
-// cow knows nothing about git or any other tool here: `sync`, `setup` and
-// `back` are shell commands the person writes. They run with the person's
+// cow knows nothing about git or any other tool here: `sync`, `setup`,
+// `back` and `teardown` are shell commands the person writes. They run with the person's
 // full access, so cow runs them only from content the person approved (see
 // ./store.ts), never from the file on disk.
 
@@ -17,7 +18,7 @@ export const WORKSPACE_FILE = "cow.workspace.json";
 export const WORKSPACES_CHANGED = "workspaces-changed";
 /** A larger file is refused unread. */
 export const MAX_FILE_BYTES = 256 * 1024;
-export const COMMAND_KINDS = ["sync", "setup", "back"] as const;
+export const COMMAND_KINDS = ["sync", "setup", "back", "teardown"] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 
 const command = z
@@ -37,13 +38,15 @@ export const workspaceFileSchema = z
   .object({
     /** Repositories a thread brings: `path` relative to the workspace folder or absolute; `as` the folder name in the clone. */
     bring: z
-      .array(z.object({ path: repoPath, as: folderName, sync: command.optional(), setup: command.optional(), back: command.optional() }).strict())
+      .array(z.object({ path: repoPath, as: folderName, sync: command.optional(), setup: command.optional(), back: command.optional(), teardown: command.optional() }).strict())
       .max(50)
       .default([]),
     /** The workspace folder's own commands. */
     sync: command.optional(),
     setup: command.optional(),
     back: command.optional(),
+    /** Run when bb removes a clone, while it still exists: save leftover work, release what setup made. */
+    teardown: command.optional(),
     readOnly: z.array(relativePath).max(200).default([]),
     exclude: z
       .array(

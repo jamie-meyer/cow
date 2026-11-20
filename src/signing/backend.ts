@@ -68,7 +68,10 @@ export const ACTION_ARGS = {
   workspace_approve: z.object({ folder: z.string().min(1).max(1024), hash: z.string().regex(/^[0-9a-f]{64}$/) }),
   workspace_dismiss: z.object({ folder: z.string().min(1).max(1024), hash: z.string().regex(/^[0-9a-f]{64}$/) }),
   workspace_back: z.object({ threadId: id }),
-  workspace_output: z.object({ folder: z.string().min(1).max(1024), as: z.string().max(255).nullable(), kind: z.enum(["sync", "setup", "back"]) }),
+  workspace_output: z.object({ folder: z.string().min(1).max(1024), as: z.string().max(255).nullable(), kind: z.enum(["sync", "setup", "back", "teardown"]) }),
+  workspace_held_teardown: z.object({ id: z.string().min(1).max(220) }),
+  workspace_held_output: z.object({ id: z.string().min(1).max(220) }),
+  workspace_held_remove: z.object({ id: z.string().min(1).max(220) }),
   key_approve: z.object({ fingerprint }),
   key_refuse: z.object({ fingerprint }),
   key_remove: z.object({ fingerprint }),
@@ -115,6 +118,7 @@ const REFUSAL_CODES: Record<string, "conflict" | "forbidden" | "invalid" | "not_
   not_approved: "conflict",
   bad_file: "invalid",
   not_a_clone: "invalid",
+  held_not_found: "not_found",
 };
 
 async function refusing<T>(run: () => Promise<T>): Promise<T> {
@@ -197,12 +201,17 @@ export function queueDispatch(log: LogStore, marks: QueueMarks, changed: () => v
 export type JudgeOutcome = (threadId: string, outcome: Outcome) => Promise<unknown>;
 
 /** The workspace actions: each one the service carries out and logs under the key that signed it. */
-export function workspaceDispatch(workspaces: Pick<Workspaces, "approve" | "dismiss" | "back" | "output">): Pick<Dispatch, "workspace_approve" | "workspace_dismiss" | "workspace_back" | "workspace_output"> {
+export function workspaceDispatch(
+  workspaces: Pick<Workspaces, "approve" | "dismiss" | "back" | "output" | "teardownHeld" | "heldOutput" | "removeHeld">,
+): Pick<Dispatch, "workspace_approve" | "workspace_dismiss" | "workspace_back" | "workspace_output" | "workspace_held_teardown" | "workspace_held_output" | "workspace_held_remove"> {
   return {
     workspace_approve: (args, by) => workspaces.approve(args, by),
     workspace_dismiss: (args, by) => workspaces.dismiss(args, by),
     workspace_back: (args, by) => workspaces.back(args.threadId, by),
     workspace_output: (args) => workspaces.output(args),
+    workspace_held_teardown: (args, by) => workspaces.teardownHeld(args.id, by),
+    workspace_held_output: (args) => workspaces.heldOutput(args.id),
+    workspace_held_remove: (args, by) => workspaces.removeHeld(args.id, by),
   };
 }
 

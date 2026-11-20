@@ -32,6 +32,9 @@ export interface ActionResult {
   workspace_dismiss: null;
   workspace_back: { workspace: string; results: BackResultWire[] };
   workspace_output: { at: number; ms: number; code: number | null; timedOut: boolean; tail: string[]; cwd: string } | null;
+  workspace_held_teardown: { removed: boolean; reasons: string[] };
+  workspace_held_output: { teardowns: Array<{ as: string | null; at: number; ms: number; code: number | null; timedOut: boolean; tail: string[] }>; path: string };
+  workspace_held_remove: { id: string };
   key_approve: EnrolledKey;
   key_refuse: null;
   key_remove: null;

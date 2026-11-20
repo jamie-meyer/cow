@@ -1,5 +1,5 @@
 // What cow's host entry does with a workspace: read its file, report its
-// repositories, and run the approved sync, setup and back commands.
+// repositories, and run the approved sync, setup, back and teardown commands.
 //
 // Every command text here comes from `Approved`, which cow's server passes
 // from what the person approved with a signed action; nothing reads a
@@ -183,6 +183,47 @@ export async function runSetups(deps: CommandDeps, approved: Approved, file: Wor
   return ran;
 }
 
+export interface TeardownRun {
+  as: string | null;
+  at: number;
+  ms: number;
+  code: number | null;
+  timedOut: boolean;
+  tail: string[];
+}
+
+/** The teardown order: the brought repositories in the reverse of setup's order, then the workspace folder's own. */
+export function teardownOrder<T extends { as: string | null }>(repos: readonly T[]): T[] {
+  return [...repos.filter((repo) => repo.as !== null).reverse(), ...repos.filter((repo) => repo.as === null)];
+}
+
+/**
+ * Teardown, once per repository that has one, while the clone still exists:
+ * `repos` in setup's order (workspace folder first), run in teardownOrder. A
+ * failure does not stop the others: each releases what its own setup made.
+ */
+export async function runTeardowns(deps: CommandDeps, approved: Approved, file: WorkspaceFile, args: { clone: string; branch: string; repos: Array<{ as: string | null; source: string }> }): Promise<TeardownRun[]> {
+  const runs: TeardownRun[] = [];
+  for (const repo of teardownOrder(args.repos)) {
+    const command = commandFor(file, repo.as, "teardown");
+    if (command === null) continue;
+    const cwd = repo.as === null ? args.clone : join(args.clone, repo.as);
+    const record = await deps.locks.run(repo.source, () =>
+      run(deps, {
+        kind: "teardown",
+        as: repo.as,
+        workspace: approved.folder,
+        key: repo.source,
+        command,
+        cwd,
+        vars: { COW_SOURCE: repo.source, COW_CLONE: cwd, COW_BRANCH: args.branch, COW_AS: repo.as ?? ".", COW_WORKSPACE: approved.folder },
+      }),
+    );
+    runs.push({ as: repo.as, at: record.at, ms: record.ms, code: record.code, timedOut: record.timedOut, tail: record.tail });
+  }
+  return runs;
+}
+
 interface CloneRecord {
   path: string;
   resource: {
@@ -309,7 +350,7 @@ export async function repoStatuses(store: RunStore, folder: string, file: Worksp
       path: repo.path,
       exists: repo.exists,
       dirty: repo.exists ? !(await cleanState(repo.path)).clean : null,
-      commands: { sync: commandFor(file, repo.as, "sync") !== null, setup: commandFor(file, repo.as, "setup") !== null, back: commandFor(file, repo.as, "back") !== null },
+      commands: { sync: commandFor(file, repo.as, "sync") !== null, setup: commandFor(file, repo.as, "setup") !== null, back: commandFor(file, repo.as, "back") !== null, teardown: commandFor(file, repo.as, "teardown") !== null },
       sync: runs.sync ? { at: runs.sync.at, ms: runs.sync.ms, code: runs.sync.code, timedOut: runs.sync.timedOut } : null,
       lastOkSyncAt: runs.lastOkSyncAt ?? null,
     });

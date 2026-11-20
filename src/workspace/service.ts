@@ -9,7 +9,7 @@
 // by a signed call from the page; `bb cow workspace add` only proposes.
 
 import { z } from "zod";
-import type { BackCandidateWire, BackResultWire, RepoStatusWire, SyncResultWire } from "../clone/contract.ts";
+import type { BackCandidateWire, BackResultWire, HeldWire, RepoStatusWire, SyncResultWire } from "../clone/contract.ts";
 import type { LogStore } from "../caps/logstore.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { type CommandEntry, type CommandKind, WORKSPACE_FILE, commandFor, newCommands, parseWorkspaceFile, reviewText } from "./file.ts";
@@ -41,6 +41,11 @@ export interface HostPort {
   backPreview(hostId: string, clonePath: string, approved: Approved | null): Promise<{ branch: string; workspace: string | null; repos: BackCandidateWire[] }>;
   back(hostId: string, clonePath: string, approved: Approved): Promise<BackResultWire[]>;
   output(approved: Approved, as: string | null, kind: CommandKind): Promise<{ at: number; ms: number; code: number | null; timedOut: boolean; tail: string[]; cwd: string } | null>;
+  /** The clones held back from removal on this machine, and what can be done with one. */
+  held(): Promise<HeldWire[]>;
+  heldOutput(id: string): Promise<{ teardowns: Array<{ as: string | null; at: number; ms: number; code: number | null; timedOut: boolean; tail: string[] }>; path: string }>;
+  heldTeardown(id: string, approved: Approved): Promise<{ removed: boolean; reasons: string[] }>;
+  heldRemove(id: string): Promise<void>;
 }
 
 export type FileStatus = "approved" | "changed" | "new" | "missing" | "unreadable";
@@ -265,6 +270,51 @@ export function createWorkspaces(deps: WorkspacesDeps) {
     /** A repository's last run of one kind with its output. Signed: output may hold secrets, so only the person reads it. */
     async output(args: { folder: string; as: string | null; kind: CommandKind }) {
       return deps.host.output(await approvedFor(args.folder), args.as, args.kind);
+    },
+
+    /** The clones held back from removal. Anyone may read it: it has no command's output. */
+    held: () => deps.host.held(),
+
+    /** The approved content teardown runs from when bb removes a clone made from `folder`'s file; null when there is none. */
+    async forRemoval(folder: string | null): Promise<Approved | null> {
+      if (folder === null) return null;
+      const known = (await read())[folder];
+      return known?.approved ? { folder, text: known.approved.text, hash: known.approved.hash } : null;
+    },
+
+    /** bb's removal held a clone back: logged, and the page told. */
+    async noteHeld(args: { id: string; threadId: string | null; reasons: string[] }) {
+      await deps.log.append({ kind: "workspace-held", action: "held", id: args.id, threadId: args.threadId, what: args.reasons.join("; ").slice(0, 900) }, null);
+      deps.changed();
+    },
+
+    /** A held clone's teardowns with their output. Signed: output may hold secrets. */
+    heldOutput: (id: string) => deps.host.heldOutput(id),
+
+    /**
+     * Run a held clone's approved teardowns again, from the content approved
+     * now for its workspace. Only the person, from the page: the signed
+     * `workspace_held_teardown` is its one caller.
+     */
+    async teardownHeld(id: string, by: string): Promise<{ removed: boolean; reasons: string[] }> {
+      const found = (await deps.host.held()).find((entry) => entry.id === id);
+      if (!found) throw new Refusal("held_not_found", `there is no held clone ${id}`);
+      if (!found.fromFile || found.workspace === null) throw new Refusal("not_approved", "this clone was not made from a workspace file, so no teardown applies to it");
+      const approved = await approvedFor(found.workspace);
+      const done = await deps.host.heldTeardown(id, approved);
+      await deps.log.append({ kind: "workspace-held", action: "teardown", id, threadId: found.threadId, what: done.removed ? "teardown exited 0; removed" : `still held: ${done.reasons.join("; ")}`.slice(0, 900) }, by);
+      deps.changed();
+      return done;
+    },
+
+    /** Remove a held clone for good. Only the person, from the page, after a confirmation: the signed `workspace_held_remove` is its one caller. */
+    async removeHeld(id: string, by: string): Promise<{ id: string }> {
+      const found = (await deps.host.held()).find((entry) => entry.id === id);
+      if (!found) throw new Refusal("held_not_found", `there is no held clone ${id}`);
+      await deps.host.heldRemove(id);
+      await deps.log.append({ kind: "workspace-held", action: "removed", id, threadId: found.threadId, what: `removed ${found.path} for good` }, by);
+      deps.changed();
+      return { id };
     },
   };
 }

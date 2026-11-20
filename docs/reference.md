@@ -1708,7 +1708,10 @@ The page proves it is yours with a signature.
   the hash of the content shown) or dismissing its notice
   (`workspace_dismiss`); bringing a thread's work back with the approved
   back commands (`workspace_back`); reading a workspace command's last
-  output (`workspace_output`); and approving, refusing or removing a key. Opening a chat or a brief on the
+  output (`workspace_output`); for a clone held back from removal, running
+  its approved teardown again (`workspace_held_teardown`), reading what its
+  teardowns printed (`workspace_held_output`) and removing it for good after
+  a y confirmation (`workspace_held_remove`); and approving, refusing or removing a key. Opening a chat or a brief on the
   page, which marks a reply seen or a brief read as a side effect, signs
   that mark the same way. The list is `PERSON_ACTIONS` in
   `src/signing/envelope.ts`. None of these is a method of cow's interface.
@@ -1949,16 +1952,22 @@ waits for your approval on the page. `workspace sync` runs the approved sync
 commands; anyone may run it. `workspace back` shows what bringing a thread's
 work back would run, for each repository how many commits it has that its
 source does not and the command, and runs nothing, whoever calls it: you
-bring work back with `B` on the thread's line on the page, signed.
+bring work back with `B` on the thread's line on the page, signed. After the workspaces, `workspace` lists the clones held back
+from removal (see [When the clone is removed](clone.md#when-the-clone-is-removed)):
+each one's id, its thread's title, when it was held, why and where it is,
+never a command's output. Nothing in the CLI removes one or runs its
+teardown: you do, from `W` on the page, signed.
 
 **What a workspace keeps, and where.** In cow's own storage (bb's database):
 each workspace folder cow knows, by real path, with the content you last
 approved, its hash, when and by which key, and the hash of a notice you
 dismissed. In cow's host data folder only
 (`~/.bb/plugins/cow/host-data/workspace/runs.json`, mode 0600): per
-repository, the last sync, setup and back run, each with when it ran, how
+repository, the last sync, setup, back and teardown run, each with when it ran, how
 long, its exit code and its last 20 lines of output, and when its sync last
-succeeded. Output is never written to bb's database or to the log.
+succeeded; and, for each held clone, `held/<id>.json` beside it (mode 0600),
+with why it was held and its teardowns' last lines. Output is never written
+to bb's database or to the log.
 
 | Command | Does |
 | --- | --- |

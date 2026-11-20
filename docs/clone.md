@@ -130,8 +130,9 @@ error names the step and the reason.
 
 A file at the top of the workspace folder, `cow.workspace.json`, says which
 repositories a thread brings and how to keep them in sync, set a clone up,
-and bring a thread's work back. cow knows nothing about git or any other
-tool: `sync`, `setup` and `back` are shell commands you write.
+bring a thread's work back, and tear a clone down before it is removed. cow
+knows nothing about git or any other tool: `sync`, `setup`, `back` and
+`teardown` are shell commands you write.
 
 ```json
 {
@@ -152,8 +153,8 @@ tool: `sync`, `setup` and `back` are shell commands you write.
 | --- | --- |
 | `bring[].path` | The repository: relative to the workspace folder, or absolute. |
 | `bring[].as` | Its folder name in the clone, as for the explicit inputs. |
-| `bring[].sync`, `.setup`, `.back` | Optional commands for that repository. |
-| `sync`, `setup`, `back` | Optional commands for the workspace folder itself. |
+| `bring[].sync`, `.setup`, `.back`, `.teardown` | Optional commands for that repository. |
+| `sync`, `setup`, `back`, `teardown` | Optional commands for the workspace folder itself. |
 | `readOnly`, `exclude`, `includeSecrets` | As for the explicit inputs. |
 | `syncBeforeClone` | `{ "olderThanMinutes": n }`: sync a repository before cloning it when its last good sync is older. Off when absent. |
 
@@ -182,8 +183,8 @@ content you approved, in its own storage, and uses only that.
   it was shown. `x` dismisses the notice without approving, until the file
   changes again.
 - Every later change to the file brings the notice back. Until you approve
-  it, sync, setup and back keep using the content you approved last; with
-  none approved, they refuse and say why.
+  it, sync, setup, back and teardown keep using the content you approved last; with
+  none approved, they refuse and say why (and no teardown runs).
 - Every approval is appended to cow's log with the content's hash (`C`,
   `Tab`). Cloning with explicit inputs still works and runs no command.
 
@@ -199,12 +200,13 @@ the command's text.
 | `sync` | the source repository (or the workspace folder) | 5 minutes |
 | `setup` | the repository's folder in the clone (the clone's root for the workspace folder's own) | 15 minutes |
 | `back` | the source repository (or the workspace folder) | 5 minutes |
+| `teardown` | the repository's folder in the clone (the clone's root for the workspace folder's own) | 15 minutes |
 
 | Variable | Value |
 | --- | --- |
 | `COW_SOURCE` | the source repository's real path |
-| `COW_CLONE` | its folder in the clone (setup and back) |
-| `COW_BRANCH` | the thread's branch (setup and back) |
+| `COW_CLONE` | its folder in the clone (setup, back and teardown; for a held clone, where it is now) |
+| `COW_BRANCH` | the thread's branch (setup, back and teardown) |
 | `COW_AS` | the repository's `as`, or `.` for the workspace folder |
 | `COW_WORKSPACE` | the workspace folder's real path |
 
@@ -215,8 +217,8 @@ each run cow keeps when it ran, how long it took, its exit code and its last
 (`~/.bb/plugins/cow/host-data/workspace/runs.json`, readable by you alone):
 not in bb's database and not in the log, since output may hold secrets.
 `bb cow workspace` shows the exit code and the time; the output is shown
-only to you, in the reader (`W`, then `Enter` on a repository), by a signed
-call.
+only to you, in the reader (`W`, then `Enter` on a repository, or on a held
+clone for its teardowns), by a signed call.
 
 ### Sync
 
@@ -303,6 +305,23 @@ so the tool tracks it. With Graphite, for example:
 }
 ```
 
+A setup that gives each clone its own database, and a teardown that commits
+what the thread left uncommitted, fetches its branch into the source, and
+drops the database:
+
+```json
+{
+  "bring": [
+    { "path": "../api", "as": "api",
+      "setup": "createdb \"api_$(basename \"$COW_BRANCH\")\" && npm ci",
+      "teardown": "{ git add -A && git commit -qm 'left in the clone' || true; } && git -C \"$COW_SOURCE\" fetch -q \"$COW_CLONE\" \"$COW_BRANCH:$COW_BRANCH\" && dropdb --if-exists \"api_$(basename \"$COW_BRANCH\")\"" }
+  ]
+}
+```
+
+If the fetch fails, the teardown fails and the clone is held, with the
+database still there for you to look at.
+
 Check the flags against your tool's own help: cow runs the text as written.
 
 ## Getting the work back by hand
@@ -315,8 +334,9 @@ git fetch ~/.bb/plugins/cow/host-data/clones/<key>/<workspace>/<as> <branch>
 git log FETCH_HEAD
 ```
 
-and merge, rebase or cherry-pick from `FETCH_HEAD`. Fetch before the thread's environment is removed: uncommitted work in
-a clone goes with it.
+and merge, rebase or cherry-pick from `FETCH_HEAD`. A clone that still holds
+work when bb removes it is held rather than deleted (below), and stays where
+you can fetch from it.
 
 ## When the clone is removed
 
@@ -325,6 +345,68 @@ after a grace window of five minutes. `bb environment cleanup <environment
 id>` removes it at once. A removed clone cannot be restored: the provider has
 no restore, so bb never rebuilds it, and its threads report the environment
 as unavailable.
+
+### Teardown, and the unsaved-work check
+
+When bb asks the provider to remove a clone, cow first stops the processes
+working in it, then, for a clone made from a workspace file, runs each
+repository's `teardown` from the content you approved for that workspace
+now (not the file on disk, and not the content the clone was made from):
+the brought repositories in the reverse of setup's order, then the workspace
+folder's own. A teardown that fails does not stop the others. A clone made
+with explicit inputs runs no teardown: setup never ran in it.
+
+Then, for each git repository in the clone without a teardown, cow looks for
+work that would be lost:
+
+- anything uncommitted or untracked (`git status --porcelain`; ignored files
+  do not count; in the workspace folder, the brought repositories inside it
+  are left to their own check);
+- commits its source repository does not have: a branch, a stash or a
+  detached HEAD whose commit the source has no object for. Work already
+  brought back, or pushed and then fetched into the source, does not count.
+
+A folder that is not a git repository cannot be judged and does not hold the
+clone. Changes that came along from a dirty source count like any other,
+and so does a tracked file the exclude list left out (it reads as deleted).
+
+| Teardown | Unsaved work | The clone |
+| --- | --- | --- |
+| every one exited 0 | any | removed: a clean teardown is taken as having saved what mattered |
+| none for a repository | none in it | removed |
+| one failed or ran past its time limit | any | **held** |
+| none for a repository | some in it | **held** |
+
+### Held clones
+
+A held clone is moved aside in one rename to
+`~/.bb/plugins/cow/host-data/held/<id>/<workspace>`, with why beside it in
+`held/<id>.json` (which repository, which reason, teardown's exit code, and
+its last lines of output, readable by you alone). bb is told the clone was
+removed: had cow failed the removal instead, bb would run teardown again
+after 1, 2, 4 and 8 minutes and then mark the environment "Needs recovery".
+The environment log says it was held, why, and where.
+
+A notice in your queue says "the clone of <thread> was held, not deleted"
+and why; a click or its hint opens `W`, whose "Held clones" part lists each
+one with its thread's title, when it was held, why and its path, so you can
+look inside or fetch from it. There, on a held clone:
+
+- `Enter` shows what its teardowns printed (signed: output may hold secrets);
+- `t` runs the approved teardown again, where the clone is now, and judges
+  it as removal does: with nothing left to hold it, it is removed;
+- `d` asks to remove it for good, naming what would be lost (each
+  repository's uncommitted changes and commits its source does not have);
+  `y` removes it, any other key keeps it.
+
+Each is signed by your page's key and added to the log; so is each clone
+bb's removal held. `bb cow workspace` lists held clones, without any output,
+for anyone; nothing unsigned can remove one or run its teardown. The only
+way a teardown runs without your page is bb's own removal of a clone, which
+any thread can bring about by being archived: that is why teardown, like
+every command, runs only from content you approved.
+
+### Removing exactly
 
 Removal deletes a directory tree from a process with no sandbox, so it is
 exact:
@@ -344,11 +426,17 @@ exact:
   background, and symlinks in it are unlinked, never followed. Leftover trash
   is emptied when cow's host process next starts.
 - Removing a key that has no folder succeeds.
+- A held clone is removed by the same rules: its id is one plain path
+  segment, its folder must resolve to exactly `<held folder>/<id>`, a symlink
+  is refused, and it is renamed into the trash before it is deleted.
 
 ## Not handled yet
 
 - Virtualenvs are only reported, not fixed.
-- No restore: once removed, a clone is gone.
+- No restore: once removed, a clone is gone. A held clone is a folder you
+  can look into and fetch from, not an environment a thread can run in again.
+- Held clones are listed for the machine bb runs on.
+- A thread that fails to start after its setup ran gets no teardown.
 - The inputs have no form in bb's New Thread picker yet; start threads from
   `bb thread spawn`.
 - A file the thread marks immutable (`chflags uchg`) would stop removal.

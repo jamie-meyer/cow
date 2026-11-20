@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { test } from "node:test";
 import { createLogStore } from "../src/caps/logstore.ts";
-import { cloneInputsSchema, providerInputsSchema, cloneHostContract } from "../src/clone/contract.ts";
+import { type HeldWire, cloneInputsSchema, providerInputsSchema, cloneHostContract } from "../src/clone/contract.ts";
 import { Refusal } from "../src/kv.ts";
 import { type Dispatch, runSigned, sha256Hex, verifyP256, workspaceDispatch } from "../src/signing/backend.ts";
 import { type Envelope, PERSON_ACTIONS, type PublicKey, fingerprintText, formatFingerprint, signedText } from "../src/signing/envelope.ts";
@@ -15,6 +15,24 @@ import { memoryKv } from "./memory.ts";
 
 const FOLDER = "/w/ws";
 const GOOD = JSON.stringify({ bring: [{ path: "../api", as: "api", sync: "git pull --ff-only", back: "echo back" }], sync: "echo top" }, null, 2);
+
+const HELD: HeldWire = {
+  id: "thr_clone-1",
+  pathKey: "thr_clone-1",
+  heldAt: NOW,
+  path: "/data/held/thr_clone-1/ws",
+  threadId: "thr_clone",
+  title: "a thread",
+  branch: "cow/thr_clone",
+  workspace: FOLDER,
+  hash: null,
+  reasons: [{ as: "api", kind: "teardown-failed", code: 3, timedOut: false }],
+  unsaved: [{ as: "api", unsaved: { repo: true, uncommitted: 1, branches: [], error: null } }],
+  teardowns: [{ as: "api", at: NOW, ms: 5, code: 3, timedOut: false }],
+  repos: [{ as: null, source: FOLDER }, { as: "api", source: "/w/api" }],
+  fromFile: true,
+  missing: false,
+};
 
 function world() {
   const kv = memoryKv();
@@ -37,6 +55,18 @@ function world() {
     output: async (approved) => {
       ran.push({ call: "output", approved });
       return { at: 1, ms: 1, code: 0, timedOut: false, tail: ["secret"], cwd: "/w/api" };
+    },
+    held: async () => [HELD],
+    heldOutput: async () => {
+      ran.push({ call: "held-output", approved: null });
+      return { teardowns: [{ as: "api", at: 1, ms: 1, code: 3, timedOut: false, tail: ["secret"] }], path: HELD.path };
+    },
+    heldTeardown: async (_id, approved) => {
+      ran.push({ call: "held-teardown", approved });
+      return { removed: false, reasons: ["api: teardown exited 3"] };
+    },
+    heldRemove: async () => {
+      ran.push({ call: "held-remove", approved: null });
     },
   };
   let changes = 0;
@@ -228,3 +258,72 @@ async function sourceFiles(root: string): Promise<Array<{ name: string; text: st
     return { name: path.slice(root.length).replace(/^\//, ""), text: await readFile(path, "utf8") };
   }));
 }
+
+test("nothing but the signed actions reaches a held clone's teardown again or its removal", async () => {
+  const w = world();
+  const shown = await w.workspaces.propose(FOLDER);
+  await w.workspaces.approve({ folder: FOLDER, hash: shown.currentHash! }, "key-1");
+  const reached = () => w.ran.filter((run) => run.call === "held-teardown" || run.call === "held-remove" || run.call === "held-output").map((run) => run.call);
+  // Every command, from a thread, from a clone, from a terminal, with and without --json; `bb cow workspace` lists the held clone, without output.
+  const commands = workspaceCommands(w.workspaces) as unknown as Record<string, { run(input: unknown, ctx: unknown): Promise<{ stdout: string } | undefined> }>;
+  for (const [name, command] of Object.entries(commands)) {
+    for (const ctx of [{ threadId: "thr_any" }, { cwd: "/data/plugins/cow/host-data/held/thr_clone-1/ws" }, { cwd: "/Users/me" }, {}]) {
+      for (const json of [false, true]) {
+        for (const positionals of [{ thread: "thr_clone", folder: FOLDER }, { thread: HELD.id, folder: HELD.path }]) {
+          await command.run({ positionals, options: { json } }, ctx).catch(() => undefined);
+        }
+      }
+    }
+    assert.deepEqual(reached(), [], `bb cow ${name} reached a held clone`);
+  }
+  const listed = await commands.workspace!.run({ positionals: {}, options: {} }, {});
+  assert.match(listed!.stdout, /Held clones[^\n]*\n {2}thr_clone-1 · a thread · held .* · \/data\/held\/thr_clone-1\/ws\n {4}api: teardown exited 3\nOnly the user removes a held clone or runs its teardown again, from W on cow's page\./);
+  assert.doesNotMatch(listed!.stdout, /secret/);
+  const listedJson = JSON.parse((await commands.workspace!.run({ positionals: {}, options: { json: true } }, {}))!.stdout);
+  assert.equal(listedJson.held[0].id, HELD.id);
+  assert.doesNotMatch(JSON.stringify(listedJson), /secret|tail/);
+  // Every method of the service but the three the signed actions call.
+  const methods = w.workspaces as unknown as Record<string, unknown>;
+  for (const [name, method] of Object.entries(methods)) {
+    if (name === "teardownHeld" || name === "removeHeld" || name === "heldOutput" || typeof method !== "function") continue;
+    for (const args of [[HELD.id, "key-1"], [FOLDER, null], [{ id: HELD.id, threadId: "thr_clone", reasons: [] }, "key-1"], [{ folder: FOLDER, hash: shown.currentHash!, as: "api", kind: "teardown" }, "key-1"]]) {
+      await (method as (...args: unknown[]) => Promise<unknown>).apply(w.workspaces, args).catch(() => undefined);
+    }
+    assert.deepEqual(reached(), [], `the service's ${name} reached a held clone`);
+  }
+  // The RPC anyone may call has no method for it.
+  assert.deepEqual(Object.keys(workspaceRpcContract).sort(), ["workspace_back_plan", "workspace_state", "workspace_sync"]);
+  // Signed actions: unsigned, each is refused; signed, each is the one way.
+  const keys = createKeys({ kv: w.kv, now: () => NOW, hash: sha256Hex, verify: verifyP256, log: w.log, resetPath: "/r", takeResetFile: async () => false, changed: () => undefined });
+  const person = await page();
+  await keys.enrol(person.key, "Chrome");
+  const dispatch = { ...Object.fromEntries(PERSON_ACTIONS.map((action) => [action, async () => null])), ...workspaceDispatch(w.workspaces) } as unknown as Dispatch;
+  for (const action of ["workspace_held_teardown", "workspace_held_remove", "workspace_held_output"]) {
+    await refused(runSigned(keys, dispatch, { action, args: { id: HELD.id } }), "unsigned");
+  }
+  assert.deepEqual(reached(), []);
+  await runSigned(keys, dispatch, await person.sign("workspace_held_teardown", { id: HELD.id }, NOW));
+  assert.deepEqual(w.ran.at(-1), { call: "held-teardown", approved: await w.workspaces.approvedFor(FOLDER) }, "teardown again runs only the approved content");
+  await runSigned(keys, dispatch, await person.sign("workspace_held_remove", { id: HELD.id }, NOW));
+  assert.deepEqual(reached(), ["held-teardown", "held-remove"]);
+  assert.deepEqual((await w.log.all()).slice(-2).map((entry) => [entry.event.kind, entry.by !== null]), [["workspace-held", true], ["workspace-held", true]]);
+  // And in the source: the service's methods are called only from the signed dispatch, the host's calls only from the service's port,
+  // and the page reaches them only through its signer.
+  const sources = await sourceFiles(new URL("../src/", import.meta.url).pathname);
+  for (const [method, hostCall, port] of [["teardownHeld", "held_teardown", "heldTeardown"], ["removeHeld", "held_remove", "heldRemove"], ["heldOutput", "held_output", "heldOutput"]] as const) {
+    const callers = sources.filter((file) => new RegExp(`\\bworkspaces\\.${method}\\(`).test(file.text)).map((file) => file.name);
+    assert.deepEqual(callers, ["signing/backend.ts"], method);
+    const hostCallers = sources.filter((file) => new RegExp(`["']${hostCall}["']\\s*,`).test(file.text) && /host\.call\(/.test(file.text)).map((file) => file.name);
+    assert.deepEqual(hostCallers, ["workspace/backend.ts"], hostCall);
+    const portUses = sources.filter((file) => new RegExp(`\\bhost\\.${port}\\(`).test(file.text)).map((file) => file.name);
+    assert.deepEqual(portUses, ["workspace/service.ts"], port);
+  }
+  const sheet = sources.find((file) => file.name === "workspace/WorkspaceSheet.tsx")!.text;
+  assert.match(sheet, /teardownHeld: async \(entry\) => \{\n\s+const done = await signer\.call\("workspace_held_teardown", \{ id: entry\.id \}\);/);
+  assert.match(sheet, /removeHeld: async \(entry\) => \{\n\s+await signer\.call\("workspace_held_remove", \{ id: entry\.id \}\);/);
+  // Removal for good waits on y in the sheet.
+  assert.match(sheet, /if \(key === "y" && entry\) report\(data\.removeHeld\(entry\)/);
+  // The only unsigned way to a teardown is bb's own removal of a clone, through the provider.
+  const removers = sources.filter((file) => /["']clone_remove["']\s*,/.test(file.text) && /host\.call\(/.test(file.text)).map((file) => file.name);
+  assert.deepEqual(removers, ["clone/provider.ts"]);
+});

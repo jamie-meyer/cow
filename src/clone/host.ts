@@ -3,7 +3,8 @@
 import { type ExperimentalHostRpcContext, experimental_defineHostEntry } from "@get-bb/plugin-sdk";
 import { cloneHostContract } from "./contract.ts";
 import { type CloneCall, startHelper } from "./helper.ts";
-import { layout, removeClone, sweepTrash } from "./remove.ts";
+import { heldOutput, listHeld, reasonText, removeHeld, removeOrHold, teardownHeld } from "./held.ts";
+import { layout, sweepTrash } from "./remove.ts";
 import { createClone } from "./workspace.ts";
 import { parseWorkspaceFile } from "../workspace/file.ts";
 import { type CommandDeps, backCandidates, backFromClone, approvedFile, lastRun, readFolder, repoStatuses, syncWorkspace } from "../workspace/ops.ts";
@@ -134,10 +135,51 @@ export default experimental_defineHostEntry({
       serial(async () => {
         sweepOnce(context);
         try {
-          const removed = await removeClone(layout(context.experimental_paths.dataDir), input.pathKey);
+          const dataDir = context.experimental_paths.dataDir;
+          const outcome = await removeOrHold(layout(dataDir), commandDeps(dataDir), { pathKey: input.pathKey, approved: input.approved, label: input.label });
+          const teardowns = outcome.teardowns.map(({ tail: _tail, ...run }) => run);
+          if (outcome.kind === "held") {
+            return { status: "removed" as const, existed: true, killed: outcome.killed.length, teardowns, held: { id: outcome.held.id, path: outcome.held.path, reasons: outcome.held.reasons.map(reasonText) } };
+          }
+          const removed = outcome.removed;
           const lease = context.experimental_retainWorker();
           removed.deleting.catch(() => {}).finally(() => void lease.dispose());
-          return { status: "removed" as const, existed: removed.removed, killed: removed.killed.length };
+          return { status: "removed" as const, existed: removed.removed, killed: removed.killed.length, teardowns, held: null };
+        } catch (error) {
+          return { status: "failed" as const, message: message(error) };
+        }
+      }),
+    held_list: async (_input, context) => {
+      macOnly();
+      return listHeld(layout(context.experimental_paths.dataDir));
+    },
+    held_output: async (input, context) => {
+      try {
+        const record = heldOutput(layout(context.experimental_paths.dataDir), input.id);
+        return { status: "done" as const, teardowns: record.teardowns, path: record.path };
+      } catch (error) {
+        return { status: "failed" as const, message: message(error) };
+      }
+    },
+    held_teardown: (input, context) =>
+      serial(async () => {
+        try {
+          macOnly();
+          const dataDir = context.experimental_paths.dataDir;
+          const done = await teardownHeld(layout(dataDir), commandDeps(dataDir), { id: input.id, approved: input.approved });
+          return { status: "done" as const, removed: done.removed, reasons: done.record.reasons.map(reasonText), teardowns: done.record.teardowns.map(({ tail: _tail, ...run }) => run) };
+        } catch (error) {
+          return { status: "failed" as const, message: message(error) };
+        }
+      }),
+    held_remove: (input, context) =>
+      serial(async () => {
+        try {
+          macOnly();
+          const removed = await removeHeld(layout(context.experimental_paths.dataDir), input.id);
+          const lease = context.experimental_retainWorker();
+          removed.deleting.catch(() => {}).finally(() => void lease.dispose());
+          return { status: "removed" as const };
         } catch (error) {
           return { status: "failed" as const, message: message(error) };
         }

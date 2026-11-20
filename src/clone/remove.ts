@@ -3,6 +3,8 @@
 //   <dataDir>/clones/<pathKey>/<name>   a thread's workspace
 //   <dataDir>/done/<pathKey>.json       written when a clone is complete
 //   <dataDir>/trash/<pathKey>-<time>-…  a removed clone, deleted in the background
+//   <dataDir>/held/<id>/<name>          a clone held back from removal (./held.ts)
+//   <dataDir>/held/<id>.json            why it was held
 //
 // Removing deletes a directory tree from a process with no sandbox, so it is
 // exact: the only thing it is ever told is a pathKey, which must be one plain
@@ -26,9 +28,10 @@ export interface Layout {
   clones: string;
   trash: string;
   done: string;
+  held: string;
 }
 
-/** The three folders, created if missing, each resolved to its real path. */
+/** The four folders, created if missing, each resolved to its real path. */
 export function layout(dataDir: string): Layout {
   const make = (name: string) => {
     const path = join(dataDir, name);
@@ -36,7 +39,7 @@ export function layout(dataDir: string): Layout {
     if (lstatSync(path).isSymbolicLink()) throw new Error(`${path} is a symlink; refusing to use it`);
     return realpathSync(path);
   };
-  return { clones: make("clones"), trash: make("trash"), done: make("done") };
+  return { clones: make("clones"), trash: make("trash"), done: make("done"), held: make("held") };
 }
 
 export function donePath(paths: Layout, pathKey: string): string {
@@ -56,8 +59,13 @@ export function strictlyInside(outer: string, inner: string): boolean {
  * Null when there is no such folder. Throws when something is wrong.
  */
 export function resolveCloneFolder(paths: Layout, pathKey: string): string | null {
+  return resolveKeyFolder(paths.clones, pathKey, "clone folder");
+}
+
+/** The same exact-path rules for any folder of keyed entries (the clones folder, the held folder). */
+export function resolveKeyFolder(parent: string, pathKey: string, what: string): string | null {
   checkPathKey(pathKey);
-  const expected = join(paths.clones, pathKey);
+  const expected = join(parent, pathKey);
   let stats;
   try {
     stats = lstatSync(expected);
@@ -65,11 +73,11 @@ export function resolveCloneFolder(paths: Layout, pathKey: string): string | nul
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-  if (stats.isSymbolicLink()) throw new Error(`refused to remove ${expected}: it is a symlink, not the clone folder`);
+  if (stats.isSymbolicLink()) throw new Error(`refused to remove ${expected}: it is a symlink, not the ${what}`);
   if (!stats.isDirectory()) throw new Error(`refused to remove ${expected}: it is not a directory`);
   const real = realpathSync(expected);
-  if (real !== expected || !strictlyInside(paths.clones, real) || basename(real) !== pathKey || dirname(real) !== paths.clones) {
-    throw new Error(`refused to remove ${expected}: it resolves to ${real}, which is not the clone folder for ${pathKey}`);
+  if (real !== expected || !strictlyInside(parent, real) || basename(real) !== pathKey || dirname(real) !== parent) {
+    throw new Error(`refused to remove ${expected}: it resolves to ${real}, which is not the ${what} for ${pathKey}`);
   }
   return real;
 }

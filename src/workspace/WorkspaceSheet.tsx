@@ -12,6 +12,8 @@ import { formatAge } from "../text.ts";
 import type { workspaceRpcContract } from "./backend.ts";
 import { WORKSPACES_CHANGED, WORKSPACE_FILE } from "./file.ts";
 import type { BackPlan, WorkspaceView } from "./service.ts";
+import type { HeldWire } from "../clone/contract.ts";
+import { type HoldReason, lossText, reasonText } from "../clone/judge.ts";
 
 /** A file changed on disk says nothing to cow: the page looks again this often. */
 const LOOK_EVERY_MS = 10_000;
@@ -27,11 +29,19 @@ export interface WorkspacesData {
   output: (folder: string, as: string | null) => Promise<string>;
   backPlan: (threadId: string) => Promise<BackPlan>;
   back: (threadId: string) => Promise<string>;
+  /** Clones bb removed that cow held back, since work might be lost with them. */
+  held: readonly HeldWire[];
+  heldError: string | null;
+  heldOutput: (entry: HeldWire) => Promise<string>;
+  teardownHeld: (entry: HeldWire) => Promise<string>;
+  removeHeld: (entry: HeldWire) => Promise<string>;
 }
 
 export function useWorkspaces(signer: Signer): WorkspacesData {
   const rpc = useRpc<typeof workspaceRpcContract>();
   const [views, setViews] = useState<readonly WorkspaceView[]>([]);
+  const [held, setHeld] = useState<readonly HeldWire[]>([]);
+  const [heldError, setHeldError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const request = useRef(0);
   const reload = useCallback(() => {
@@ -40,6 +50,8 @@ export function useWorkspaces(signer: Signer): WorkspacesData {
       (state) => {
         if (seq !== request.current) return;
         setViews(state.workspaces);
+        setHeld(state.held);
+        setHeldError(state.heldError);
         setError(null);
       },
       (cause: unknown) => {
@@ -94,8 +106,27 @@ export function useWorkspaces(signer: Signer): WorkspacesData {
         if (ran.length === 0) return "nothing was brought back: no repository has new commits with a back command";
         return `brought back: ${ran.map((result) => `${result.as ?? "the workspace folder"} ${result.timedOut ? "stopped at its time limit" : `exit ${result.code}`}`).join(", ")}`;
       },
+      held,
+      heldError,
+      heldOutput: async (entry) => {
+        const done = await signer.call("workspace_held_output", { id: entry.id });
+        if (done.teardowns.length === 0) return `no teardown ran for the held clone at ${done.path}: there is no output to show\n`;
+        return done.teardowns
+          .flatMap((run) => [`teardown of ${run.as ?? "the workspace folder"} · ${new Date(run.at).toLocaleString()} · ${(run.ms / 1000).toFixed(1)} s · ${run.timedOut ? "stopped at its time limit" : `exit ${run.code}`}`, "", ...run.tail, ""])
+          .join("\n");
+      },
+      teardownHeld: async (entry) => {
+        const done = await signer.call("workspace_held_teardown", { id: entry.id });
+        reload();
+        return done.removed ? `teardown exited 0: the held clone ${entry.id} is removed` : `still held: ${done.reasons.join("; ")}`;
+      },
+      removeHeld: async (entry) => {
+        await signer.call("workspace_held_remove", { id: entry.id });
+        reload();
+        return `removed the held clone ${entry.id} for good`;
+      },
     }),
-    [views, error, reload, rpc, signer],
+    [views, error, held, heldError, reload, rpc, signer],
   );
 }
 
@@ -114,25 +145,46 @@ export function backConfirmText(plan: BackPlan): string {
   return `bring back ${lines.map((repo) => `${repo.as ?? "the workspace folder"} (${repo.ahead} commit${repo.ahead === 1 ? "" : "s"}): ${repo.command === null ? "no back command, skipped" : `runs ${repo.command}`}`).join("; ")}, in each source, with your full access?`;
 }
 
-interface Row {
-  folder: string;
-  as: string | null;
+/** What a held clone is called on the page: its thread's title, else its thread, else its id. */
+export const heldName = (entry: HeldWire) => entry.title ?? entry.threadId ?? entry.id;
+export const heldReasons = (entry: HeldWire) => (entry.reasons as HoldReason[]).map(reasonText);
+
+/** The y confirmation of removing a held clone for good: it names what would be lost. */
+export function heldRemoveText(entry: HeldWire): string {
+  const lost = entry.unsaved.map((repo) => lossText(repo.as, repo.unsaved)).filter((line): line is string => line !== null);
+  return `remove the held clone of ${heldName(entry)} for good? Lost with it: ${lost.length === 0 ? "nothing cow can see as unsaved" : lost.join("; ")}, and everything else in ${entry.path} · y removes, any other key keeps it`;
 }
+
+type Row = { kind: "repo"; folder: string; as: string | null } | { kind: "held"; id: string };
 
 export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (target: OpenTarget) => void; say: (text: string) => void }) {
   const { data } = args;
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState(0);
   const [note, setNote] = useState("");
-  const rows: Row[] = useMemo(() => data.views.flatMap((view) => view.repos.map((repo) => ({ folder: view.folder, as: repo.as }))), [data.views]);
+  /** The held clone whose removal waits on y. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const rows: Row[] = useMemo(
+    () => [
+      ...data.views.flatMap((view) => view.repos.map((repo) => ({ kind: "repo" as const, folder: view.folder, as: repo.as }))),
+      ...data.held.map((entry) => ({ kind: "held" as const, id: entry.id })),
+    ],
+    [data.views, data.held],
+  );
   const index = Math.min(at, Math.max(0, rows.length - 1));
   const selected = rows[index] ?? null;
-  const live = useRef({ rows, selected, index });
-  live.current = { rows, selected, index };
+  const live = useRef({ rows, selected, index, confirming });
+  live.current = { rows, selected, index, confirming };
 
-  const show = () => {
+  /** Open the sheet; with a held clone's id, on its line. */
+  const show = (heldId?: string) => {
     setNote("");
+    setConfirming(null);
     data.reload();
+    if (heldId !== undefined) {
+      const at = rows.findIndex((row) => row.kind === "held" && row.id === heldId);
+      if (at >= 0) setAt(at);
+    }
     setOpen(true);
   };
   const close = () => setOpen(false);
@@ -142,7 +194,35 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
   };
 
   const onKey = (key: string): true => {
-    const { rows: current, selected: chosen, index: i } = live.current;
+    const { rows: current, selected: row, index: i, confirming: pending } = live.current;
+    const chosen = row?.kind === "repo" ? row : null;
+    const heldEntry = row?.kind === "held" ? (data.held.find((entry) => entry.id === row.id) ?? null) : null;
+    if (pending !== null) {
+      // Any key answers the confirmation; only y removes.
+      setConfirming(null);
+      const entry = data.held.find((candidate) => candidate.id === pending);
+      if (key === "y" && entry) report(data.removeHeld(entry), `removing the held clone ${entry.id}…`);
+      else setNote("kept: the held clone is not removed");
+      return true;
+    }
+    if (heldEntry !== null && (key === "t" || key === "d" || key === "Enter")) {
+      if (key === "t") {
+        if (!heldEntry.fromFile) setNote("this clone was not made from a workspace file, so no teardown applies to it");
+        else report(data.teardownHeld(heldEntry), `running the teardown of ${heldName(heldEntry)} again…`);
+      } else if (key === "d") {
+        setConfirming(heldEntry.id);
+        setNote(heldRemoveText(heldEntry));
+      } else {
+        data.heldOutput(heldEntry).then(
+          (content) => {
+            close();
+            args.openReader({ kind: "text", threadId: null, title: `teardown of the held clone ${heldEntry.id}`, content });
+          },
+          (cause: unknown) => setNote(`could not read the output: ${errorText(cause)}`),
+        );
+      }
+      return true;
+    }
     if (key === "Escape" || key === "q" || key === "W") close();
     else if (key === "j" || key === "ArrowDown") setAt(Math.min(i + 1, Math.max(0, current.length - 1)));
     else if (key === "k" || key === "ArrowUp") setAt(Math.max(i - 1, 0));
@@ -189,8 +269,8 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
               {view.folder} · {view.status === "approved" ? "approved" : view.status === "changed" ? "changed: waiting on you" : view.status === "new" ? "never approved: waiting on you" : view.status}
             </h3>
             {view.repos.map((repo) => {
-              const isSelected = selected?.folder === view.folder && selected.as === repo.as;
-              const commands = (["sync", "setup", "back"] as const).filter((kind) => repo.commands[kind]);
+              const isSelected = selected?.kind === "repo" && selected.folder === view.folder && selected.as === repo.as;
+              const commands = (["sync", "setup", "back", "teardown"] as const).filter((kind) => repo.commands[kind]);
               return (
                 <div className={`cow-row${isSelected ? " cow-cur" : ""}`} key={repo.as ?? "."} data-cow-workspace-repo={repo.as ?? "."} data-cow-selected={isSelected || undefined}>
                   <span>
@@ -206,7 +286,27 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
             })}
           </div>
         ))}
-        {note ? <p data-cow-workspaces-note="">{note}</p> : null}
+        {data.held.length > 0 || data.heldError ? (
+          <div data-cow-held-clones={data.held.length}>
+            <h3>Held clones · bb removed them, cow kept them since work might be lost · Enter shows teardown's output · t runs teardown again · d removes one for good (y confirms)</h3>
+            {data.heldError ? <p data-cow-held-error="">could not read the held clones: {data.heldError}</p> : null}
+            {data.held.map((entry) => {
+              const isSelected = selected?.kind === "held" && selected.id === entry.id;
+              return (
+                <div className={`cow-row${isSelected ? " cow-cur" : ""}`} key={entry.id} data-cow-held={entry.id} data-cow-selected={isSelected || undefined}>
+                  <span>
+                    <b>{heldName(entry)}</b>
+                  </span>
+                  <span>
+                    held {formatAge(Math.max(0, now - entry.heldAt))} ago · {heldReasons(entry).join("; ") || "why is not recorded"} · {entry.path}
+                    {entry.missing ? " (its folder is gone)" : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {note ? <p data-cow-workspaces-note="" data-cow-held-confirm={confirming ?? undefined}>{note}</p> : null}
       </div>
     </div>
   ) : null;

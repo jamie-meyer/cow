@@ -5,7 +5,8 @@
 
 import { type BbPluginApi, PluginCliError, cliCommand, defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { cloneHostContract } from "../clone/contract.ts";
+import { type HeldWire, cloneHostContract } from "../clone/contract.ts";
+import { type HoldReason, reasonText } from "../clone/judge.ts";
 import { cloneProviderId } from "../clone/provider.ts";
 import type { LogStore } from "../caps/logstore.ts";
 import { Refusal } from "../kv.ts";
@@ -19,13 +20,17 @@ import { type BackPlan, type HostPort, type WorkspaceView, type Workspaces, crea
 const CALL_MS = 60_000;
 /** Sync runs each repository for up to 5 minutes, one after another. */
 const SYNC_MS = 60 * 60_000;
+/** Removing a held clone stops what runs in it first. */
+const REMOVE_MS = 5 * 60_000;
 
 const viewSchema = z.custom<WorkspaceView>();
 const backPlanSchema = z.custom<BackPlan>();
+const heldSchema = z.custom<HeldWire>();
 
 /** What anyone may read or do. Approving, dismissing, back and output are signed calls. */
 export const workspaceRpcContract = defineRpcContract({
-  workspace_state: { input: z.null(), output: z.object({ workspaces: z.array(viewSchema) }) },
+  /** The workspaces, and the clones held back from removal (never a command's output). */
+  workspace_state: { input: z.null(), output: z.object({ workspaces: z.array(viewSchema), held: z.array(heldSchema), heldError: z.string().nullable() }) },
   /** Run the approved sync commands: anyone may, as `bb cow workspace sync` does. */
   workspace_sync: {
     input: z.object({ folder: z.string().max(1024).nullable(), only: z.string().max(255).nullable() }),
@@ -54,6 +59,10 @@ export function registerWorkspaces(bb: BbPluginApi, log: LogStore): Workspaces {
     backPreview: async (hostId, clonePath, approved) => failed(await host.call("workspace_back_preview", { clonePath, approved }, { hostId, timeoutMs: CALL_MS })),
     back: async (hostId, clonePath, approved) => failed(await host.call("workspace_back", { clonePath, approved }, { hostId, timeoutMs: SYNC_MS })).results,
     output: async (approved, as, kind) => failed(await host.call("workspace_output", { approved, as, kind }, { hostId: await primary(), timeoutMs: CALL_MS })).run,
+    held: async () => host.call("held_list", null, { hostId: await primary(), timeoutMs: CALL_MS }),
+    heldOutput: async (id) => failed(await host.call("held_output", { id }, { hostId: await primary(), timeoutMs: CALL_MS })),
+    heldTeardown: async (id, approved) => failed(await host.call("held_teardown", { id, approved }, { hostId: await primary(), timeoutMs: SYNC_MS })),
+    heldRemove: async (id) => void failed(await host.call("held_remove", { id }, { hostId: await primary(), timeoutMs: REMOVE_MS })),
   };
   const workspaces = createWorkspaces({
     kv: bb.storage.kv,
@@ -71,7 +80,10 @@ export function registerWorkspaces(bb: BbPluginApi, log: LogStore): Workspaces {
     },
   });
   bb.rpc.register(workspaceRpcContract, {
-    workspace_state: async () => ({ workspaces: await workspaces.views() }),
+    workspace_state: async () => {
+      const [views, held] = await Promise.all([workspaces.views(), heldOrError(workspaces)]);
+      return { workspaces: views, ...held };
+    },
     workspace_sync: async ({ folder, only }) => ({ synced: await workspaces.sync(folder, only) }),
     workspace_back_plan: async ({ threadId }) => {
       const { clone: _clone, approved: _approved, ...plan } = await workspaces.backPlan(threadId);
@@ -79,6 +91,14 @@ export function registerWorkspaces(bb: BbPluginApi, log: LogStore): Workspaces {
     },
   });
   return workspaces;
+}
+
+async function heldOrError(workspaces: Workspaces): Promise<{ held: HeldWire[]; heldError: string | null }> {
+  try {
+    return { held: await workspaces.held(), heldError: null };
+  } catch (cause) {
+    return { held: [], heldError: message(cause) };
+  }
 }
 
 // ---- the CLI -----------------------------------------------------------------
@@ -106,7 +126,7 @@ export function viewText(view: WorkspaceView, now: number): string {
   const lines = [`${view.folder}`, `  ${WORKSPACE_FILE}: ${STATUS_TEXT[view.status]}${view.error ? ` (${view.error})` : ""}${view.approvedAt !== null && view.status !== "approved" ? ` · last approved ${formatAge(now - view.approvedAt)} ago` : ""}`];
   if (view.problems.length > 0) lines.push(`  problems: ${view.problems.join("; ")}`);
   for (const repo of view.repos) {
-    const commands = (["sync", "setup", "back"] as const).filter((kind) => repo.commands[kind]);
+    const commands = (["sync", "setup", "back", "teardown"] as const).filter((kind) => repo.commands[kind]);
     const sync = repo.sync === null ? "never synced" : `last sync ${formatAge(now - repo.sync.at)} ago, ${repo.sync.timedOut ? "stopped at its time limit" : `exit ${repo.sync.code}`}`;
     lines.push(
       `  ${(repo.as ?? ".").padEnd(14)} ${repo.exists ? (repo.dirty ? "dirty" : "clean") : "missing"} · ${sync} · commands: ${commands.length === 0 ? "none" : commands.join(", ")} · ${repo.path}`,
@@ -119,6 +139,19 @@ const syncLine = (result: { as: string | null; status: string; code: number | nu
   `  ${(result.as ?? ".").padEnd(14)} ${
     result.status === "ran" ? (result.timedOut ? "stopped at its time limit" : `exit ${result.code}`) + ` in ${((result.ms ?? 0) / 1000).toFixed(1)} s` : result.status === "dirty" ? `skipped: dirty (${result.why})` : result.status === "missing" ? `skipped: ${result.why}` : result.status === "no-command" ? "no sync command" : result.status
   }`;
+
+export const HELD_HOW = "Only the user removes a held clone or runs its teardown again, from W on cow's page.";
+
+/** The clones held back from removal, as `bb cow workspace` lists them: never a command's output. */
+export function heldText(held: readonly HeldWire[], now: number): string {
+  const lines = [`Held clones (bb removed them; cow kept them, since work might be lost):`];
+  for (const entry of held) {
+    lines.push(`  ${entry.id} · ${entry.title ?? entry.threadId ?? entry.branch} · held ${formatAge(Math.max(0, now - entry.heldAt))} ago · ${entry.path}${entry.missing ? " (its folder is gone)" : ""}`);
+    for (const reason of entry.reasons as HoldReason[]) lines.push(`    ${reasonText(reason)}`);
+  }
+  lines.push(HELD_HOW);
+  return lines.join("\n");
+}
 
 const BACK_HOW = "Nothing was run. The user brings it back with B on the thread's line on cow's page.";
 
@@ -142,15 +175,19 @@ export function workspaceCommands(workspaces: Workspaces) {
       description:
         `Lists each workspace folder cow knows: whether its ${WORKSPACE_FILE} is approved, changed since, or missing; and each repository it brings, ` +
         "with its last sync (when, exit code), whether it has uncommitted changes now, and which commands it has (never their text). " +
+        "Then the clones held back from removal, with why: only the user removes one or runs its teardown again, on cow's page. " +
         "A command's output is shown only to the user, on cow's page.",
       positionals: [{ name: "folder", description: "One workspace folder. Default: all", required: false }],
       options: { json },
       async run(input) {
         const folder = input.positionals.folder;
         const views = await acting(async () => (folder ? workspaces.views(await workspaces.folderOf(folder)) : workspaces.views()));
-        if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify({ ok: true, workspaces: views.map(({ review: _review, ...view }) => view) })}\n` };
+        const held = await heldOrError(workspaces);
+        if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify({ ok: true, workspaces: views.map(({ review: _review, ...view }) => view), ...held })}\n` };
         const now = Date.now();
-        return { exitCode: 0, stdout: `${views.length === 0 ? "cow knows no workspace yet: `bb cow workspace add <folder>` proposes one" : views.map((view) => viewText(view, now)).join("\n\n")}\n` };
+        const listed = views.length === 0 ? "cow knows no workspace yet: `bb cow workspace add <folder>` proposes one" : views.map((view) => viewText(view, now)).join("\n\n");
+        const heldPart = held.heldError !== null ? `\n\nHeld clones: could not be read (${held.heldError})` : held.held.length === 0 ? "" : `\n\n${heldText(held.held, now)}`;
+        return { exitCode: 0, stdout: `${listed}${heldPart}\n` };
       },
     }),
     "workspace add": cliCommand({
