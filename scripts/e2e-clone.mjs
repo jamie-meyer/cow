@@ -37,7 +37,13 @@
 // (the same: nothing runs); brings the work back through the copy's signed
 // `workspace_back`, as the page's B does, and checks the commit reached the
 // source; and edits the file to a harmful-looking command and checks nothing
-// new runs.
+// new runs. Then it approves a teardown for api and checks: the first
+// thread's clone, removed by bb, ran api's teardown (a marker file under the
+// check's temp folder) and is gone; a second thread's clone with an
+// uncommitted file in web (no teardown) is held, listed by `bb <id>
+// workspace`, with its files intact at the held path; a third's, whose
+// teardown fails, is held; unsigned removal is refused; the signed
+// `workspace_held_remove` deletes both.
 // The thread is archived at the end, also after a failure. The bb CLI is run
 // without BB_THREAD_ID for the "outside any thread" calls, as a terminal would.
 //
@@ -344,6 +350,7 @@ async function workspaceE2e() {
   const marker = join(base, "HARMFUL");
   let threadId = null;
   let environmentId = null;
+  const extraThreads = [];
   try {
     mkdirSync(join(ws, "notes"), { recursive: true });
     writeFileSync(join(ws, "notes", "today.md"), "A note.\n");
@@ -463,7 +470,71 @@ async function workspaceE2e() {
     check("the changed file waits, with the new command first in its review", state2.status === "changed" && state2.waiting && state2.review.indexOf("touch") < state2.review.indexOf("The change"), JSON.stringify(state2).slice(0, 300));
     await bbOutside(plugin, "workspace", "sync", ws);
     check("sync ran the approved command, not the changed one", !existsSync(marker));
+
+    // Teardown, approved like the rest: api's appends to a marker under the check's temp folder unless the thread asked it to fail; web has none.
+    const marks = join(base, "teardown-marks.txt");
+    const withTeardown = { ...file, bring: [{ ...file.bring[0], teardown: `test ! -f fail-teardown && printf '%s\\n' "$COW_AS" >> "${marks}"` }, file.bring[1]] };
+    writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(withTeardown, null, 2)}\n`);
+    const state3 = (await rpc("workspace_state", null)).result.workspaces.find((view) => view.folder === ws);
+    check("a teardown is a command that would newly run, in the review", state3.fresh.some((entry) => entry.as === "api" && entry.kind === "teardown") && /api: teardown/.test(state3.review), JSON.stringify(state3.fresh));
+    await signer.must("workspace_approve", { folder: ws, hash: state3.currentHash });
+
+    const heldDir = join(homedir(), ".bb", "plugins", plugin, "host-data", "held");
+    const removeEnvironment = async (thread, env) => {
+      await bb("thread", "archive", thread);
+      await bb("environment", "cleanup", env);
+      const by = Date.now() + 3 * 60_000;
+      for (;;) {
+        const shown = await bb("environment", "show", env);
+        const lifecycle = (shown.environment ?? shown).lifecycle;
+        if (lifecycle?.phase === "destroyed" || Date.now() > by) return lifecycle;
+        await sleep(2000);
+      }
+    };
+
+    // 1. The first thread's clone: api's teardown succeeds (its commit was brought back; web is clean), so it is removed.
+    const firstThread = threadId;
+    const lifecycle1 = await removeEnvironment(threadId, environmentId);
+    threadId = null;
+    check("bb settles the removal", lifecycle1?.phase === "destroyed" && lifecycle1?.teardown?.status === "removed", JSON.stringify(lifecycle1));
+    check("a clean teardown ran while the clone existed, and the clone is removed", existsSync(marks) && readFileSync(marks, "utf8") === "api\n" && !existsSync(path), existsSync(marks) ? readFileSync(marks, "utf8") : "no marker");
+    check("it is not held", !(await rpc("workspace_state", null)).result.held.some((entry) => entry.threadId === firstThread));
+
+    // 2. and 3., side by side: a thread leaves an uncommitted file in web (no teardown); another asks api's teardown to fail.
+    const spawnOne = async (title, command) =>
+      (await bb("thread", "spawn", "--project", project, "--environment-provider", `${plugin}-clone`, "--environment-inputs", JSON.stringify({ workspace: ws }), "--provider", "claude-code", "--model", model, "--title", title, "--parent-notifications", "off", "--prompt", PROMPT(command))).id;
+    const dirtyThread = await spawnOne("cow test: held, unsaved", "echo keep-me > web/unsaved.txt");
+    const failThread = await spawnOne("cow test: held, teardown fails", "touch api/fail-teardown");
+    extraThreads.push(dirtyThread, failThread);
+    const [dirtyT, failT] = await Promise.all([waitIdle(dirtyThread), waitIdle(failThread)]);
+    const dirtyPath = (await bb("environment", "show", dirtyT.environmentId)).environment?.path ?? (await bb("environment", "show", dirtyT.environmentId)).path;
+    const [l2, l3] = await Promise.all([removeEnvironment(dirtyThread, dirtyT.environmentId), removeEnvironment(failThread, failT.environmentId)]);
+    check("bb settles both removals, held or not", [l2, l3].every((l) => l?.phase === "destroyed" && l?.teardown?.status === "removed"), JSON.stringify([l2, l3]));
+    const state4 = (await rpc("workspace_state", null)).result;
+    const heldDirty = state4.held.find((entry) => entry.threadId === dirtyThread);
+    const heldFail = state4.held.find((entry) => entry.threadId === failThread);
+    check("the clone with an uncommitted file and no teardown is held, with why", heldDirty?.reasons?.some((r) => r.as === "web" && r.kind === "uncommitted") && heldDirty.title === "cow test: held, unsaved", JSON.stringify(state4.held).slice(0, 600));
+    check("its files are intact at the held path, and gone from where bb had it", heldDirty && readFileSync(join(heldDirty.path, "web", "unsaved.txt"), "utf8") === "keep-me\n" && heldDirty.path.startsWith(heldDir) && !existsSync(dirtyPath), heldDirty?.path);
+    check("the clone whose teardown failed is held, with its exit code", heldFail?.reasons?.length === 1 && heldFail.reasons[0].kind === "teardown-failed" && heldFail.reasons[0].code === 1 && existsSync(heldFail.path), JSON.stringify(heldFail?.reasons));
+    check("the held clones carry no output", !JSON.stringify(state4.held).includes("tail"));
+    const listedHeld = await bbOutside(plugin, "workspace");
+    check(
+      "bb <id> workspace lists the held clones, with why and where",
+      heldDirty && heldFail && listedHeld.stdout.includes(heldDirty.path) && listedHeld.stdout.includes(heldFail.path) && /web: 1 uncommitted or untracked change, and no teardown/.test(listedHeld.stdout) && /api: teardown exited 1/.test(listedHeld.stdout),
+      listedHeld.stdout,
+    );
+
+    // Nothing unsigned removes one; signed, it is removed.
+    for (const action of ["workspace_held_remove", "workspace_held_teardown"]) {
+      const refusedHeld = await (await fetch(`${bbUrl}/api/v1/plugins/${plugin}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, args: { id: heldDirty?.id } }) })).json();
+      check(`an unsigned ${action} is refused`, refusedHeld.ok === false || refusedHeld.result?.ok === false, JSON.stringify(refusedHeld).slice(0, 300));
+    }
+    check("and the held clone is still there", heldDirty && existsSync(heldDirty.path));
+    for (const entry of [heldDirty, heldFail].filter(Boolean)) await signer.must("workspace_held_remove", { id: entry.id });
+    const state5 = (await rpc("workspace_state", null)).result;
+    check("the signed removal deletes them", state5.held.length === 0 && [heldDirty, heldFail].every((entry) => entry && !existsSync(entry.path)), JSON.stringify(state5.held).slice(0, 300));
   } finally {
+    for (const extra of extraThreads) await bb("thread", "archive", extra).catch(() => {});
     if (threadId && !flag("keep")) {
       await bb("thread", "archive", threadId).catch((error) => console.error(`could not archive ${threadId}: ${error.message}`));
       if (environmentId) await bb("environment", "cleanup", environmentId).catch((error) => console.error(`could not clean up ${environmentId}: ${error.message}`));

@@ -62,7 +62,10 @@
 //                       with two throwaway git repositories; then a second
 //                       fixture started in a copy-on-write clone of it, which
 //                       commits once, so B can bring that commit back to the
-//                       throwaway source. It is archived, and its clone
+//                       throwaway source; then its clone, left with an
+//                       uncommitted file, is held when bb removes it, the
+//                       queue and W say so, and W removes it after y. It is
+//                       archived, and its clone
 //                       removed, when the section ends, also after a failure
 //   --only-reader       only the reader, projects, asks answered in chat and
 //                       chat scrolling: four fixtures, and --environment must
@@ -1760,7 +1763,49 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     check("docs had nothing new: no branch there", (await git(docs, "branch", "--list", branch)) === "");
     check("the back is in the log, signed", /workspace-back/.test(await logged()) && (await logged()).includes(cloneThread));
     await shot("workspace-back-done");
+
+    // Held: an uncommitted file in docs (no teardown), then bb removes the clone. It is held, the queue says so, and W removes it after y.
+    writeFileSync(join(clonePath, "docs", "unsaved.txt"), "keep me\n");
+    await bb("thread", "archive", cloneThread);
+    await bb("environment", "cleanup", cloneEnvironment);
+    let heldEntry;
+    for (let i = 0; i < 60 && !heldEntry; i += 1) {
+      heldEntry = (await rpc("workspace_state", null)).held.find((entry) => entry.threadId === cloneThread);
+      if (!heldEntry) await sleep(2000);
+    }
+    cloneThread = null;
+    const heldNotice = `document.querySelector('[data-cow-held-notice="${heldEntry?.id}"]')`;
+    await page.waitFor(`!!${heldNotice}`, { label: "the held notice", timeout: 60_000 });
+    const noticeText = await page.eval(`${heldNotice}.textContent`);
+    check("the queue says the clone was held, not deleted, and why", heldEntry && noticeText.includes(`the clone of ${TITLE} was held, not deleted: docs: 1 uncommitted or untracked change, and no teardown`) && noticeText.includes(heldEntry.path), noticeText);
+    check("its files are intact at the held path", heldEntry && readFileSync(join(heldEntry.path, "docs", "unsaved.txt"), "utf8") === "keep me\n", heldEntry?.path);
+    await shot("workspace-held-notice");
+    await page.eval(`${heldNotice}.click(); true`);
+    const heldRow = `document.querySelector('[data-cow-held="${heldEntry?.id}"]')`;
+    await page.waitFor(`${mode} === "workspaces" && !!${heldRow}`, { label: "W opened on the held clone" });
+    const rowText = await page.eval(`${heldRow}.textContent`);
+    check("W's held part lists it with its thread's title, when, why and its path, selected", rowText.includes(TITLE) && /held .* ago/.test(rowText) && rowText.includes("docs: 1 uncommitted") && rowText.includes(heldEntry.path) && (await page.eval(`${heldRow}.dataset.cowSelected === "true"`)), rowText);
+    await shot("workspace-held-sheet");
+    const sheetNote = `(document.querySelector("[data-cow-workspaces-note]")?.textContent ?? "")`;
+    await page.key("d");
+    await page.waitFor(`!!document.querySelector("[data-cow-held-confirm]")`, { label: "d's confirmation" });
+    check("d names what would be lost before anything is removed", /remove the held clone of .* for good\? Lost with it: docs: 1 uncommitted or untracked change, and everything else in /.test(await page.eval(sheetNote)), await page.eval(sheetNote));
+    await shot("workspace-held-confirm");
+    await page.key("n");
+    await page.waitFor(`/kept: the held clone is not removed/.test(${sheetNote})`, { label: "n keeps it" });
+    check("any other key keeps it", existsSync(heldEntry.path));
+    await page.key("d");
+    await page.waitFor(`!!document.querySelector("[data-cow-held-confirm]")`, { label: "d's confirmation again" });
+    await page.key("y");
+    await page.waitFor(`/removed the held clone/.test(${sheetNote})`, { label: "removed", timeout: 60_000 });
+    check("y removes it for good, through the signed action", !existsSync(heldEntry.path) && (await rpc("workspace_state", null)).held.every((entry) => entry.id !== heldEntry.id));
+    await page.key("q");
+    await page.waitFor(`${mode} === "normal" && !${heldNotice}`, { label: "the held notice gone" });
+    check("the removal is in the log, signed", /removed the held clone/.test(JSON.stringify((await rpc("caps_log", { limit: 20 })).entries ?? [])) || /workspace-held/.test(await logged()));
   } finally {
+    for (const entry of (await rpc("workspace_state", null).catch(() => ({ held: [] }))).held ?? []) {
+      if (entry.path.startsWith(base) || entry.title === TITLE) await signer.call("workspace_held_remove", { id: entry.id }).catch(() => {});
+    }
     if (cloneThread) {
       await bb("thread", "archive", cloneThread).catch((cause) => console.error(`could not archive ${cloneThread}`, cause));
       if (cloneEnvironment) await bb("environment", "cleanup", cloneEnvironment).catch((cause) => console.error(`could not clean up ${cloneEnvironment}`, cause));
