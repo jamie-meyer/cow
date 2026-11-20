@@ -4,6 +4,45 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.15
+
+A workspace file: your repositories kept in sync, set up in each clone, and a
+thread's work brought back, with commands you write and approve.
+
+- **`cow.workspace.json`.** A file at the top of a workspace folder names
+  the repositories a copy-on-write thread brings and, for each, optional
+  `sync`, `setup` and `back` commands of your own: git, a stacking tool,
+  anything. It is read strictly: a typo in a field name is refused, and
+  every problem names its field. See [docs/clone.md](docs/clone.md#the-workspace-file).
+- **Nothing in it runs until you approve it.** The commands run with your
+  full access, outside any sandbox, and the file sits where agents can
+  write. So cow keeps the content you last approved and runs only that.
+  `bb cow workspace add <folder>` proposes a folder; a notice in your queue
+  opens the file in the reader, the commands that would newly run first,
+  then the change. `a` approves exactly what is shown (refused if the file
+  changed since), `x` dismisses it until it changes again. Each approval is
+  in the log with the content's hash.
+- **Sync.** `bb cow workspace sync` runs each repository's approved `sync`
+  in it, then the workspace folder's own, one at a time, under a five-minute
+  limit; a repository with uncommitted or untracked changes is skipped and
+  left alone. Anyone may run it, so an automation can keep your clean bases
+  current. With `syncBeforeClone`, a repository not synced recently is
+  synced before a thread clones it; if that fails, the thread still starts,
+  with a warning.
+- **Starting a thread from the file.** `--environment-inputs '{ "workspace":
+  "<folder>", "bring": ["api"] }'` takes the repositories, read-only paths
+  and excludes from the approved file. Each repository's `setup` runs once in
+  the clone before the thread starts; one that fails fails the thread with
+  its last lines of output, and the clone is removed.
+- **Bringing work back.** `B` on a copy-on-write thread's line names each
+  repository with new commits and the approved `back` command it would run;
+  `y` runs them in the sources. `bb cow workspace back <thread>` does the
+  same from your terminal. A thread is refused.
+- **Seeing it.** `W` lists each workspace and repository with its last sync,
+  whether it is dirty and which commands it has; `s` syncs the selected
+  repository, `S` all, `Enter` shows the last output, to you only.
+  `bb cow workspace` shows the same without the output.
+
 ## 0.2.14
 
 A check that can always start, and a failed rerun that loses nothing.

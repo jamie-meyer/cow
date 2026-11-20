@@ -386,6 +386,24 @@ at the end of that turn, set it again. `--clear` removes it. Do not use it
 to put off something that is the user's to decide: ask them instead. The
 same rule as `next` applies: only your own thread and the threads under it.
 
+## Workspace files
+
+A workspace folder can hold a `cow.workspace.json` naming the repositories a
+copy-on-write thread brings and the user's commands to sync them, set a clone
+up and bring work back. Those commands run outside any sandbox, so none runs
+until the user approves the file's content on cow's page.
+
+```sh
+bb cow workspace [<folder>] [--json]           # what cow knows: approved or not, each repository's last sync
+bb cow workspace add <folder>                  # propose it: the user approves it on the page; nothing runs until then
+bb cow workspace sync [<folder>] [--only <as>] # run the approved sync commands; dirty repositories are skipped
+```
+
+Editing the file changes nothing that runs until the user approves the change.
+Bringing a thread's work back (`bb cow workspace back`) is the user's alone and
+is refused from a thread: ask them with `bb cow ask`. You cannot read a
+command's output; the user sees it on the page.
+
 ## Limits
 
 - Only the user can answer a question or an ask, grant a permission, deal

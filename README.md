@@ -269,8 +269,12 @@ a thread in the chat opens that thread in the pane instead of bb's chat page;
 **A copy-on-write workspace (macOS).** A thread can start in a clone of a
 whole workspace folder, with the repositories it needs cloned inside it,
 instead of a git worktree: fast, nearly free on disk, and independent of the
-originals. It is started from the command line for now. Details are in
-[docs/clone.md](docs/clone.md).
+originals. It is started from the command line for now. A
+`cow.workspace.json` in the workspace folder can name the repositories and
+the commands you write to keep them in sync, set a clone up and bring a
+thread's work back (git, a stacking tool, anything); none of them runs until
+you approve the file's content on the page, and each change waits for you
+again. Details are in [docs/clone.md](docs/clone.md).
 
 ## Keys
 
@@ -407,13 +411,17 @@ bb cow resume <thread>
 bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
 bb cow outcome <thread> done|partial|redone|dropped   # what a worker came to, open or archived
 bb cow ledger [--days 14] [--json]               # what finished workers came to
+bb cow workspace [<folder>]                      # workspace files: approved or not, each repository's last sync
+bb cow workspace add <folder>                    # propose one: you approve its file on the page
+bb cow workspace sync [<folder>] [--only <as>]   # run the approved sync commands
+bb cow workspace back <thread>                   # yours: refused from a thread
 bb cow help
 ```
 
 Every command takes `--json` and `--help`. A refused command exits non-zero,
 says why, and says what to do instead. There is no command that answers an
-ask, decides a permission request, or makes, deletes or acknowledges a
-capability: those are yours, on the page.
+ask, decides a permission request, makes, deletes or acknowledges a
+capability, or approves a workspace file: those are yours, on the page.
 
 Parking a thread that waits on you, withdrawing an ask, and closing an ask
 as answered when you have not written to that thread since it asked, are
@@ -583,7 +591,7 @@ An agent **cannot**, through cow: make, delete, restore or acknowledge a
 capability; decide a permission request; answer an ask or close one as you;
 send a message as you; mark a reply as seen, dismiss a refused permission
 or mark a brief as read, or take any of those back; record which thread is
-Main; judge a worker's outcome on the page; approve, refuse or remove a key. Those are one method, `signed`, which
+Main; judge a worker's outcome on the page; approve a workspace file's content or dismiss its notice, bring a thread's work back, read a workspace command's output; approve, refuse or remove a key. Those are one method, `signed`, which
 acts only on a call signed by an enrolled key over the action, all of its
 arguments, a time and a nonce. A call signed more than two minutes ago,
 signed before cow last started, or already used, is refused. Each one done

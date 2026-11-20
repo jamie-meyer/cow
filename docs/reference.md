@@ -1668,7 +1668,11 @@ The page proves it is yours with a signature.
   a thread and taking that back; marking a brief as read; recording which
   thread is a project's Main, which is where a new window starts; deleting
   one of bb's automations; saying what a worker came to, for the ledger;
-  and approving, refusing or removing a key. Opening a chat or a brief on the
+  approving a workspace file's content (`workspace_approve`, which carries
+  the hash of the content shown) or dismissing its notice
+  (`workspace_dismiss`); bringing a thread's work back with the approved
+  back commands (`workspace_back`); reading a workspace command's last
+  output (`workspace_output`); and approving, refusing or removing a key. Opening a chat or a brief on the
   page, which marks a reply seen or a brief read as a side effect, signs
   that mark the same way. The list is `PERSON_ACTIONS` in
   `src/signing/envelope.ts`. None of these is a method of cow's interface.
@@ -1893,8 +1897,30 @@ bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
 bb cow todo rm <thread> <n>
 bb cow todo list <thread>
+bb cow workspace [<folder>] [--json]
+bb cow workspace add <folder>
+bb cow workspace sync [<folder>] [--only <as>] [--json]
+bb cow workspace back <thread> [--json]
 bb cow help
 ```
+
+The `workspace` commands are described in [docs/clone.md](clone.md#the-workspace-file).
+`workspace` lists each workspace folder cow knows, whether its
+`cow.workspace.json` is approved, changed or missing, and each repository's
+last sync (when, exit code), whether it is dirty now, and which commands it
+has, never their text. `workspace add` only proposes a folder: its file
+waits for your approval on the page. `workspace sync` runs the approved sync
+commands; anyone may run it. `workspace back` is yours alone: a thread that
+runs it is refused.
+
+**What a workspace keeps, and where.** In cow's own storage (bb's database):
+each workspace folder cow knows, by real path, with the content you last
+approved, its hash, when and by which key, and the hash of a notice you
+dismissed. In cow's host data folder only
+(`~/.bb/plugins/cow/host-data/workspace/runs.json`, mode 0600): per
+repository, the last sync, setup and back run, each with when it ran, how
+long, its exit code and its last 20 lines of output, and when its sync last
+succeeded. Output is never written to bb's database or to the log.
 
 | Command | Does |
 | --- | --- |
