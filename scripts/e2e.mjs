@@ -1966,7 +1966,7 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   const ledger = async () => rpc("ledger_read", { days: 14 });
   const rowOf = async (id) => (await ledger()).rows.find((row) => row.threadId === id) ?? null;
   const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
-  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy", "label"].sort();
+  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy", "label", "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"].sort();
 
   // -- a project is not asked --
   await page.waitFor(`!!${lineEl(lproj)} && !!${lineEl(lone)} && !!${lineEl(ltwo)}`, { label: "the three lines" });
@@ -2057,11 +2057,52 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   const json = JSON.parse((await cow("ledger", "--days", "1", "--json")).stdout);
   check("--json has the summary by label, each with its models", json.summary.byLabel?.some((group) => group.key === "code-change" && group.outcomes.dropped === 1 && group.byModel.length === 1) && json.summary.byLabel.some((group) => group.key === "lookup"), JSON.stringify(json.summary.byLabel?.map((group) => [group.key, group.workers])));
   const dispatcher = json.summary.byDispatcher.find((group) => group.key === lmain);
+  // -- tokens and list-price dollars --
+  const TOKEN_KEYS = ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"];
+  const withUsage = json.rows.find((row) => row.threadId === lone);
+  check("the row of an archived worker holds the four token counts bb recorded", TOKEN_KEYS.every((key) => typeof withUsage?.[key] === "number") && TOKEN_KEYS.some((key) => withUsage[key] > 0), JSON.stringify(TOKEN_KEYS.map((key) => withUsage?.[key])));
+  const labelled = json.summary.byLabel?.find((group) => group.key === "lookup");
+  check("--json carries each group's tokens, list-price dollars and dollars per done, and says they are list price and an estimate", json.listPrice === true && json.estimate === true && typeof labelled?.tokens?.input === "number" && typeof labelled?.dollars === "number" && "dollarsPerDone" in labelled && typeof withUsage?.listPriceUsd === "number", JSON.stringify(labelled && { tokens: labelled.tokens, dollars: labelled.dollars, perDone: labelled.dollarsPerDone }));
+  check("bb cow ledger --by label gives each label its tokens and list-price dollars", /\n  lookup: 1 worker[^\n]* tokens · \$[0-9.]+ at list price/.test(byLabelText) && byLabelText.includes("estimate at the providers' list prices"), byLabelText.split("\n").filter((line) => line.includes("lookup")).join(" / "));
+  const pricesBefore = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values?.listPrices ?? "";
+  const setPrices = (value) => plain("plugin", "config", PLUGIN, ...(value === "" ? ["unset", "listPrices"] : ["set", "listPrices", value]));
+  try {
+    await setPrices(JSON.stringify({ [MODEL]: null }));
+    const unpriced = (await cow("ledger", "--by", "label")).stdout;
+    console.log(`note: bb ${PLUGIN} ledger --by label, with ${MODEL} taken out of the prices:\n${unpriced}`);
+    const lookupLine = unpriced.split("\n").find((line) => line.startsWith("  lookup:")) ?? "";
+    check("a model with no price shows its tokens and no dollar figure, not $0", / tokens · no list price/.test(lookupLine) && !/\$/.test(lookupLine), lookupLine);
+    await setPrices(JSON.stringify({ [MODEL]: { input: 1000, cacheRead: 1000, cacheWrite: 1000, output: 1000 } }));
+    const dear = JSON.parse((await cow("ledger", "--days", "1", "--json")).stdout).summary.byLabel.find((group) => group.key === "lookup");
+    check("a price changed in the setting changes the dollars shown for rows already written", typeof dear?.dollars === "number" && dear.dollars > (labelled?.dollars ?? 0) * 10, `${labelled?.dollars} then ${dear?.dollars}`);
+  } finally {
+    await setPrices(pricesBefore);
+  }
+  const spendText = (await cow("spend", "--main", lmain)).stdout;
+  console.log(`note: bb ${PLUGIN} spend --main ${lmain}:\n${spendText}`);
+  const spent = JSON.parse((await cow("spend", "--main", lmain, "--json")).stdout);
+  check(
+    "bb cow spend lists workers, project threads, Main and checker runs apart, with a total, and says how many had no usage recorded",
+    ["Workers:", "Project threads:", "Main:", "cow's checker runs:", "Total:"].every((part) => spendText.includes(part)) && /with no usage recorded|Every thread had usage recorded/.test(spendText) && spendText.includes("estimate at the providers' list prices"),
+    spendText.split("\n").slice(0, 9).join(" / "),
+  );
+  check(
+    "bb cow spend counts threads that are not archived: Main and its project, beside the archived workers",
+    spent.ok === true && spent.parts.main.threads === 1 && spent.parts.projects.threads >= 1 && spent.parts.workers.threads >= 2 && spent.total.threads >= spent.parts.main.threads + spent.parts.projects.threads + spent.parts.workers.threads && typeof spent.total.noUsage === "number",
+    JSON.stringify({ main: spent.parts?.main?.threads, projects: spent.parts?.projects?.threads, workers: spent.parts?.workers?.threads, total: spent.total?.threads, noUsage: spent.total?.noUsage }),
+  );
+  check("--json gives the month's tokens and list-price dollars", spent.listPrice === true && spent.estimate === true && /^\d{4}-\d{2}$/.test(spent.month) && typeof spent.total.tokens.output === "number" && spent.total.tokens.output > 0 && typeof spent.total.dollars === "number");
   check("--json gives the rows and the summary; the small group has counts and no percentages", json.ok === true && json.rows.some((row) => row.threadId === lone) && dispatcher?.workers === 2 && dispatcher?.small === true && dispatcher?.shares === null && dispatcher?.outcomes.redone === 1 && dispatcher?.outcomes.dropped === 1, JSON.stringify(dispatcher));
   await page.key("L");
   await page.waitFor(`${mode} === "ledger" && !!document.querySelector('[data-cow-ledger-row="${lone}"]')`, { label: "the ledger sheet", timeout: 20_000 });
   check("L opens the ledger sheet with the latest rows and their outcomes", (await page.eval(`document.querySelector('[data-cow-ledger-row="${ltwo}"]')?.dataset.cowLedgerOutcome`)) === "dropped" && (await page.eval(`document.querySelector('[data-cow-ledger-row="${lone}"]')?.dataset.cowLedgerOutcome`)) === "redone");
   check("the sheet's groups say a small one is too small to compare", await page.eval(`!!document.querySelector('[data-cow-ledger-group="${lmain}"][data-cow-ledger-small]')`));
+  const groupCost = await page.eval(`document.querySelector('[data-cow-ledger-group="${lmain}"] [data-cow-ledger-cost]')?.textContent ?? ""`);
+  check("the sheet gives each group its tokens and list-price dollars", / tokens · \$[0-9.]+ at list price/.test(groupCost), groupCost);
+  check("the sheet gives each row its tokens", (await page.eval(`document.querySelector('[data-cow-ledger-row="${lone}"] [data-cow-ledger-usage]')?.dataset.cowLedgerUsage`)) === "known");
+  await page.waitFor(`!!document.querySelector('[data-cow-spend-part="total"]')`, { label: "this month in the sheet", timeout: 30_000 });
+  const parts = await page.eval(`[...document.querySelectorAll("[data-cow-spend-part]")].map((el) => el.dataset.cowSpendPart + ":" + el.dataset.cowSpendThreads).join(" ")`);
+  check("the sheet shows this month under Main: workers, project threads, Main, checker runs and the total, and how many had no usage recorded", /workers:\d+ projects:\d+ main:1 checkers:\d+ total:\d+/.test(parts) && (await page.eval(`document.querySelector("[data-cow-spend-unknown]") !== null`)), parts);
   await shot("ledger-sheet");
   for (const key of ["b", "b", "b"]) await page.key(key);
   await page.waitFor(`document.querySelector("[data-cow-ledger]")?.dataset.cowLedgerBy === "label"`, { label: "the sheet by label" });

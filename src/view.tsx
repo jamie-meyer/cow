@@ -2988,7 +2988,7 @@ function OverviewScreen({
       {hint ? <HintLayer hint={hint} /> : null}
       {help ? <Help onClose={() => setHelp(false)} /> : null}
       {workspaceSheet.node}
-      {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} by={ledgerBy} /> : null}
+      {ledgerOpen ? <LedgerSheet data={ledger} titleOf={(id) => titles.get(id) ?? threads.find((thread) => thread.id === id)?.title ?? null} onClose={() => setLedgerOpen(false)} by={ledgerBy} mainId={main.thread.id} /> : null}
     </div>
   );
 }

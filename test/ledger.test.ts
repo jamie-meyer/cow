@@ -114,6 +114,10 @@ test("the row's keys are exactly the allowed set: no title, prompt, message text
   assert.equal(row.label, null, "no label: null");
   const { label: _label, ...old } = row;
   assert.equal(rowSchema.parse(old).label, null, "a row written before labels reads as no label");
+  assert.equal(row.inputTokens, null, "no usage given: unknown, not zero");
+  const { inputTokens: _i, cacheReadTokens: _r, cacheWriteTokens: _w, outputTokens: _o, ...before } = row;
+  const read = rowSchema.parse(before);
+  assert.deepEqual([read.inputTokens, read.cacheReadTokens, read.cacheWriteTokens, read.outputTokens], [null, null, null, null], "a row written by 0.2.18 reads as unknown usage");
   for (const value of Object.values(row)) assert.ok(typeof value !== "string" || value.length <= 200);
 });
 
@@ -174,6 +178,10 @@ const row = (overrides: Partial<LedgerRow>): LedgerRow => ({
   archivedAt: NOW - HOUR,
   archivedBy: PERSON,
   label: null,
+  inputTokens: null,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  outputTokens: null,
   ...overrides,
 });
 
@@ -322,7 +330,7 @@ function cli(overrides: Partial<CliActions> = {}) {
       calls.push(["outcome", args]),
       { title: "T", archived: true, judgement: { outcome: args.outcome, by: args.callerId ?? PERSON, at: NOW }, changes: 1, row: true }
     ),
-    ledger: async (days) => (calls.push(["ledger", days]), { rows: [], summary: summarize([], NOW, days), outcomes: {} }),
+    ledger: async (days) => (calls.push(["ledger", days]), { rows: [], summary: summarize([], NOW, days), outcomes: {}, costs: {}, priceError: null }),
     ...overrides,
   };
   const command = cowCli(actions);

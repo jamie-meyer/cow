@@ -7,7 +7,8 @@ import { z } from "zod";
 import { CowError, createActions } from "./src/actions.ts";
 import { Refusal } from "./src/kv.ts";
 import { judgementSchema, rowSchema, type LedgerSummary } from "./src/ledger.ts";
-import { LEDGER_CHANGED, createLedgerStore, sdkEvents } from "./src/ledger-store.ts";
+import { registerLedger } from "./src/ledger-backend.ts";
+import type { Spend } from "./src/spend.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
@@ -101,7 +102,19 @@ export const rpcContract = defineRpcContract({
    */
   ledger_read: {
     input: z.object({ days: z.number().int().min(1).max(3650) }),
-    output: z.object({ rows: z.array(rowSchema), summary: z.custom<LedgerSummary>(), outcomes: z.record(z.string(), judgementSchema) }),
+    output: z.object({
+      rows: z.array(rowSchema),
+      summary: z.custom<LedgerSummary>(),
+      outcomes: z.record(z.string(), judgementSchema),
+      /** Each row's list-price dollars, worked out now; null when its usage is unknown or its model has no price. */
+      costs: z.record(z.string(), z.number().nullable()),
+      priceError: z.string().nullable(),
+    }),
+  },
+  /** A month's (YYYY-MM; default this one) tokens and list-price dollars under a Main, archived threads included. Only reads. */
+  spend_read: {
+    input: z.object({ mainId: id, month: z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/).optional() }),
+    output: z.custom<Spend & { priceError: string | null }>(),
   },
   /**
    * Archive a thread in bb with cow's reason for it; a null reason forgets an
@@ -139,8 +152,10 @@ export default async function plugin(bb: BbPluginApi) {
   traces.record = async (input) => {
     await caps.trace(input);
   };
-  // The ledger lives in cow's own storage, and reads each worker's prompts and turns when it is archived.
-  const ledger = createLedgerStore(bb.storage.kv, sdkEvents(bb.sdk.threads.events as never), () => bb.realtime.publish(LEDGER_CHANGED, {}));
+  // The ledger, the usage read from bb's events, the list prices and the month's spend. Its project marks are cow's notes.
+  // (Called only once the actions below exist.)
+  const ledgers = registerLedger(bb, async (ids) => Object.keys((await actions.notes(ids)).projects));
+  const ledger = ledgers.ledger;
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -168,7 +183,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return found;
     },
-  }, ledger);
+  }, ledger, ledgers.costing);
 
   const chooseMain = async (projectId: string, threadId: string | null): Promise<MainState> => {
       const state = await readState();
@@ -206,6 +221,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     main_state: () => readState(),
     ledger_read: ({ days }) => actions.ledger(days),
+    spend_read: ({ mainId, month }) => ledgers.spend(mainId, month),
     notes_list: ({ threadIds }) => actions.notes(threadIds),
     park_set: async ({ threadId, park }) => {
       await actions.setPark(threadId, park);
@@ -252,7 +268,10 @@ export default async function plugin(bb: BbPluginApi) {
     return found;
   };
   bb.cli.register(
-    cowCli(actions, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
+    cowCli({ ...actions, spend: async (mainId, projectId, month) => {
+      const main = await actions.mainFor(mainId, projectId);
+      return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
+    } }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was

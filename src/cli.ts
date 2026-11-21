@@ -11,10 +11,15 @@ import { MAX_NEXT, MAX_TODOS, MAX_WAIT_FOR, MAX_WAIT_ON, type TodoItem } from ".
 import { LIMITS } from "./state.ts";
 import { GROUPINGS, type Grouping, LABEL_RULE, OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, labelOf, ledgerText, whoText } from "./ledger.ts";
 import { statusText, withCapabilities } from "./status.ts";
+import { type Spend, spendText } from "./spend.ts";
+import { MONTH_PATTERN } from "./usage.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
-  Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">>;
+  Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">> & {
+    /** The month's spend under a Main: the one given, or this project's. */
+    spend?: (mainId: string | null, projectId: string | null, month: string | undefined) => Promise<Spend & { priceError: string | null; mainTitle: string | null }>;
+  };
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -74,9 +79,36 @@ function groupingsOf(value: string | undefined): readonly Grouping[] {
 
 /** The ledger commands: what a finished worker came to, and the rows and summary. */
 function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof cliCommand>> {
-  const { outcomeChecked, ledger, labelChecked } = actions;
+  const { outcomeChecked, ledger, labelChecked, spend } = actions;
   if (!outcomeChecked || !ledger) return {};
   return {
+    ...(spend
+      ? {
+          spend: cliCommand({
+            summary: "This month's tokens and list-price dollars under Main: workers, project threads, Main, and cow's checker runs",
+            description:
+              "Month to date (or --month YYYY-MM) for every thread under Main, archived or not, split into workers, project threads, Main itself and cow's checker runs " +
+              "(every check cow ran this month, whichever Main's brief it checked), with the total. Tokens are bb's own record of them, by the day it recorded them. " +
+              "Dollars are an estimate at the providers' list prices, not a bill: on a subscription you are not billed this. A model with no list price shows tokens and no dollars. " +
+              "Threads with no usage recorded are counted and said, never shown as zero.",
+            options: {
+              month: { type: "string", description: "The month, YYYY-MM. Default: this one" },
+              main: { type: "string", description: "The Main thread's id. Default: the Main last chosen for this project on cow's page" },
+              json,
+            },
+            async run(input, ctx) {
+              const month = input.options.month?.trim();
+              if (month !== undefined && !MONTH_PATTERN.test(month)) throw new PluginCliError(`"${input.options.month}" is not a month`, { code: "bad_month", hint: "--month 2026-11" });
+              const main = input.options.main === undefined ? null : threadId(input.options.main);
+              const spent = await acting(() => spend(main, ctx.projectId ?? null, month));
+              const { mainTitle, priceError, ...data } = spent;
+              return input.options.json
+                ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, listPrice: true, estimate: true, ...data, priceError })}\n` }
+                : { exitCode: 0, stdout: `${spendText(data, mainTitle)}${priceError ? `\n${priceError}` : ""}\n` };
+            },
+          }),
+        }
+      : {}),
     ...(labelChecked
       ? {
           label: cliCommand({
@@ -129,11 +161,13 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
       },
     }),
     ledger: cliCommand({
-      summary: "What finished workers came to: rows, and a summary by model, by dispatching thread and by label",
+      summary: "What finished workers came to and what they used: rows, and a summary by model, by dispatching thread and by label, with tokens and list-price dollars",
       description:
         "One row per worker archived through cow: its model and effort, time to its first report, how many times the person and other threads " +
         "steered it before that report, how many turns it ran, its outcome and who judged it. No titles, prompts or message text. " +
-        "Groups of fewer than 5 workers are counted, not compared. By label, each label's workers are also grouped by model; rows with no label are under (no label).",
+        "Groups of fewer than 5 workers are counted, not compared. By label, each label's workers are also grouped by model; rows with no label are under (no label). " +
+        "Each group shows its tokens, their dollars at list price, and dollars per done: all its dollars, every outcome, divided by how many came to done. " +
+        "Dollars are an estimate at the providers' list prices, not a bill. A row with no usage recorded is counted as unknown, not as zero; a model with no list price shows tokens and no dollars.",
       options: {
         days: { type: "string", description: "How many days back to read. Default: 14" },
         by: { type: "string", description: `Only one grouping: ${GROUPINGS.join(", ")}. Default: all three` },
@@ -144,9 +178,13 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
         if (!/^[1-9][0-9]{0,3}$/.test(raw.trim())) throw new PluginCliError(`"${raw}" is not a number of days`, { code: "bad_days", hint: "--days 14" });
         const by = groupingsOf(input.options.by);
         const read = await acting(() => ledger(Number(raw.trim())));
+        const cost = (row: { threadId: string }) => read.costs[row.threadId] ?? null;
         return input.options.json
-          ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, summary: read.summary, rows: read.rows })}\n` }
-          : { exitCode: 0, stdout: `${ledgerText(read.summary, read.rows, by)}\n` };
+          ? {
+              exitCode: 0,
+              stdout: `${JSON.stringify({ ok: true, listPrice: true, estimate: true, summary: read.summary, rows: read.rows.map((row) => ({ ...row, listPriceUsd: cost(row) })), priceError: read.priceError })}\n`,
+            }
+          : { exitCode: 0, stdout: `${ledgerText(read.summary, read.rows, by, cost)}${read.priceError ? `\n${read.priceError}` : ""}\n` };
       },
     }),
   };

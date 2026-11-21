@@ -1498,7 +1498,16 @@ given, and updated when the outcome changes. It holds, and only holds:
   it was first given;
 - when it was archived, and by whom: you or a thread's id;
 - its label, or null when it has none (a row written before 0.2.17 reads as
-  none).
+  none);
+- the tokens it used, as four counts: input apart from the cache, cache
+  reads, cache writes, and output (see "Tokens and dollars"). Null when bb
+  recorded none; a row written before 0.2.19 reads as unknown usage, shown
+  as "usage unknown", never as zero. When usage arrives after the row was
+  written (a turn that ended after it was archived), the row is brought up
+  to date, as a later outcome updates it.
+
+It holds no dollars: they are worked out when shown, so a corrected price
+applies to rows already written.
 
 **It holds no title, no prompt, no message text and no reason.** Threads
 archived before 0.2.11, or with bb's own `bb thread archive`, have no row.
@@ -1515,12 +1524,96 @@ workers, how many of each outcome and how many unsaid, the median time to
 first report, the median steers before it, and how many you judged. A group
 of fewer than 5 workers shows its counts and says it is too small to
 compare, with no percentages. `L` on the page opens the same summary for
-the last 14 days over the page, with the latest 20 rows (the page adds each
+the last 14 days over the page, with this month under Main (see "Tokens
+and dollars") and the latest 20 rows (the page adds each
 thread's title as bb has it now; the row holds none). `b` steps through
 every grouping, by model, by dispatching thread and by label; `j` `k` scroll
 it, `q` or `Esc` closes it. `bb cow status` shows an archived worker's outcome at
 the end of its line: `[outcome: done, judged by the person]`; the page
 shows "came to: done" on a line under Archived or To settle.
+
+### Tokens and dollars
+
+**Where the tokens come from.** bb records, at the end of a turn, an event
+`thread/tokenUsage/updated` with two sets of counts. On bb 0.50 with Claude
+Code, `total` is the running sum of every model call of the provider's
+session so far, the calls of the turn's sub-agents included, and it carries
+on across a compaction (the compaction's own summarizing call is not in
+it); `last` is the latest single model call, not the whole turn. bb does not
+keep every such event: older ones are dropped, and after a compaction only
+the latest was left. So cow takes a thread's usage from its latest `total`
+(per provider session; a `total` that falls back is a new session, and
+counts in full), and reads the usage of every thread as each of its turns
+ends, so that what each turn added is put on the day it was used. No
+transcript is read. A thread with no such event has unknown usage: it is
+counted as such and said, never shown as zero. A provider that counts cached
+input inside its input (OpenAI's convention) is recognised from its
+`totalTokens`, and the cached part is taken out of input; one that does not
+split cached input into reads and writes has it all as reads.
+
+**List prices.** cow keeps a small table of the providers' published API
+prices per million tokens (input, cache read, cache write, output), each
+entry with the date it was taken and the page it came from
+(`src/prices.ts`): for Claude Code's models, Anthropic's pricing page; for
+Codex's, OpenAI's (Standard tier). Pi's `openai-codex/…` models are priced
+as the same model. Models with no published price there (every model
+through OpenRouter, among others) have no entry: they show tokens and no
+dollars, never $0. Where a cache write costs more for a longer cache
+lifetime, the lifetime bb reported (`promptCacheTtlMs`) picks the price;
+with none, the shortest. Claude Haiku 5.5 is priced by prompt length and
+OpenAI's models by context length: cow uses the price for short prompts, so
+very long prompts are under-counted. **Every dollar figure is an estimate at
+list price, not a bill**: someone on a subscription is not billed this, and
+the page and the commands say so wherever they show dollars.
+
+**Changing a price.** The setting `listPrices` (bb's settings for the
+plugin, or `bb plugin config cow set listPrices '<json>'`) is JSON of model
+id to its price in USD per million tokens:
+
+```json
+{
+  "claude-opus-5-5": { "input": 4, "cacheRead": 0.2, "cacheWrite": 8, "output": 20 },
+  "my-model": { "input": 1, "cacheRead": 0.1, "cacheWrite": 1.25, "output": 5 },
+  "gpt-5.5": null
+}
+```
+
+An entry replaces cow's own for that model (its cache-write price then
+holds for every cache lifetime), adds one cow has not, or with `null` takes
+cow's out, so that model shows tokens and no dollars. A setting that does
+not read leaves cow's table as it is and says why under the ledger. Since
+dollars are worked out when shown, a changed price changes the dollars of
+rows already written.
+
+**In the ledger.** Every grouping (by model, by dispatching thread, by
+label, and by model within each label) gives each group its tokens, their
+list-price dollars, and dollars per done: **the group's dollars, every
+outcome together, divided by how many of its workers came to done**, so a
+cheap model that is often redone shows what each usable result really cost.
+A group with rows of unknown usage or of a model with no price says how
+many. `--json` gives the numbers: each group's `tokens`, `dollars`,
+`dollarsPerDone`, `unknownUsage` and `unpriced`, and each row's
+`listPriceUsd`, with `listPrice: true` and `estimate: true`.
+
+**This month, everything.** `bb cow spend [--month YYYY-MM] [--main
+<thread>] [--json]`, and the part of the `L` sheet below its note, give the
+month's tokens and list-price dollars for every thread under the chosen Main,
+archived or not (one archived before the month began is left out), split
+into workers, project threads (as the page tells them), Main itself, and
+cow's checker runs (the hidden threads cow starts to audit a brief, marked
+`checker: true`: every one cow ran in the month, whichever Main's brief it
+checked), with the total, and how many threads had no usage recorded. Days
+are local time. Usage cow read before it first watched a thread's turns end
+(a thread older than 0.2.19, or a turn that ended while cow was not
+running) is put on the day of the latest event bb kept.
+
+**Kept cheap.** cow keeps, per thread, what it has read of its usage, in
+its own storage (one small value per thread, the last 400 days of it, kept
+under bb's 256 KB a value): the counts so far, by day and model, and the
+last event read. A turn's end reads only the events after that one. The
+month's read lists bb's threads once and asks bb about a thread's events
+only when bb has changed the thread since cow last read it: opening the
+sheet again asks about nothing that has not changed.
 
 ## Undo
 
@@ -1958,6 +2051,7 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main. With `--outcome`, also as `outcome` below | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
 | `outcome` | says what a worker came to, open or archived, under `archive`'s rule of who may | nothing leaves the queue. Run in a thread, the ledger records that thread as the judge, and an outcome you set is refused. A caller that names no thread is taken for you, as everywhere here: its outcome is recorded as yours, and only the signed `outcome_set` is certainly yours |
 | `ledger` | reads the ledger | nothing |
+| `spend` | reads the month's tokens and list-price dollars | nothing |
 
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked, kept or archived.** Nothing else of cow's that is
@@ -2060,7 +2154,8 @@ code, and the page shows what they change at once.
 bb cow status [--main <thread>] [--json]
 bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped]
 bb cow outcome <thread> done|partial|redone|dropped
-bb cow ledger [--days 14] [--json]
+bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]
+bb cow spend [--month YYYY-MM] [--main <thread>] [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -2108,7 +2203,8 @@ to bb's database or to the log.
 | `status` | the overview as text: the queue, then one line per thread with its state, time in state, and what it is doing or waiting on, then the parked shelf, what is to settle (unread first, then oldest first, with what archiving each would leave behind), what is kept, what was archived in the last 2 days, bb's automations with their recent runs (40 listed), and the open threads outside Main (40 listed, newest activity first). A thread that holds capabilities ends `[holds: …]` with their names, and one whose permission request was decided outside cow reads "approved outside cow: …" and is in the queue. An ask of a thread under a parked or kept thread is in the queue, ending "under parked “…”". After the queue, when there are any, "Taken out of the user's queue by an agent, not yet acknowledged by the user" lists the traces about threads under this Main (see "What an agent took out of your queue") |
 | `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open. `--outcome` says what a worker came to (see "The ledger") |
 | `outcome` | sets or changes what a worker came to, open or archived; never over an outcome you set |
-| `ledger` | the ledger's rows and its summary by model and by dispatching thread, for `--days` (14 by default) |
+| `ledger` | the ledger's rows and its summary by model, by dispatching thread and by label, for `--days` (14 by default), with tokens, list-price dollars and dollars per done (see "Tokens and dollars") |
+| `spend` | the month's (`--month`, this one by default) tokens and list-price dollars under Main: workers, project threads, Main, cow's checker runs, the total, and how many had no usage recorded |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
 | `next` | sets, or with `--clear` removes, the one line that says what happens next for a thread |

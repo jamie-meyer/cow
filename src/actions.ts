@@ -41,7 +41,7 @@ import {
 import { type Activity, LIMITS, type OutsideFlag, type ThreadFacts, derive, isBusy } from "./state.ts";
 import { AUTOMATIONS_PLUGIN, type AutomationsRead, NO_AUTOMATIONS, runThreadIds } from "./automations.ts";
 import { Refusal } from "./kv.ts";
-import { type Judgement, type LabelNote, type LedgerRow, type LedgerSummary, type Outcome, PERSON, inWindow, labelOf, summarize } from "./ledger.ts";
+import { type Judgement, type LabelNote, type LedgerRow, type LedgerSummary, type Outcome, PERSON, type RowCost, inWindow, labelOf, summarize } from "./ledger.ts";
 import type { LedgerStore } from "./ledger-store.ts";
 import { type StatusReport, statusReport } from "./status.ts";
 import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
@@ -140,8 +140,13 @@ export interface Actions {
    * It can be set before the worker finished a turn, and after it is archived; its row follows.
    */
   labelChecked(args: { callerId: string | null; threadId: string; label?: string | null }): Promise<{ title: string; archived: boolean; label: LabelNote | null; row: boolean }>;
-  /** The ledger's rows archived in the last `days` days, newest first, their summary, and the latest outcome of every worker that has one. */
-  ledger(days: number): Promise<{ rows: LedgerRow[]; summary: LedgerSummary; outcomes: Record<string, Judgement> }>;
+  /**
+   * The ledger's rows archived in the last `days` days, newest first, their summary, and the latest outcome of every worker that has one.
+   * `costs`: each row's list-price dollars, worked out now (null: usage unknown or no price); `priceError`: why the price setting was not read.
+   */
+  ledger(days: number): Promise<{ rows: LedgerRow[]; summary: LedgerSummary; outcomes: Record<string, Judgement>; costs: Record<string, number | null>; priceError: string | null }>;
+  /** The main the CLI means: the one given, or the one chosen for this project, or the last one chosen. */
+  mainFor(mainId: string | null, projectId: string | null): Promise<string>;
   /** `callerId`: the thread that ran the command, or null for one run outside any thread (the person). An agent that parks what waited on the person leaves a trace. */
   parkChecked(args: { callerId: string | null; threadId: string; reason: string; pickUp: string; stop: boolean }): Promise<{ title: string; record: ParkRecord; kept: boolean; traced: boolean }>;
   resumeChecked(threadId: string): Promise<{ title: string }>;
@@ -174,7 +179,10 @@ export interface TraceNotice {
   at: number;
 }
 
-export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource, ledger?: LedgerStore): Actions {
+/** What each ledger row cost at list price, with the prices as set now. */
+export type Costing = (rows: readonly LedgerRow[]) => Promise<{ cost: RowCost; error: string | null }>;
+
+export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource, ledger?: LedgerStore, costing?: Costing): Actions {
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
@@ -323,6 +331,15 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     } catch (cause) {
       bb.log.warn(`could not write the ledger row of ${target.id}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
+  };
+
+  /** The Main given, or the one chosen for this project, or the last one chosen. */
+  const mainOf = async (mainId: string | null, projectId: string | null): Promise<string> => {
+    if (mainId !== null) return mainId;
+    const mains = await readMains();
+    const id = (projectId ? mains.mains[projectId] : undefined) ?? (mains.currentProjectId ? mains.mains[mains.currentProjectId] : undefined) ?? null;
+    if (id === null) throw new CowError("no_main", "no Main thread is chosen", "Pass --main <thread>, or choose a Main on cow's page.");
+    return id;
   };
 
   const archive: Actions["archive"] = async ({ threadId, reason, dropped, at, by = PERSON }) => {
@@ -575,11 +592,22 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     },
 
     async ledger(days) {
-      if (!ledger) return { rows: [], summary: summarize([], Date.now(), days), outcomes: {} };
+      if (!ledger) return { rows: [], summary: summarize([], Date.now(), days), outcomes: {}, costs: {}, priceError: null };
       const now = Date.now();
       const all = await ledger.rows();
-      return { rows: inWindow(all, now, days), summary: summarize(all, now, days), outcomes: Object.fromEntries(await ledger.outcomes()) };
+      const rows = inWindow(all, now, days);
+      // Dollars are worked out now, from the prices as set now: a corrected price applies to rows written before it.
+      const { cost, error } = costing ? await costing(rows) : { cost: () => null, error: null };
+      return {
+        rows,
+        summary: summarize(all, now, days, cost),
+        outcomes: Object.fromEntries(await ledger.outcomes()),
+        costs: Object.fromEntries(rows.map((row) => [row.threadId, cost(row)])),
+        priceError: error,
+      };
     },
+
+    mainFor: (mainId, projectId) => mainOf(mainId, projectId),
 
     async parkChecked({ callerId, threadId, reason, pickUp, stop }) {
       const { line, isMain, now } = await lineFor(threadId);
@@ -628,14 +656,7 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
     },
 
     async status(mainId, projectId) {
-      let id = mainId;
-      if (id === null) {
-        const mains = await readMains();
-        id = (projectId ? mains.mains[projectId] : undefined) ?? (mains.currentProjectId ? mains.mains[mains.currentProjectId] : undefined) ?? null;
-      }
-      if (id === null) {
-        throw new CowError("no_main", "no Main thread is chosen", "Pass --main <thread>, or choose a Main on cow's page.");
-      }
+      const id = await mainOf(mainId, projectId);
       const automations = (await raised?.automations?.().catch(() => NO_AUTOMATIONS)) ?? NO_AUTOMATIONS;
       const seen = await look(id, runThreadIds(automations));
       if (seen.root.archivedAt !== null) {

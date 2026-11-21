@@ -1,6 +1,8 @@
 // Where the ledger is kept: cow's own key-value storage, one key per worker
 // for its row, one for the judgements of its outcome and one for its label, so a row outlives
-// its thread and an agent cannot rewrite it through the thread's metadata.
+// its thread and an agent cannot rewrite it through the thread's metadata. A row's
+// tokens are read from bb's usage events (usage-store.ts) when it is written, and
+// again when its thread ends a turn after that.
 
 import { type Kv, Refusal, serial } from "./kv.ts";
 import {
@@ -17,7 +19,11 @@ import {
   outcomeFields,
   readTurns,
   rowSchema,
+  rowTokens,
+  tokenFields,
 } from "./ledger.ts";
+import type { UsageStore } from "./usage-store.ts";
+import { TOKEN_KEYS, usageTotal } from "./usage.ts";
 
 export const ROW_PREFIX = "ledger:row:";
 export const JUDGED_PREFIX = "ledger:judged:";
@@ -72,10 +78,13 @@ export interface LedgerStore {
   /** The latest outcome of every worker that has one. */
   outcomes(): Promise<Map<string, Judgement>>;
   rows(): Promise<LedgerRow[]>;
+  /** Bring a row's tokens up to date with the usage bb recorded since; the row, when it changed. Nothing for a thread with no row. */
+  syncUsage(threadId: string): Promise<LedgerRow | null>;
 }
 
-export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void = () => undefined): LedgerStore {
+export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void = () => undefined, usage?: UsageStore): LedgerStore {
   const one = serial();
+  const tokensNow = async (threadId: string) => (usage ? usageTotal((await usage.read(threadId)).state) : null);
   const judgementsOf = async (threadId: string): Promise<Judgement[]> => {
     const parsed = judgementsSchema.safeParse(await kv.get(JUDGED_PREFIX + threadId));
     return parsed.success ? parsed.data : [];
@@ -101,7 +110,8 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
     record: (thread, archived) =>
       one(thread.id, async () => {
         const facts = readTurns(await turnEvents(read, thread.id));
-        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id), (await labelOf(thread.id))?.label ?? null);
+        const tokens = await tokensNow(thread.id).catch(() => null);
+        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id), (await labelOf(thread.id))?.label ?? null, tokens);
         if (row === null) return null;
         await kv.set(ROW_PREFIX + thread.id, row);
         changed();
@@ -156,6 +166,20 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
       }
       return found;
     },
+
+    syncUsage: (threadId) =>
+      one(threadId, async () => {
+        if (!usage) return null;
+        const was = await rowOf(threadId);
+        if (was === null) return null;
+        const tokens = await tokensNow(threadId);
+        const before = rowTokens(was);
+        if (tokens === null || (before !== null && TOKEN_KEYS.every((key) => before[key] === tokens[key]))) return null;
+        const row = { ...was, ...tokenFields(tokens) };
+        await kv.set(ROW_PREFIX + threadId, row);
+        changed();
+        return row;
+      }),
 
     rows: async () => {
       const found: LedgerRow[] = [];

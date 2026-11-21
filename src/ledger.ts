@@ -4,10 +4,15 @@
 // many times it was steered before that report, how many turns it ran, and
 // the outcome someone judged it to have, and the label its dispatcher gave
 // it: one short word for the kind of job. It holds no title, no prompt, no
-// message text and no reason. Pure: storage is in ledger-store.ts.
+// message text and no reason. It holds the tokens the worker used, as bb
+// recorded them, and no dollars: dollars are worked out at list price when
+// shown (prices.ts), so a corrected price applies to old rows too. Pure:
+// storage is in ledger-store.ts.
 
 import { z } from "zod";
 import { starterOf } from "./attention.ts";
+import { dollarText } from "./prices.ts";
+import { NO_TOKENS, type Tokens, addTokens, tokenSum, tokensLine, tokensText } from "./usage.ts";
 
 export const OUTCOMES = ["done", "partial", "redone", "dropped"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
@@ -74,6 +79,10 @@ export const ROW_KEYS = [
   "archivedAt",
   "archivedBy",
   "label",
+  "inputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "outputTokens",
 ] as const;
 
 export const rowSchema = z.strictObject({
@@ -102,8 +111,30 @@ export const rowSchema = z.strictObject({
   archivedBy: z.string(),
   /** The kind of job its dispatcher (or the person) named it; null when none. A row written before labels reads as none. */
   label: z.string().regex(LABEL_PATTERN).nullable().default(null),
+  /** The tokens it used, as bb recorded them (usage.ts): input apart from the cache, cache reads, cache writes, output. Null when bb recorded none; a row written before 0.2.19 reads as null. */
+  inputTokens: z.number().min(0).nullable().default(null),
+  cacheReadTokens: z.number().min(0).nullable().default(null),
+  cacheWriteTokens: z.number().min(0).nullable().default(null),
+  outputTokens: z.number().min(0).nullable().default(null),
 });
 export type LedgerRow = z.infer<typeof rowSchema>;
+
+/** A row's tokens, or null when its usage is unknown. */
+export function rowTokens(row: Pick<LedgerRow, "inputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "outputTokens">): Tokens | null {
+  const { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens } = row;
+  if (inputTokens === null || cacheReadTokens === null || cacheWriteTokens === null || outputTokens === null) return null;
+  return { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens, output: outputTokens };
+}
+
+/** The row's token fields for tokens, or for unknown usage. */
+export function tokenFields(tokens: Tokens | null): Pick<LedgerRow, "inputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "outputTokens"> {
+  return {
+    inputTokens: tokens?.input ?? null,
+    cacheReadTokens: tokens?.cacheRead ?? null,
+    cacheWriteTokens: tokens?.cacheWrite ?? null,
+    outputTokens: tokens?.output ?? null,
+  };
+}
 
 /** What a thread's event log says about its first report. */
 export interface TurnFacts {
@@ -182,6 +213,7 @@ export function buildRow(
   archived: { at: number; by: string },
   judgements: readonly Judgement[],
   label: string | null = null,
+  tokens: Tokens | null = null,
 ): LedgerRow | null {
   if (facts.firstReportAt === null) return null;
   return {
@@ -200,6 +232,7 @@ export function buildRow(
     archivedAt: archived.at,
     archivedBy: archived.by,
     label,
+    ...tokenFields(tokens),
   };
 }
 
@@ -238,7 +271,21 @@ export interface GroupSummary {
   small: boolean;
   /** Shares of its rows, from 0 to 1; null for a small group. */
   shares: { outcomes: Record<Outcome | "unsaid", number>; judgedByPerson: number } | null;
+  /** The tokens of its rows whose usage is known. */
+  tokens: Tokens;
+  /** Rows with no usage recorded: not counted as zero, counted here. */
+  unknownUsage: number;
+  /** List-price dollars of its rows that have a price; null when none has one. An estimate, not a bill. */
+  dollars: number | null;
+  /** Rows with tokens but no price for their model: their tokens count, their dollars are not guessed. */
+  unpriced: number;
+  /** All its dollars (every outcome) divided by how many came to done; null with no done or no dollars. */
+  dollarsPerDone: number | null;
 }
+
+/** What a row cost at list price, or null when its usage is unknown or its model has no price. */
+export type RowCost = (row: LedgerRow) => number | null;
+const NO_COST: RowCost = () => null;
 
 /** A label's group, and within it the same by model: is this kind of job on the right model? */
 export interface LabelGroupSummary extends GroupSummary {
@@ -269,12 +316,28 @@ export function median(values: readonly number[]): number | null {
   return sorted.length % 2 === 1 ? (sorted[mid] as number) : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
-function group(key: string, rows: readonly LedgerRow[]): GroupSummary {
+function group(key: string, rows: readonly LedgerRow[], cost: RowCost): GroupSummary {
   const outcomes: Record<Outcome | "unsaid", number> = { done: 0, partial: 0, redone: 0, dropped: 0, unsaid: 0 };
   for (const row of rows) outcomes[row.outcome ?? "unsaid"] += 1;
   const judgedByPerson = rows.filter((row) => row.outcome !== null && row.judgedBy === PERSON).length;
   const small = rows.length < SMALL_GROUP;
   const share = (n: number) => n / rows.length;
+  let tokens = NO_TOKENS;
+  let unknownUsage = 0;
+  let dollars: number | null = null;
+  let unpriced = 0;
+  for (const row of rows) {
+    const used = rowTokens(row);
+    if (used === null) {
+      unknownUsage += 1;
+      continue;
+    }
+    tokens = addTokens(tokens, used);
+    const usd = cost(row);
+    if (usd === null) {
+      if (tokenSum(used) > 0) unpriced += 1;
+    } else dollars = (dollars ?? 0) + usd;
+  }
   return {
     key,
     workers: rows.length,
@@ -289,20 +352,25 @@ function group(key: string, rows: readonly LedgerRow[]): GroupSummary {
           outcomes: { done: share(outcomes.done), partial: share(outcomes.partial), redone: share(outcomes.redone), dropped: share(outcomes.dropped), unsaid: share(outcomes.unsaid) },
           judgedByPerson: share(judgedByPerson),
         },
+    tokens,
+    unknownUsage,
+    dollars,
+    unpriced,
+    dollarsPerDone: dollars === null || outcomes.done === 0 ? null : dollars / outcomes.done,
   };
 }
 
-function groups(rows: readonly LedgerRow[], keyOf: (row: LedgerRow) => string): GroupSummary[] {
+function groups(rows: readonly LedgerRow[], keyOf: (row: LedgerRow) => string, cost: RowCost): GroupSummary[] {
   const by = new Map<string, LedgerRow[]>();
   for (const row of rows) by.set(keyOf(row), [...(by.get(keyOf(row)) ?? []), row]);
-  return [...by.entries()].map(([key, members]) => group(key, members)).sort((a, b) => b.workers - a.workers || a.key.localeCompare(b.key));
+  return [...by.entries()].map(([key, members]) => group(key, members, cost)).sort((a, b) => b.workers - a.workers || a.key.localeCompare(b.key));
 }
 
 const modelOf = (row: LedgerRow) => row.model ?? "unknown";
 
-function byLabel(rows: readonly LedgerRow[]): LabelGroupSummary[] {
+function byLabel(rows: readonly LedgerRow[], cost: RowCost): LabelGroupSummary[] {
   const of = (row: LedgerRow) => row.label ?? NO_LABEL;
-  return groups(rows, of).map((summary) => ({ ...summary, byModel: groups(rows.filter((row) => of(row) === summary.key), modelOf) }));
+  return groups(rows, of, cost).map((summary) => ({ ...summary, byModel: groups(rows.filter((row) => of(row) === summary.key), modelOf, cost) }));
 }
 
 /** The rows archived in the last `days` days, newest first. */
@@ -311,15 +379,15 @@ export function inWindow(rows: readonly LedgerRow[], now: number, days: number):
   return rows.filter((row) => row.archivedAt >= since).sort((a, b) => b.archivedAt - a.archivedAt);
 }
 
-export function summarize(rows: readonly LedgerRow[], now: number, days: number): LedgerSummary {
+export function summarize(rows: readonly LedgerRow[], now: number, days: number, cost: RowCost = NO_COST): LedgerSummary {
   const within = inWindow(rows, now, days);
   return {
     days,
     since: now - days * 86_400_000,
     rows: within.length,
-    byModel: groups(within, modelOf),
-    byDispatcher: groups(within, (row) => row.dispatchedBy ?? "none"),
-    byLabel: byLabel(within),
+    byModel: groups(within, modelOf, cost),
+    byDispatcher: groups(within, (row) => row.dispatchedBy ?? "none", cost),
+    byLabel: byLabel(within, cost),
   };
 }
 
@@ -346,23 +414,47 @@ export function groupText(summary: GroupSummary, name = summary.key): string {
   const counts = [...OUTCOMES, "unsaid" as const].map((outcome) => `${outcome} ${summary.outcomes[outcome]}${summary.shares ? ` (${percent(summary.shares.outcomes[outcome])})` : ""}`).join(", ");
   const judged = `judged by the person ${summary.judgedByPerson}${summary.shares ? ` (${percent(summary.shares.judgedByPerson)})` : ""}`;
   const tail = summary.small ? ` · fewer than ${SMALL_GROUP} workers: too small to compare` : "";
-  return `${name}: ${summary.workers} ${summary.workers === 1 ? "worker" : "workers"} · ${counts} · median to first report ${durationText(summary.medianToFirstReportMs)} · median steers before it ${numberText(summary.medianSteers)} · ${judged}${tail}`;
+  return `${name}: ${summary.workers} ${summary.workers === 1 ? "worker" : "workers"} · ${counts} · median to first report ${durationText(summary.medianToFirstReportMs)} · median steers before it ${numberText(summary.medianSteers)} · ${judged} · ${costText(summary)}${tail}`;
+}
+
+/** A group's tokens and list-price dollars, in words: what is unknown or unpriced is said, never shown as $0. */
+export function costText(summary: Pick<GroupSummary, "workers" | "tokens" | "unknownUsage" | "dollars" | "unpriced" | "dollarsPerDone">): string {
+  if (summary.unknownUsage === summary.workers) return "usage unknown";
+  const parts = [`${tokensText(tokenSum(summary.tokens))} tokens`];
+  if (summary.dollars !== null) parts.push(`${dollarText(summary.dollars)} at list price`, summary.dollarsPerDone === null ? "no done outcome to divide by" : `${dollarText(summary.dollarsPerDone)} per done`);
+  else parts.push("no list price");
+  const gaps = [
+    ...(summary.unpriced > 0 && summary.dollars !== null ? [`${summary.unpriced} with no list price`] : []),
+    ...(summary.unknownUsage > 0 ? [`${summary.unknownUsage} with usage unknown`] : []),
+  ];
+  return `${parts.join(" · ")}${gaps.length > 0 ? ` (${gaps.join(", ")})` : ""}`;
 }
 
 /** Who judged or archived, in words. */
 export const whoText = (by: string | null): string => (by === null ? "–" : by === PERSON ? "the person" : by);
 
+/** A row's tokens and list-price dollars (`usd`: undefined when not asked), in words; the sheet and the CLI both show this. */
+export function rowUsageText(row: LedgerRow, usd?: number | null): string {
+  const used = rowTokens(row);
+  if (used === null) return "usage unknown";
+  return `${tokensLine(used)}${usd === undefined ? "" : usd === null ? " · no list price" : ` · ${dollarText(usd)} at list price`}`;
+}
+
 /** One row as a line: no title, since the ledger holds none. */
-export function rowText(row: LedgerRow): string {
+export function rowText(row: LedgerRow, cost?: RowCost): string {
   const outcome = row.outcome === null ? "unsaid" : `${row.outcome} (judged by ${whoText(row.judgedBy)}${row.outcomeChanges > 0 ? `, changed ${row.outcomeChanges}×` : ""})`;
   const model = `${row.model ?? "model unknown"}${row.effort ? ` · ${row.effort}` : ""}`;
-  return `${row.threadId}${row.label ? ` · ${row.label}` : ""} · ${model} · first report after ${durationText(row.toFirstReportMs)} · steered ${row.steersByPerson} by the person, ${row.steersByThreads} by threads · ${row.turns} ${row.turns === 1 ? "turn" : "turns"} · ${outcome} · dispatched by ${row.dispatchedBy ?? "none"} · archived by ${whoText(row.archivedBy)}`;
+  const usage = rowUsageText(row, cost === undefined ? undefined : cost(row));
+  return `${row.threadId}${row.label ? ` · ${row.label}` : ""} · ${model} · first report after ${durationText(row.toFirstReportMs)} · steered ${row.steersByPerson} by the person, ${row.steersByThreads} by threads · ${row.turns} ${row.turns === 1 ? "turn" : "turns"} · ${outcome} · dispatched by ${row.dispatchedBy ?? "none"} · archived by ${whoText(row.archivedBy)} · ${usage}`;
 }
 
 export const LEDGER_ROWS_SHOWN = 30;
 
-export function ledgerText(summary: LedgerSummary, rows: readonly LedgerRow[], by: readonly Grouping[] = GROUPINGS): string {
-  const out = [`The ledger: ${summary.rows} ${summary.rows === 1 ? "worker" : "workers"} archived through cow in the last ${summary.days} ${summary.days === 1 ? "day" : "days"}. It holds no titles, prompts or message text.`];
+export function ledgerText(summary: LedgerSummary, rows: readonly LedgerRow[], by: readonly Grouping[] = GROUPINGS, cost?: RowCost): string {
+  const out = [
+    `The ledger: ${summary.rows} ${summary.rows === 1 ? "worker" : "workers"} archived through cow in the last ${summary.days} ${summary.days === 1 ? "day" : "days"}. It holds no titles, prompts or message text.`,
+    `${LEDGER_COST_NOTE}`,
+  ];
   if (summary.rows === 0) {
     out.push("", "Nothing yet: a row is written when a worker that finished a turn is archived through cow (e on the page, or bb cow archive).");
     return out.join("\n");
@@ -379,9 +471,13 @@ export function ledgerText(summary: LedgerSummary, rows: readonly LedgerRow[], b
     }
   }
   out.push("", `Rows, newest first${rows.length > LEDGER_ROWS_SHOWN ? ` (the latest ${LEDGER_ROWS_SHOWN} of ${rows.length}; --json gives them all)` : ""}`);
-  for (const row of rows.slice(0, LEDGER_ROWS_SHOWN)) out.push(`  ${rowText(row)}`);
+  for (const row of rows.slice(0, LEDGER_ROWS_SHOWN)) out.push(`  ${rowText(row, cost)}`);
   return out.join("\n");
 }
+
+/** How the ledger's dollars are worked out, wherever they are shown. */
+export const LEDGER_COST_NOTE =
+  "Tokens are as bb recorded them. Dollars are an estimate at the providers' list prices, not a bill (on a subscription you are not billed this); per done is a group's dollars, every outcome, divided by its done outcomes.";
 
 /** The outcomes as the page and the CLI list them to choose from. */
 export const outcomeChoices = (): string => OUTCOMES.map((outcome, index) => `${index + 1} ${outcome}: ${OUTCOME_TEXT[outcome]}`).join(" · ");

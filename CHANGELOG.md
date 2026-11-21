@@ -4,6 +4,33 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.19
+
+- **Tokens in the ledger.** Each worker's row now holds the tokens it used,
+  as bb recorded them: input apart from the cache, cache reads, cache writes
+  and output. They come from bb's own usage event at the end of each turn;
+  no transcript is read. A row written before 0.2.19, or for a thread bb
+  recorded no usage for, reads as "usage unknown", never as zero. Usage
+  that arrives after a worker was archived brings its row up to date.
+- **Dollars at list price.** `bb cow ledger` and the `L` sheet give every
+  group, in every grouping, its tokens, their dollars at the providers'
+  published list prices, and dollars per done: the group's dollars, every
+  outcome, divided by how many came to done. `--json` carries the numbers.
+  cow keeps a small table of list prices for Claude Code's and Codex's
+  models, each with the date it was taken and the page it came from; a
+  model with none shows tokens and no dollars. The setting `listPrices`
+  changes or adds prices, and since dollars are worked out when shown, a
+  change applies to rows already written. **Every dollar figure is an
+  estimate at list price, not a bill**: on a subscription you are not
+  billed this.
+- **This month, everything.** `bb cow spend [--month YYYY-MM]`, and a part
+  of the `L` sheet, give the month's tokens and list-price dollars for every
+  thread under Main, archived or not, split into workers, project threads,
+  Main itself and cow's checker runs, with the total and how many threads
+  had no usage recorded. cow keeps what it has read of each thread's usage
+  in its own storage and reads it as each turn ends, so opening the sheet
+  asks bb only about threads that changed.
+
 ## 0.2.18
 
 - **The checker sees the task and the diff, not the agent's framing.** It is

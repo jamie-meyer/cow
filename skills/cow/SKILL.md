@@ -164,6 +164,7 @@ bb cow archive <thread> [--reason <text>] [--outcome done|partial|redone|dropped
 bb cow outcome <thread> done|partial|redone|dropped [--label <label>]
 bb cow label <thread> [<label>] [--clear]
 bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]
+bb cow spend [--month YYYY-MM] [--main <thread>] [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -275,8 +276,19 @@ never overwritten by a thread: you are refused, and told so.
 The rows of the workers archived through cow in that many days, and a summary
 by model and by dispatching thread: how many workers, how many of each
 outcome and how many unsaid, the median time to first report, the median
-steers before it, and how many the user judged. A group of fewer than 5 is
-counted, not compared. The ledger holds no titles, prompts or message text.
+steers before it, and how many the user judged, and its tokens, their
+dollars at list price, and dollars per done (all its dollars over how many
+came to done). A group of fewer than 5 is counted, not compared. The ledger
+holds no titles, prompts or message text.
+
+### `bb cow spend [--month YYYY-MM] [--json]`
+
+This month's tokens and list-price dollars under Main, archived threads
+included: workers, project threads, Main, cow's checker runs, the total,
+and how many threads had no usage recorded. Use it when the user asks what
+work is costing. Dollars are an estimate at the providers' list prices, not
+a bill (on a subscription the user is not billed this); say so when you
+quote them, and never quote a model with no list price as $0.
 
 ### `bb cow park <thread> --reason <text> [--pickup …]`
 
