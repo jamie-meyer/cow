@@ -69,13 +69,15 @@ export function UsageLine({ data, now }: { data: LimitsData; now: number }) {
         <span>{error ? `usage: ${error}` : "usage …"}</span>
       ) : (
         <>
-          {report.windows.map((w) => (
-            <span key={windowKey(w)} className={w.usedPercent >= report.windowPercent ? "cow-usage-w cow-usage-hot" : "cow-usage-w"} data-cow-usage-window={windowKey(w)} data-cow-usage-percent={w.usedPercent}>
+          {report.windows.map((w, at) => (
+            <span key={windowKey(w)} data-cow-usage-at={at} className={w.usedPercent >= report.windowPercent ? "cow-usage-w cow-usage-hot" : "cow-usage-w"} data-cow-usage-window={windowKey(w)} data-cow-usage-percent={w.usedPercent}>
+              {at > 0 ? " · " : ""}
               {windowText(w, now)}
             </span>
           ))}
           {report.month ? (
             <span className="cow-usage-m" data-cow-usage-month={report.month.month} data-cow-usage-budget={report.month.budget ?? ""} data-cow-usage-pace={report.month.pace ?? ""} title={why}>
+              {report.windows.length > 0 ? " · " : ""}
               {monthText(report.month)}
             </span>
           ) : null}

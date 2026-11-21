@@ -2161,6 +2161,9 @@ async function usageChecks(page, shot) {
     );
     await page.waitFor(`document.querySelector("[data-cow-usage]")?.dataset.cowUsage === "read"`, { label: "the usage line", timeout: 180_000 });
     const pageLine = await page.eval(`document.querySelector("[data-cow-usage]").textContent`);
+    // Read a moment apart: the minutes to a reset and the cents of the month can move between the two.
+    const unreset = (line) => line.replace(/resets in [^)]*\)/g, "resets").replace(/\$[0-9.,]+/g, "$");
+    check("the page's line reads as bb cow usage's first line", unreset(pageLine) === unreset(firstLine), `${pageLine} | ${firstLine}`);
     console.log(`note: the page's usage line: ${pageLine}`);
     const pageWindows = await page.eval(`document.querySelectorAll("[data-cow-usage-window]").length`);
     check(
@@ -2201,7 +2204,7 @@ async function usageChecks(page, shot) {
     const withBudget = await page.eval(`document.querySelector("[data-cow-usage-month]").textContent`);
     check(
       "with a budget set the line shows it and the pace, and the budget rules raise one notice each",
-      /of \$0\.01 budget · pace/.test(withBudget) && budgetNotices.length === (day >= 3 ? 2 : 1),
+      /of \$0\.010? budget · pace/.test(withBudget) && budgetNotices.length === (day >= 3 ? 2 : 1),
       `${withBudget} · ${budgetNotices.join(" ")}`,
     );
     for (const entry of budgetNotices) await ack(entry.split(":")[1]);

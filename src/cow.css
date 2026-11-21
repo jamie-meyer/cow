@@ -2117,7 +2117,7 @@
 .cow-usage {
   display: flex;
   flex-wrap: wrap;
-  gap: 0 14px;
+  white-space: pre-wrap;
   padding: 3px 0 2px;
   font: 11px/16px var(--cow-sans);
   color: var(--cow-muted);
