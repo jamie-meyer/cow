@@ -50,10 +50,10 @@ export function world(kv: Kv = memoryKv()) {
   const files = new Map<string, string>();
   const checkers = new Map<string, CheckerSight>();
   const started: { prompt: string; model: string | null; provider: string | null; place: CheckerPlace }[] = [];
-  /** Where bb refuses to start a checker, and what it says: "personal", "reuse". */
-  const refuse = new Map<CheckerPlace["type"], string>();
-  /** The submitting thread's environment; null when it has none. */
-  const env = { id: "env_1" as string | null };
+  /** Where bb refuses to start a checker, and what it says: "primary" (a personal workspace on the machine bb picks), "machine" (one on the thread's machine). */
+  const refuse = new Map<"primary" | "machine", string>();
+  /** The submitting thread's environment, and the machine it is on; each null when there is none. */
+  const env = { id: "env_1" as string | null, hostId: "host_1" as string | null };
   const discarded: string[] = [];
   const settings: CheckerSettings = { model: null, provider: null, runs: 1, onSubmit: true, diff: true };
   /** The first message each thread was started with; none when it is not set. */
@@ -65,6 +65,7 @@ export function world(kv: Kv = memoryKv()) {
   const briefDeps: BriefDeps = {
     ...base,
     thread: async (threadId) => (threadId in PARENTS ? { projectId: "proj_1", environmentId: env.id } : null),
+    machine: async (threadId) => (threadId in PARENTS ? env.hostId : null),
     execution: async () => ({ ...own }),
     readEvidence: async (threadId, path) => {
       const text = files.get(`${threadId}/${path}`);
@@ -85,7 +86,7 @@ export function world(kv: Kv = memoryKv()) {
     },
     checker: {
       start: async (args) => {
-        const refused = refuse.get(args.place.type);
+        const refused = refuse.get(args.place.hostId === null ? "primary" : "machine");
         if (refused !== undefined) throw new Error(refused);
         started.push(args);
         const id = `chk_${started.length}`;

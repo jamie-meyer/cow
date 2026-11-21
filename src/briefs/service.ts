@@ -81,6 +81,7 @@ const replacedSchema = z.object({
   earlierChecks: z.number().int().min(0),
   earlierDisputes: z.number().int().min(0),
   earlierContradicted: z.number().int().min(0).nullable(),
+  earlierTasks: z.number().int().min(0).nullable().default(null),
 });
 
 const changedFileSchema = z.object({ path: z.string(), status: z.enum(["added", "modified", "deleted", "renamed"]), from: z.string().nullable(), untracked: z.boolean() });
@@ -132,6 +133,8 @@ export const briefRecordSchema = z.object({
   earlierDisputes: z.number().int().min(0).default(0),
   /** How many of `earlierDisputes` the evidence contradicted; the rest it could not confirm. Null on records from before 0.2.14. */
   earlierContradicted: z.number().int().min(0).nullable().default(null),
+  /** How many of `earlierDisputes` were task checks, the rest claims. Null on records from before 0.2.19. */
+  earlierTasks: z.number().int().min(0).nullable().default(null),
   /** While a check runs again: the usable check it would replace. */
   replaced: replacedSchema.nullable().default(null),
   /** The latest run of the check again that gave no usable answer, when the check before it was kept. */
@@ -142,12 +145,15 @@ export const briefRecordSchema = z.object({
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
 
 /**
- * Where a checker's thread starts. It reads only its prompt, so it needs no
- * checkout: a personal workspace is an empty directory of its own, in bb's
- * personal project, that bb removes with the thread. The submitting thread's
- * environment is used only when bb will not make one.
+ * Where a checker's thread starts: always a personal workspace, an empty
+ * directory of its own in bb's personal project that bb removes with the
+ * thread. It reads only its prompt, so it needs no checkout, and it never
+ * starts in an environment that holds someone's work: it runs in
+ * "accept-edits", and an edit there would be made before its answer could be
+ * thrown away. `hostId` null: on the machine bb picks, its primary one; set:
+ * on that machine, the submitting thread's, when bb's primary would not have it.
  */
-export type CheckerPlace = { type: "personal" } | { type: "reuse"; projectId: string; environmentId: string };
+export type CheckerPlace = { type: "personal"; hostId: string | null };
 
 export interface CheckerSettings {
   /** Null when not set: the submitting thread's provider and model are used, or failing those bb's default. */
@@ -176,6 +182,8 @@ export interface BriefDeps {
   now(): number;
   newId(): string;
   thread(threadId: string): Promise<{ projectId: string; environmentId: string | null } | null>;
+  /** The machine a thread's environment is on; null when bb does not know one. */
+  machine(threadId: string): Promise<string | null>;
   /** The provider a thread runs on and the model of its latest turn, each null when bb does not say. */
   execution(threadId: string): Promise<{ provider: string | null; model: string | null }>;
   ancestors(threadId: string): Promise<readonly string[]>;
@@ -225,6 +233,19 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
   });
+
+/**
+ * Why a check whose checker used a tool failed: it says so, names the tools
+ * when bb's timeline does, and says where to look at what it did.
+ */
+export function toolUsedText(tools: readonly string[], checkerThreadId: string): string {
+  const named = [...new Set(tools.map((tool) => tool.trim()).filter((tool) => tool !== "" && tool !== "tool"))];
+  const what =
+    named.length === 0 ? "a tool bb did not name"
+    : named.length > 5 ? `tools: ${named.slice(0, 5).join(", ")} and ${named.length - 5} more`
+    : `${named.length === 1 ? "a tool" : "tools"}: ${named.join(", ")}`;
+  return `the checker used ${what}. It was told to use none, so its answer is discarded. What it did is in its thread: bb thread log ${checkerThreadId}`;
+}
 
 export function createBriefs(deps: BriefDeps): Briefs {
   const { kv } = deps;
@@ -309,28 +330,29 @@ export function createBriefs(deps: BriefDeps): Briefs {
   };
 
   /**
-   * Start one checker: in a personal workspace, or failing that in the
-   * submitting thread's environment. Throws an Error whose message is the
-   * failure in words. A refusal another provider could get past is not tried
-   * elsewhere: it would be refused there too.
+   * Start one checker in a personal workspace: on the machine bb picks, or,
+   * when bb will not make one there, on the submitting thread's machine.
+   * Never in the thread's own environment. Throws an Error whose message is
+   * the failure in words. A refusal another provider could get past is not
+   * tried elsewhere: it would be refused there too.
    */
   const launch = async (record: BriefRecord, prompt: string, model: string | null, provider: string | null): Promise<string> => {
     const said = (cause: string) => new Error(startFailedText({ provider, model, cause, threadId: record.threadId }));
-    let personal: string;
+    let primary: string;
     try {
-      return await deps.checker.start({ place: { type: "personal" }, prompt, model, provider });
+      return await deps.checker.start({ place: { type: "personal", hostId: null }, prompt, model, provider });
     } catch (cause) {
-      personal = message(cause);
-      if (startCouldFix(personal)) throw said(personal);
+      primary = message(cause);
+      if (startCouldFix(primary)) throw said(primary);
     }
-    const thread = await deps.thread(record.threadId).catch(() => null);
-    if (!thread?.environmentId) throw new Error(nowhereText({ personal, own: null }));
+    const hostId = await deps.machine(record.threadId).catch(() => null);
+    if (hostId === null) throw new Error(nowhereText({ primary, machine: null, threadId: record.threadId }));
     try {
-      return await deps.checker.start({ place: { type: "reuse", projectId: thread.projectId, environmentId: thread.environmentId }, prompt, model, provider });
+      return await deps.checker.start({ place: { type: "personal", hostId }, prompt, model, provider });
     } catch (cause) {
-      const own = message(cause);
-      if (startCouldFix(own)) throw said(own);
-      throw new Error(nowhereText({ personal, own }));
+      const machine = message(cause);
+      if (startCouldFix(machine)) throw said(machine);
+      throw new Error(nowhereText({ primary, machine, threadId: record.threadId }));
     }
   };
 
@@ -353,6 +375,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
       earlierChecks: replaced.earlierChecks,
       earlierDisputes: replaced.earlierDisputes,
       earlierContradicted: replaced.earlierContradicted,
+      earlierTasks: replaced.earlierTasks,
       replaced: null,
       failedRecheck: { startedAt: check.startedAt, finishedAt, provider: check.provider, model: check.model, errors },
     };
@@ -375,7 +398,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
     }
     if (sight.tools.length > 0) {
       // It was given everything in its prompt. A checker that went looking elsewhere is not independent of what it found.
-      return { ...base, status: "failed", error: `the checker used a tool (${sight.tools.slice(0, 3).join(", ")}); its answer is discarded`, answer: sight.reply?.slice(0, MAX_KEPT_ANSWER) ?? null };
+      return { ...base, status: "failed", error: toolUsedText(sight.tools, run.threadId), answer: sight.reply?.slice(0, MAX_KEPT_ANSWER) ?? null };
     }
     const taskIds = record.shown?.task.state === "read" ? record.shown.task.checks.map((_, index) => `t${index + 1}`) : [];
     const changed = material ? changedPathsOf(material) : record.shown?.diff.state === "collected" ? record.shown.diff.files.map((file) => file.path) : [];
@@ -455,14 +478,14 @@ export function createBriefs(deps: BriefDeps): Briefs {
       // (The flag cow raises from the file list is not the check's: every check of this version has it.)
       const mark = briefView(record).mark;
       const earlier =
-        record.readAt !== null ? { earlierDisputes: 0, earlierContradicted: null }
-        : checkerDisputes(mark) > record.earlierDisputes ? { earlierDisputes: checkerDisputes(mark), earlierContradicted: mark.contradicted }
-        : { earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted };
+        record.readAt !== null ? { earlierDisputes: 0, earlierContradicted: null, earlierTasks: null }
+        : checkerDisputes(mark) > record.earlierDisputes ? { earlierDisputes: checkerDisputes(mark), earlierContradicted: mark.contradicted, earlierTasks: mark.tasks ?? 0 }
+        : { earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted, earlierTasks: record.earlierTasks };
       // A check that gave an answer is kept until the new one gives one: a rerun that fails takes nothing away.
       const usable = record.check?.runs.some((run) => run.status === "done") ?? false;
       const replaced =
         usable && record.check ?
-          { check: record.check, readAt: record.readAt, earlierChecks: record.earlierChecks, earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted }
+          { check: record.check, readAt: record.readAt, earlierChecks: record.earlierChecks, earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted, earlierTasks: record.earlierTasks }
         : null;
       const next = keepEarlier({
         ...record,
@@ -553,6 +576,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
           readAt: null,
           earlierDisputes: 0,
           earlierContradicted: null,
+          earlierTasks: null,
           replaced: null,
           failedRecheck: null,
           shown: shownOf(material),
@@ -627,5 +651,5 @@ export function createBriefs(deps: BriefDeps): Briefs {
 export function briefView(record: BriefRecord): { record: BriefRecord; review: Review; mark: BriefMark } {
   const seen = review(record.brief, record.check, record.shown);
   const at = Math.max(record.submittedAt, ...(record.check?.runs ?? []).map((run) => run.finishedAt ?? 0));
-  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0, record.earlierContradicted) };
+  return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0, record.earlierContradicted, record.earlierTasks) };
 }

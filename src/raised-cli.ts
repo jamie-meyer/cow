@@ -99,6 +99,7 @@ const briefText = (record: BriefRecord): string =>
       summary: record.brief.summary,
       earlierDisputes: record.earlierDisputes,
       earlierContradicted: record.earlierContradicted,
+      earlierTasks: record.earlierTasks,
       failedRecheck: record.failedRecheck,
     },
     briefView(record).review,

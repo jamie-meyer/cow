@@ -122,13 +122,18 @@ export function startFailedText(args: { provider: string | null; model: string |
 }
 
 /**
- * A checker that had nowhere to start: bb would not make it a personal
- * workspace, and the submitting thread's environment is gone or refused it
- * too. Another provider would not help, so none is suggested.
+ * A checker that had nowhere to start: bb would make it a personal workspace
+ * neither on its primary machine nor on the submitting thread's. The thread's
+ * own environment is not used instead, and another provider would not help,
+ * so none is suggested.
  */
-export function nowhereText(args: { personal: string; own: string | null }): string {
-  const own = args.own === null ? "" : `; and in the thread's own environment: ${bare(args.own)}`;
-  return `the checker could not be started: the thread's environment is gone, and there is nowhere else to start a check (bb would not make a personal workspace for it: ${bare(args.personal)}${own})`;
+export function nowhereText(args: { primary: string; machine: string | null; threadId: string }): string {
+  const machine = args.machine === null ? "; the thread is on no machine bb knows, so there was no other to try" : `; on the thread's machine: ${bare(args.machine)}`;
+  return (
+    `the checker could not be started: bb would not make it a personal workspace (on bb's primary machine: ${bare(args.primary)}${machine}). ` +
+    `A checker runs only in an empty workspace of its own, never in the thread's checkout. ` +
+    `When a machine of yours is connected, check it again: bb cow brief check ${args.threadId}`
+  );
 }
 
 /** What bb recorded about a failed turn, read from the thread's events, newest first. */

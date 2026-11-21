@@ -472,7 +472,8 @@ kept until you clear them (see [Removing](#removing)).
 Three things cow causes are bb's own records, not cow's: the messages it
 sends to threads for you, the hidden threads it starts for the checker
 (titled "cow check", in bb's personal project, each in an empty personal
-workspace bb removes with it, archived when they answer), and bb's record that a
+workspace bb removes with it, never in a thread's checkout, archived when
+they answer), and bb's record that a
 thread was archived or stopped.
 
 ### What leaves the machine
