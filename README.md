@@ -228,10 +228,15 @@ reaches the thread as a message from you.
 **Briefs and the checker.** A finished job is reported with
 `bb cow brief submit`: a list of claims, each labelled by the agent as
 checked, inferred or not checked, with its evidence. cow has a separate agent
-audit it, one that sees only the brief, and `b` shows you what that checker
-disputes first. A check is one model's reading of the evidence the agent
-chose to attach. It is not proof, and a failed check is shown as a failure,
-never as a pass.
+audit it, and `b` shows you what that checker disputes first. The checker is
+not shown the agent's summary or its labels: it gets the claims and their
+evidence, the task the thread was started with (read by cow, with each check
+of its "Done means" section, which it answers for too), and what the thread
+changed (the files and the diff, collected by cow from its git checkout,
+clipped). A diff that changes an existing test, or the configuration of CI, a
+linter, a formatter, a type checker or a test runner, is a dispute cow raises
+with no model. A check is one model's reading of that material. It is not
+proof, and a failed check is shown as a failure, never as a pass.
 
 **Parking.** `p` takes a line off the tree with a reason and a pick-up: a
 date, `+3d`, `+2w`, a condition in words, or nothing. It returns to the queue
@@ -449,9 +454,9 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer. Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
-| the same database, table `plugin_settings` | the four settings of the checker, below |
+| the same database, table `plugin_settings` | the five settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
 | `plugins/snapshots/cow` under bb's data directory, written by bb | when you update cow, bb's own copy of what cow had stored before the update, kept to roll back to if the new version fails to start |
 | bb's log for the plugin (`plugins/cow/logs/plugin.log` under bb's data directory), written by bb | a warning when something cow tried failed: what it was, a thread id, and the error's text |
@@ -480,13 +485,30 @@ address in the code but bb's own.
 Two things cow does cause to be sent, both by bb, to a model provider:
 
 - **The checker.** When a brief is submitted, cow starts a hidden thread
-  whose one message is the brief: its summary, its claims with the agent's
-  labels, the text of the attached evidence (up to 12,000 characters a piece
-  and 60,000 in all) and the list of what was not done. bb sends that to the
-  provider and model set in cow's settings, or, when those are empty, to the
-  provider and model the thread that submitted the brief ran on. The evidence is whatever the agent chose to
-  attach from its thread's storage, so it can hold anything that agent could
-  read. To stop the automatic check:
+  whose one message holds: the brief's claims (not its summary, and not the
+  agent's labels), the text of the attached evidence (up to 12,000 characters
+  a piece and 60,000 in all) and the list of what was not done; the first
+  message the submitting thread was started with (up to 12,000 characters)
+  and the checks of its "Done means" section; and **what that thread
+  changed**: every changed file's path and status, and the diff (up to
+  60,000 characters in all and 12,000 a file), which cow collects by running
+  git, read-only and with hooks off, in the thread's checkout on its own
+  machine. Uncommitted and untracked files are included. Lock files and
+  binary files go by name only, and so do files a clone would leave out as
+  secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`,
+  `.npmrc`, and anything under `.aws` or `.ssh`); a link is never followed.
+  bb sends that message to the provider and model set in cow's settings, or,
+  when those are empty, to the provider and model the thread that submitted
+  the brief ran on. The evidence is whatever the agent chose to attach from
+  its thread's storage, and the diff whatever is in its checkout, so either
+  can hold anything that agent could read or write. To keep the diff from
+  the checker's model:
+
+  ```sh
+  bb plugin config cow set checkerDiff false
+  ```
+
+  To stop the automatic check:
 
   ```sh
   bb plugin config cow set checkOnSubmit false
@@ -500,6 +522,7 @@ Two things cow does cause to be sent, both by bb, to a model provider:
   | `checkOnSubmit` | on | check a brief as soon as it is submitted |
   | `checkerModel`, `checkerProvider` | empty | the checker's model and provider; empty is the provider and model the thread that submitted the brief ran on |
   | `checkerRuns` | 1 | independent checkers per brief, up to 5 |
+  | `checkerDiff` | on | show the checker what the submitting thread changed: its changed files and their diff, sent to the checker's model |
 
 - **Messages you send from the page.** An answer to an ask, "ask again as
   me", a reason for a denial, and what you type with `i` and `I` are sent to
@@ -668,9 +691,20 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
 - **cow can be turned off.** `bb plugin disable` and `bb plugin remove` are
   reachable from a thread. A request raised and decided entirely while cow
   was not running is never seen.
-- **The checker is a model.** "Supported" means one model read the evidence
-  the agent attached and found it shows the claim. It cannot see what was
-  left out.
+- **The checker is a model, and it reads; it runs nothing.** "Supported"
+  means one model read the evidence the agent attached, the task and the
+  diff, and found they show the claim. It sees what the checkout changed, so
+  a change the agent left out of its claims can be seen, and named as
+  unaccounted for. But it sees only what fits: the task is cut at 12,000
+  characters and the diff at 60,000 (12,000 a file), lock, binary and secret
+  files by name only, and it is told what was cut. It runs no test, builds
+  nothing and opens no file, so a claim that something works is judged from
+  what the material shows, not by trying it. It sees no commits or files
+  outside the thread's checkout, no message after the first, and nothing at
+  all of a thread with no git checkout. The task's "Done means" checks are
+  found by a simple reading of the first message's Markdown. The flag on
+  changed tests and configuration reads file names only. And it is one
+  model, which can be wrong in either direction.
 
 ### How this was checked
 
@@ -786,7 +820,7 @@ bb plugin remove cow
 bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.3.0'
 ```
 
-Removing deletes the four settings, so set them again if you had changed
+Removing deletes the five settings, so set them again if you had changed
 them. Everything else is still in bb's database and the new install finds
 it, your enrolled key included.
 

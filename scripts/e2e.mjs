@@ -18,10 +18,14 @@
 // that it cannot do what only the person may: the capability and key actions,
 // and marking a reply as seen, dismissing a refusal or marking a brief read.
 //
-// For asks and briefs it uses three more fixtures under a Main of their own,
-// and cow starts two hidden checker threads, titled "cow check", the first
-// time: the briefs they audit are kept and used again. While it runs it sets
-// cow's checker model and provider, and puts both back as they were.
+// For asks and briefs it uses four more fixtures under a Main of their own,
+// and cow starts three hidden checker threads, titled "cow check", the first
+// time: the briefs they audit are kept and used again. Three of them run in
+// a throwaway folder that is not a git checkout, and the fourth in a
+// throwaway git repository with a branch, a commit and uncommitted changes,
+// whose diff cow shows the checker; both folders, and the environments bb
+// makes for them, are removed after. While it runs it sets cow's checker
+// model and provider, and puts both back as they were.
 //
 // What only the person may do on the page is signed with a key the page
 // holds. The check resets cow's enrollment with the reset file when it starts
@@ -134,7 +138,7 @@
 //                       default shortcut is Ctrl+Option+Shift+C (cow's own,
 //                       without Shift, would clash with an installed cow)
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -300,7 +304,7 @@ From then on:
 - reply to anything else with exactly: ok
 Never run anything else, and never ask again by yourself.`;
 
-const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "pmain", "phead", "pkid", "reader", "cmain", "chead", "ckid"];
+const FIXTURES = ["main", "quiet", "asks", "fails", "leaf", "runs", "perms", "amain", "asker", "briefer", "bdiff", "pmain", "phead", "pkid", "reader", "cmain", "chead", "ckid"];
 /** The fixtures of the waiting, thread link and seen checks: a Main of their own with two threads under it, and a thread under no Main. */
 const WAITING = ["wmain", "wkid", "wlink", "wother"];
 /** The fixtures of the To settle and Kept checks: a Main of their own, and two workers under it. */
@@ -326,6 +330,8 @@ const CARDED = ["kmain", "kone", "ktwo", "knone"];
 const OPENING = ["xmain"];
 /** That folder, made for the run and removed after it. */
 let cardFolder = null;
+/** The commit the diff fixture's branch starts from. */
+let diffBase = null;
 /** The automations this run made, by id: deleted when it finishes, and when it fails part-way. */
 const madeAutomations = [];
 const LINKER = `You are a test fixture for a bb plugin. Use no tools. Reply to this first message with exactly: ok
@@ -335,7 +341,44 @@ From then on, when you receive a message of the form "links A B C", where A, B a
 - third: @thread:C
 Reply to anything else with exactly: ok`;
 /** The fixtures of the asks and briefs checks: a Main of their own, so they never show under the other one. */
-const RAISED = ["amain", "asker", "briefer"];
+const RAISED = ["amain", "asker", "briefer", "bdiff"];
+/** The folders the asks and briefs fixtures run in, made for the run and removed after it: one that is not a git checkout, and a git repository with changes. */
+let raisedFolder = null;
+let diffFolder = null;
+/** A fixture whose first message sets three checks, in a repository it changed. */
+const DIFFER = `${"You are a test fixture for a bb plugin. Use no tools. Reply to every message with exactly: ok"}
+
+## Done means
+
+- src/limit.js sets the limit to 5 requests a minute.
+- src/reset.js exports a function named reset.
+- The README says what the limit is.
+
+## Notes
+
+- nothing here is a check`;
+
+/** A git repository on a branch off main: one file modified, one added in a commit, one untracked, and an existing test changed. */
+function makeDiffRepo() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "cow-e2e-brief-diff-")));
+  const git = (...argv) => execFileSync("git", ["-c", "user.name=cow test", "-c", "user.email=cow-test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, "src"));
+  mkdirSync(join(dir, "test"));
+  writeFileSync(join(dir, "README.md"), "# limiter\n\nA rate limiter.\n");
+  writeFileSync(join(dir, "src", "limit.js"), "export const LIMIT_PER_MINUTE = 10;\n");
+  writeFileSync(join(dir, "test", "limit.test.js"), 'import { LIMIT_PER_MINUTE } from "../src/limit.js";\nif (LIMIT_PER_MINUTE !== 10) throw new Error("limit");\n');
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  git("checkout", "-q", "-b", "work");
+  writeFileSync(join(dir, "src", "reset.js"), "export function reset(counter) {\n  counter.clear();\n}\n");
+  git("add", "src/reset.js");
+  git("commit", "-q", "-m", "reset");
+  writeFileSync(join(dir, "src", "limit.js"), "export const LIMIT_PER_MINUTE = 5;\n");
+  writeFileSync(join(dir, "test", "limit.test.js"), 'import { LIMIT_PER_MINUTE } from "../src/limit.js";\nif (LIMIT_PER_MINUTE > 100) throw new Error("limit");\n');
+  writeFileSync(join(dir, "notes.txt"), "remember to tell ops\n");
+  return { dir, base: git("rev-parse", "main").trim() };
+}
 
 /** The fixtures this run acts on, by name, as they become known: what a run that fails part-way archives. */
 const inUse = {};
@@ -369,9 +412,16 @@ async function fixtures() {
   await make("leaf", { prompt: QUIET, parent: ids.fails });
   await make("runs", { prompt: RUNS, parent: ids.main });
   await make("perms", { prompt: PERMS, parent: ids.main, permissionMode: "accept-edits" });
-  await make("amain", { prompt: QUIET });
-  await make("asker", { prompt: ASKER, parent: ids.amain });
-  await make("briefer", { prompt: QUIET, parent: ids.amain });
+  if (wanted.includes("amain") && !ids.amain) raisedFolder = realpathSync(mkdtempSync(join(tmpdir(), "cow-e2e-raised-")));
+  await make("amain", { prompt: QUIET, environment: raisedFolder ?? ENVIRONMENT });
+  await make("asker", { prompt: ASKER, parent: ids.amain, environment: raisedFolder ?? ENVIRONMENT });
+  await make("briefer", { prompt: QUIET, parent: ids.amain, environment: raisedFolder ?? ENVIRONMENT });
+  if (wanted.includes("bdiff") && !ids.bdiff) {
+    const made = makeDiffRepo();
+    diffFolder = made.dir;
+    diffBase = made.base;
+  }
+  await make("bdiff", { prompt: DIFFER, parent: ids.amain, environment: diffFolder ?? ENVIRONMENT });
   await make("pmain", { prompt: QUIET });
   await make("phead", { prompt: QUIET, parent: ids.pmain });
   await make("pkid", { prompt: QUIET, parent: ids.phead });
@@ -492,6 +542,13 @@ const DISPUTED_BRIEF = {
   judgementCalls: [{ text: "Is 30 seconds acceptable for the slowest endpoint?" }],
   notDone: ["The change was not tried against production traffic."],
 };
+const DIFF_BRIEF = {
+  summary: "Lowered the limit to 5 a minute, added reset, and everything is verified.",
+  claims: [
+    { id: "limit", text: "src/limit.js now sets the limit to 5 requests a minute.", label: "checked", evidence: [{ description: "the changed line", text: "export const LIMIT_PER_MINUTE = 5;" }] },
+    { id: "reset", text: "src/reset.js exports reset(counter), which clears the counter.", label: "inferred" },
+  ],
+};
 const CLEAN_BRIEF = {
   summary: "Set the retry count.",
   claims: [{ id: "retries", text: "The config sets retries to 2.", label: "checked", evidence: [{ description: "the config file after the change", text: "# service config\nrequest_timeout_seconds = 30\nretries = 2" }] }],
@@ -535,14 +592,14 @@ async function prepareRaised(ids) {
   writeFileSync(join(storage(ids.briefer), "config.txt"), "# service config\nrequest_timeout_seconds = 30\nretries = 2\n");
   writeFileSync(join(storage(ids.asker), "proof.txt"), "the plan: ship tonight, roll back by redeploying the previous build\n");
   const checkers = [];
-  for (const [id, brief] of [[ids.briefer, DISPUTED_BRIEF], [ids.asker, CLEAN_BRIEF]]) {
+  for (const [id, brief] of [[ids.briefer, DISPUTED_BRIEF], [ids.asker, CLEAN_BRIEF], [ids.bdiff, DIFF_BRIEF]]) {
     const stored = await briefOf(id);
     if (stored?.check?.runs.some((entry) => entry.status === "done")) continue;
     await submit(id, brief);
     checkers.push(...(await briefOf(id)).check.runs.map((entry) => entry.threadId));
   }
   // Every run starts with both unread.
-  for (const id of [ids.briefer, ids.asker]) await signer.must("brief_read", { threadId: id, version: (await briefOf(id)).version, read: false });
+  for (const id of [ids.briefer, ids.asker, ids.bdiff]) await signer.must("brief_read", { threadId: id, version: (await briefOf(id)).version, read: false });
 
   const call = JSON.parse((await cowAs(ids.amain, "ask", "--question", "Keep the old endpoint for a week?", "--option", "keep it", "--option", "remove it now", "--json")).stdout).ask;
   await set("checkerProvider", "cow-test-no-such-provider");
@@ -748,6 +805,7 @@ async function raisedChecks(page, ids, shot, chooseMain) {
       covers: ${sheet}.getBoundingClientRect().height >= ${ROOT}.clientHeight - 1 && ${sheet}.getBoundingClientRect().width >= ${ROOT}.clientWidth - 1,
       items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefKind + ":" + item.dataset.cowBriefItem),
       sections: [...${sheet}.querySelectorAll("[data-cow-brief-section]")].map((head) => head.dataset.cowBriefSection),
+      shown: ${sheet}.querySelector("[data-cow-brief-shown]")?.textContent ?? "",
       cursor: ${sheetCursor},
       first: ${sheet}.querySelector("[data-cow-brief-item]").textContent,
       tag: ${sheet}.querySelector("[data-cow-brief-tag]")?.textContent,
@@ -759,16 +817,26 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   );
   check("b opens the brief as a sheet over the whole page, not in a side panel", laid.covers && !laid.inPanel && (await page.eval(mode)) === "brief", JSON.stringify({ covers: laid.covers }));
   check(
-    "the sheet is in order: the dispute first, then judgement calls, the other claims, what was left undone, the summary",
-    JSON.stringify(laid.items) === '["dispute:claim:tests","call:call:0","claim:claim:timeout"]' && JSON.stringify(laid.sections) === '["disputes","calls","claims","not-done","summary"]' && laid.cursor === "claim:tests",
+    "the sheet is in order: the dispute first, then judgement calls, the other claims, what was left undone, what the checker was shown, the summary",
+    JSON.stringify(laid.items) === '["dispute:claim:tests","call:call:0","claim:claim:timeout"]' && JSON.stringify(laid.sections) === '["disputes","calls","claims","not-done","shown","summary"]' && laid.cursor === "claim:tests",
     JSON.stringify(laid.items),
   );
   check(
     "a dispute shows the claim, the agent's own label as the agent's words, what the evidence shows, and the checker's verdict",
-    laid.tag === "contradicted" && laid.label === "checked" && laid.first.includes("the agent says“checked”") && laid.first.includes("its own word, not a check") && laid.first.includes("the evidence shows") && laid.first.includes("not supported"),
+    laid.tag === "contradicted" && laid.label === "checked" && laid.first.includes("the agent says“checked”") && laid.first.includes("its own word, not a check") && laid.first.includes("the evidence shows") && laid.first.includes("not supported") &&
+      laid.first.indexOf("the checker") < laid.first.indexOf("the evidence shows") && laid.first.indexOf("the evidence shows") < laid.first.indexOf("the agent says"),
     laid.first.slice(0, 260),
   );
-  check("the sheet says what the check was: how many runs, of which model, on what", laid.check === "checked" && /^Audited by 1 run of [^,.]+, model /.test(laid.checkText) && laid.checkText.includes(`model ${MODEL}`) && laid.checkText.endsWith("It read only the evidence attached here."), laid.checkText);
+  check(
+    "the sheet says what the check was: how many runs, of which model, on what, and what it read",
+    laid.check === "checked" && /^Audited by 1 run of [^,.]+, model /.test(laid.checkText) && laid.checkText.includes(`model ${MODEL}`) && laid.checkText.endsWith("It read the claims and their evidence and the task; not the agent's summary or labels. It ran nothing."),
+    laid.checkText,
+  );
+  check(
+    "a thread whose folder is not a git checkout still gets a verdict, and the sheet says there was no diff",
+    laid.check === "checked" && laid.shown.includes("diff: none (the agent's thread's folder is not a git checkout)") && laid.shown.includes("no \"Done means\" section"),
+    laid.shown,
+  );
   await shot("brief-sheet");
   await page.key("l");
   const evidence = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:tests"] [data-cow-brief-evidence]')?.textContent ?? ""`);
@@ -873,6 +941,45 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   const legend = await page.eval(`document.querySelector("[data-cow-help]")?.textContent ?? ""`);
   await page.key("Escape");
   check("the legend explains the brief marks and lists b", legend.includes("a brief.") && legend.includes("disputed.") && legend.includes("open the line's brief"), legend.slice(0, 80));
+
+  // -- a brief checked against its task and its diff, by a real checker --
+  const diffed = await briefOf(ids.bdiff);
+  const files = diffed.shown?.diff.state === "collected" ? Object.fromEntries(diffed.shown.diff.files.map((f) => [f.path, `${f.status}${f.untracked ? " untracked" : ""}`])) : {};
+  console.log(`the diff fixture's check: ${JSON.stringify({ shown: diffed.shown, runs: diffed.check?.runs.map((r) => ({ status: r.status, error: r.error, verdicts: r.verdicts, tasks: r.tasks, unaccounted: r.unaccounted })) })}`);
+  check("cow read the fixture's first message: three checks from its Done means section", diffed.shown?.task.state === "read" && diffed.shown.task.checks.length === 3 && diffed.shown.task.checks[1] === "src/reset.js exports a function named reset.", JSON.stringify(diffed.shown?.task));
+  check(
+    "cow collected the diff in the fixture's git checkout: the base is main's commit, and a modified, an added and an untracked file are listed with their status",
+    diffed.shown?.diff.state === "collected" && diffed.shown.diff.base === diffBase && files["src/limit.js"] === "modified" && files["src/reset.js"] === "added" && files["notes.txt"] === "added untracked" && files["test/limit.test.js"] === "modified",
+    JSON.stringify(files),
+  );
+  const answered = diffed.check?.runs.find((r) => r.status === "done");
+  check(
+    "a real checker answered for each of the task's checks and each claim",
+    !!answered && JSON.stringify(answered.tasks.map((t) => t.id)) === '["t1","t2","t3"]' && answered.verdicts.length === 2,
+    JSON.stringify(diffed.check?.runs.map((r) => r.status === "done" ? { tasks: r.tasks.map((t) => `${t.id}:${t.verdict}`), claims: r.verdicts.map((v) => `${v.id}:${v.verdict}`) } : r.error)),
+  );
+  check("the changed existing test is flagged with no model", JSON.stringify(diffed.shown?.flagged) === '["test/limit.test.js"]', JSON.stringify(diffed.shown?.flagged));
+  await page.waitFor(`(${queued(ids.bdiff)} ?? "").startsWith("brief: changed what decides whether its checks pass")`, { label: "the diff fixture's brief in the queue", timeout: 60_000 }).catch(() => undefined);
+  check("the flagged brief waits on you, and its line says why", ((await page.eval(queued(ids.bdiff))) ?? "").startsWith("brief: changed what decides whether its checks pass"), String(await page.eval(queued(ids.bdiff))));
+  await select(ids.bdiff);
+  await page.key("b");
+  await page.waitFor(`${sheet}?.dataset.cowSheet === "${ids.bdiff}" && !!${sheet}.querySelector("[data-cow-brief-check]")`, { label: "the diff fixture's brief" });
+  const diffSheet = JSON.parse(
+    await page.eval(`JSON.stringify({
+      items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefKind + ":" + item.dataset.cowBriefItem),
+      flagged: ${sheet}.querySelector("[data-cow-brief-flagged]")?.textContent ?? "",
+      shown: ${sheet}.querySelector("[data-cow-brief-shown]")?.textContent ?? "",
+      check: ${sheet}.querySelector("[data-cow-brief-check]").textContent,
+    })`),
+  );
+  check(
+    "the sheet puts the flag first, shows each task check, and says what the checker was shown",
+    diffSheet.items[0] === "flag:flag" && diffSheet.items.filter((item) => item.startsWith("task:")).length === 3 && diffSheet.flagged.includes("test/limit.test.js") && diffSheet.shown.includes("3 checks") && diffSheet.shown.includes(`against ${diffBase.slice(0, 12)}`) && diffSheet.check.includes("the task with its 3 checks and the diff"),
+    JSON.stringify(diffSheet),
+  );
+  await shot("brief-diff");
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the diff fixture's sheet closing" });
 }
 
 // ---- the reader, projects, asks answered in chat, scrolling the chat -------
@@ -2106,14 +2213,19 @@ async function cardChecks(page, ids, shot, chooseMain) {
   await page.eval(`sessionStorage.removeItem("cow:card-hidden"); true`);
 }
 
-/** The folder the thread with nothing was made in, and the environment bb made for it. */
+/** The folder the thread with nothing was made in, and the environment bb made for it; and the folders of the asks and briefs fixtures and theirs. */
 async function removeCardFolder(ids) {
-  if (ids?.knone) {
-    const [thread] = await api(`/threads?threadIds=${ids.knone}&limit=1`).catch(() => []);
-    if (thread?.environmentId) await bb("environment", "delete", thread.environmentId).catch((cause) => console.error(`could not delete the environment ${thread.environmentId}`, cause.stderr ?? cause));
+  const environments = new Set();
+  for (const name of ["knone", ...(raisedFolder || diffFolder ? ["amain", "asker", "briefer", "bdiff"] : [])]) {
+    if (!ids?.[name]) continue;
+    const [thread] = await api(`/threads?threadIds=${ids[name]}&limit=1`).catch(() => []);
+    if (thread?.environmentId) environments.add(thread.environmentId);
   }
-  if (cardFolder) rmSync(cardFolder, { recursive: true, force: true });
+  for (const id of environments) await bb("environment", "delete", id).catch((cause) => console.error(`could not delete the environment ${id}`, cause.stderr ?? cause));
+  for (const folder of [cardFolder, raisedFolder, diffFolder]) if (folder) rmSync(folder, { recursive: true, force: true });
   cardFolder = null;
+  raisedFolder = null;
+  diffFolder = null;
 }
 
 // ---- Other plugins' badges and actions ---------------------------------------

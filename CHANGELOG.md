@@ -4,6 +4,50 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.18
+
+- **The checker sees the task and the diff, not the agent's framing.** It is
+  no longer shown the brief's summary or the agent's label for any claim:
+  it gets each claim's id and text, the evidence, and what was left undone.
+  Disputes are still worked out from its verdict and the agent's label
+  together, afterwards. On the sheet and in `bb cow brief show`, each claim
+  now gives the checker's verdict and what the evidence shows first, and the
+  agent's own label after.
+- **The task.** cow reads the first message the submitting thread was
+  started with and shows it to the checker (up to 12,000 characters). Each
+  check of its "Done means" section (a heading or a bold lead-in) is
+  answered for too: shown, not shown, or cannot tell with what would settle
+  it. A check not shown, or that cannot be told, is a dispute and puts the
+  brief in your queue. A reply that leaves a check out is tried once more,
+  like any unreadable reply.
+- **The diff.** cow collects, from the submitting thread's git checkout on
+  its own machine, the base it compares against (the merge base with the
+  environment's base or default branch), every changed file with its status
+  (uncommitted and untracked included), and the diff, cut to 60,000
+  characters in all and 12,000 a file so that one large file does not hide
+  the rest. Lock and binary files, and files that may hold secrets (`.env`,
+  keys and the like), go by name only. Every cut is named in the prompt.
+  With no environment, no git checkout, or git failing, the check still runs
+  and the checker is told there is no diff. The new `checkerDiff` setting
+  (on) turns it off; the diff is sent to the checker's model. The checker
+  may also name changed files no claim accounts for: the sheet shows them as
+  a note, not a dispute.
+- **A dispute with no model.** A diff that modifies, deletes or renames a
+  test file that existed at the base, or adds, changes or deletes the
+  configuration of CI, a linter, a formatter, a type checker or a test
+  runner, is disputed as having "changed what decides whether its checks
+  pass", naming the files. It counts for the queue like any other dispute,
+  and stands even when the check fails. A new test file alone is not
+  flagged. The rules are listed in the reference.
+- **The record says what the checker was shown**: whether it had a task and
+  how many checks, the base revision, the changed files, what was cut, and
+  the flagged files. The text it was shown is kept beside the record, so a
+  run of the check again is shown the same material. Briefs stored by
+  earlier versions read and show as they did.
+- The checker's permission mode was described wrongly in the code: it is
+  `accept-edits`, the narrowest of bb's three, which asks rather than
+  refuses. The mode is unchanged.
+
 ## 0.2.17
 
 - **Teardown, and no quiet loss of a clone's work.** The workspace file takes

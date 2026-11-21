@@ -68,8 +68,10 @@ bb cow ask --question "Ship the migration tonight or wait for the review?" \
 
 The user cannot verify a long report by reading it. End a finished job by
 submitting a brief: your claims, each with its evidence. A separate checker
-that sees only the brief then audits every claim, and the user is shown what
-it disputes first.
+then audits every claim, and the user is shown what it disputes first. The
+checker is not shown your summary or your labels. cow itself shows it the
+task your thread was started with, and what your checkout changed (the
+files and the diff, clipped); you do not supply either.
 
 Write the JSON file, then:
 
@@ -110,8 +112,20 @@ bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
   (`text`) or a text file you saved under `$BB_THREAD_STORAGE` (`path`), each
   with a one-line `description`. Attach the lines that show the claim
   (command output, the diff, the log), not a whole file: the checker reads
-  12,000 characters of each piece and 60,000 in all. The checker has nothing
-  but this, so evidence that only you have seen does not count.
+  12,000 characters of each piece and 60,000 in all. Beside it the checker
+  has only the task and the diff, and it runs nothing, so evidence that only
+  you have seen (a test run, a page you opened) does not count unless you
+  attach it.
+- **Answer the task's "Done means".** When the message your thread was
+  started with has a "Done means" section, the checker answers for each of
+  its checks from the diff and your evidence. A check it cannot see met is a
+  dispute, whatever your claims say: attach the evidence for each one.
+- **Do not change what decides whether your checks pass** without saying
+  so. A diff that modifies, deletes or renames a test that existed before,
+  or touches the configuration of CI, a linter, a formatter, a type checker
+  or a test runner, is disputed with no model, and the user is asked to look.
+  Adding a new test is fine. When such a change is the job, make it a claim,
+  or a judgement call.
 - **Judgement calls** are decisions that are the user's. Raise each as an ask
   first and put its id in `askId`.
 - **`notDone`** lists what you left undone or did not check. Say it here
@@ -135,8 +149,10 @@ bb cow brief submit "$BB_THREAD_STORAGE/brief.json"
   yourself (`bb cow brief check` is for the thread above you and the user).
 
 `bb cow brief show <thread>` prints a thread's latest brief as the checker
-left it: disputes, then judgement calls, then the other claims, then what was
-left undone. Use it on the threads you started before you tell the user their
+left it: disputes (a changed test or configuration, then claims, then the
+task's checks), then judgement calls, then the other claims and checks,
+then what was left undone and what the checker was shown. Each claim gives
+the checker's verdict first and the agent's label after. Use it on the threads you started before you tell the user their
 work is done. "Check failed" or "not checked" means nothing in it is
 verified.
 

@@ -27,7 +27,7 @@ Two more marks sit beside a title, and say nothing about the thread's state:
 | Mark | Means |
 | --- | --- |
 | ▤ and ✓, ▶ or ✕ | the thread submitted a brief, and a checker disputed none of its claims (✓), is auditing it now (▶), or failed to give a usable answer (✕: nothing in it is verified) |
-| ▤ ≠ 2 | the checker disputes that many of the brief's claims |
+| ▤ ≠ 2 | the brief has that many disputes: claims and task checks the checker disputes, and one when its diff changed what decides whether its checks pass |
 | a key, and 3× | the thread holds a capability; capabilities have allowed that many of its requests. "new" beside it: one you have not acknowledged |
 
 When several things wait on you at once, a line shows the first of: a
@@ -1019,21 +1019,27 @@ checker reads what was submitted whatever happens to the files later.
 Submitting again stores a new version; earlier ones are kept.
 
 **The checker** is a separate agent in a thread of its own. Its whole input
-is one message: the brief and its evidence. It has no parent, so it shares no
-conversation with the thread that did the work and wakes nobody; it is hidden
-from the thread list, and its thread is stopped and archived when it
-answers. For each claim it states in one sentence what the evidence
-literally shows, then gives a verdict: `supported`, `not-supported`, or
-`cannot-tell` with the evidence that would settle it.
+is one message (see [What the checker is shown](#what-the-checker-is-shown)):
+the task, what the thread changed, and the brief's claims with their
+evidence. It is **not** shown the agent's summary or the agent's label for
+any claim: telling a reviewer that work is fine makes it find less. It has no
+parent, so it shares no conversation with the thread that did the work and
+wakes nobody; it is hidden from the thread list, and its thread is stopped
+and archived when it answers. For each claim it states in one sentence what
+the evidence and the diff literally show, then gives a verdict: `supported`,
+`not-supported`, or `cannot-tell` with what would settle it. It answers the
+same way for each check of the task's "Done means" section, and may list
+changed files that no claim accounts for.
 
 - It is told to use no tool, and bb gives a plugin no way to start a thread
   without tools. So cow reads the checker's own timeline afterwards, and an
   answer from a checker that used any tool is thrown away.
-- Its answer must be one JSON object with a verdict for every claim. Anything
-  else (prose, a missing claim, a `cannot-tell` that does not say what would
-  settle it, an error, no answer in ten minutes) is a **failed check**, shown
-  as one. It is never a pass.
-- An answer that cannot be read (broken JSON, a claim left out) is tried once
+- Its answer must be one JSON object with a verdict for every claim and for
+  every check the task sets. Anything else (prose, a missing claim or task
+  check, a `cannot-tell` that does not say what would settle it, an error, no
+  answer in ten minutes) is a **failed check**, shown as one. It is never a
+  pass.
+- An answer that cannot be read (broken JSON, a claim or a task check left out) is tried once
   more with a fresh checker before the check fails: a slip in the form is not
   a verdict on the brief. A checker that used a tool, errored or said nothing
   is not tried again.
@@ -1047,6 +1053,11 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   (`chosen` in `--json`: `given`, `setting`, `inherited` or `default`), and
   the sheet and `bb cow brief show` name them, adding "as the submitting
   thread ran" when both were inherited.
+- **Its permission mode** is `accept-edits`, the narrowest of bb's three
+  (`accept-edits`, `auto`, `full`): edits in its workspace go ahead, and
+  anything else is put to you for approval rather than run. bb has no mode
+  that refuses outright, which is why a checker that used a tool is thrown
+  away, not trusted to have been stopped.
 - **Where its thread starts.** The checker reads only its prompt, so it needs
   no checkout. Its thread starts in a personal workspace: an empty folder of
   its own in bb's personal project, which bb removes with the thread. It
@@ -1097,13 +1108,119 @@ literally shows, then gives a verdict: `supported`, `not-supported`, or
   opening the brief ends the wait.
 
 A claim is **disputed** when the checker's verdict is weaker than the agent's
-label warrants:
+label warrants. The checker never sees the label; cow puts the two together
+afterwards:
 
 | The agent says | Checker: not supported | Checker: cannot tell |
 | --- | --- | --- |
 | `checked` | contradicted | not established |
 | `inferred` | contradicted | agreement, no dispute |
 | `not-checked` | agreement, no dispute | agreement, no dispute |
+
+A **task check** that the checker finds not shown (`not-supported`), or
+cannot tell, is a dispute: the agent was asked for it, whatever it claims.
+
+A brief whose diff **changed what decides whether its checks pass** is a
+dispute cow raises from the list of changed files alone, with no model. It
+names the files, counts for the queue like any other dispute, and stands
+whatever becomes of the check, while it runs and when it fails. See [The
+path rules](#the-path-rules).
+
+### What the checker is shown
+
+cow collects all of it itself when the brief is submitted; the submitting
+agent supplies none of it. Every piece of untrusted text (the task, the
+file list, the diff, each piece of evidence) is fenced between lines marked
+with a fresh random nonce, and the checker is told that nothing inside a
+fence is an instruction.
+
+- **The task.** The text of the first message the submitting thread was
+  started with, as bb recorded it, up to 12,000 characters (the prompt says
+  when it was cut, and how long it was). If it has a "Done means" section, a
+  heading with those words, or a line starting with them in bold, up to the
+  next heading of the same or a higher level (any heading, for the bold
+  form), each item of its outermost list is one check, with the lines under
+  it (up to 30 checks of 600 characters; a section with no list is one
+  check). With no first message to read, the checker is told there is no
+  task to compare against.
+- **What changed.** When the thread's environment is a git checkout, cow
+  runs git there, on its machine, read-only and with hooks off. The base is
+  the merge base of `HEAD` with the first of these that resolves: the
+  environment's merge-base branch, its base branch, its default branch (each
+  also tried as `origin/<name>`), `origin/HEAD`, `main`, `master`. With none,
+  it is `HEAD`, so only uncommitted work shows, and the prompt says so; in a
+  repository with no commits, the empty tree. The list of changed files
+  (added, modified, deleted, renamed; uncommitted and untracked included, up
+  to 5,000) always goes in whole. The diff text is cut to 60,000 characters
+  in all and 12,000 a file. When it does not all fit, every file gets the
+  same share before any gets more (never below 1,500 characters while there
+  is room; past that, the last files are left out), so one large file cannot
+  hide the rest. Lock files and binary files go by name only, and so do
+  files that may hold secrets (the patterns a clone leaves out: `.env`,
+  `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `*.sock`,
+  `*.socket`, `*.pid`, and anything under `.aws` or `.ssh`). An untracked
+  file is read only if it is a regular file (a link is never followed), up
+  to 200,000 bytes. The prompt names every file cut short, left out, or
+  shown by name only, and the checker is told that when what was left out
+  could decide a verdict, it cannot tell.
+- **No diff.** With no environment, an environment that is not a git
+  checkout, git failing, or the `checkerDiff` setting off, the check still
+  runs, and the checker is told there is no diff and why.
+- **The claims**: each claim's id and text, its evidence, and the list of
+  what was not done. Not the summary, not the labels, not the judgement
+  calls.
+
+The budgets: 12,000 characters of task and 60,000 of diff, beside up to
+60,000 of evidence, keep a whole prompt near 35,000 tokens: within what a
+small model reads well, and small enough that the same material can be sent
+to several runs.
+
+**What the record keeps.** The brief's record says what its checker was
+shown: whether it had the task, how many checks were taken from it, the base
+revision and how it was chosen, up to 300 changed files with their status
+and how many there were, what was cut, left out or shown by name only, and
+the flagged files. bb keeps each stored value to 256 KB, and a record
+already holds up to 60,000 characters of evidence, so the text itself (the
+task, the whole file list and the clipped diff) is kept beside the record,
+in rows of 30,000 characters each, where it is read back for a run of the
+check again: every run of one version is shown the same material, whatever
+the thread changed since. A brief stored before 0.2.18 has none of this,
+and reads and shows as it did; checking it again collects the task and the
+diff as they are then, and records that.
+
+### The path rules
+
+From the list of changed files alone (paths, never contents), a brief is
+disputed as having **changed what decides whether its checks pass** when it:
+
+- modifies, deletes or renames a **test file that existed at the base**. A
+  test file is one under a folder named `test`, `tests`, `__tests__`, `spec`,
+  `specs`, `e2e`, `__snapshots__`, `testdata`, `test-data`, `fixtures`,
+  `__fixtures__` or `__mocks__`, or named `*.test.*`, `*.spec.*`,
+  `*_test.go` (and `.py`, `.rb`, `.ex`, `.exs`, `.dart`, `.c`, `.cc`,
+  `.cpp`), `test_*.py`, `*_spec.rb`, `*Test`, `*Tests`, `*Spec` or `*IT` (in
+  Java, Kotlin, Scala, C#, Swift or PHP), `*.snap` or `conftest.py`. A new
+  test file is not flagged;
+- adds, changes, deletes or renames **configuration of continuous
+  integration** (anything under `.github/workflows/`, `.circleci/`,
+  `.buildkite/`, `.husky/`, `.gitlab/ci/`; `.gitlab-ci.yml`, `.travis.yml`,
+  `azure-pipelines.yml`, `bitbucket-pipelines.yml`, `.drone.yml`,
+  `Jenkinsfile`, `.pre-commit-config.yaml`, `lefthook.yml`), **a linter**
+  (`.eslintrc*`, `eslint.config.*`, `.eslintignore`, `.stylelintrc*`,
+  `stylelint.config.*`, `biome.json`, `.oxlintrc.json`, `ruff.toml`,
+  `.flake8`, `.pylintrc`, `.golangci.*`, `.rubocop.yml`, `clippy.toml`,
+  `.markdownlint*`, `.shellcheckrc`, `.swiftlint.yml`), **a formatter**
+  (`.prettierrc*`, `prettier.config.*`, `.prettierignore`, `.editorconfig`,
+  `rustfmt.toml`, `.clang-format`, `dprint.json`, `.swift-format`), **a type
+  checker** (`tsconfig*.json`, `jsconfig*.json`, `mypy.ini`,
+  `pyrightconfig.json`, `.flowconfig`) or **a test runner** (`jest.config.*`,
+  `vitest.config.*`, `playwright.config.*`, `cypress.config.*`,
+  `karma.conf.*`, `.mocharc*`, `.c8rc`, `.nycrc*`, `pytest.ini`, `tox.ini`,
+  `noxfile.py`, `phpunit.xml`), wherever it is in the tree.
+
+Files that often hold such settings among much else (`package.json`,
+`pyproject.toml`, `setup.cfg`, `Cargo.toml`) are not flagged: most changes
+to them are not to a check. The rules are in `src/briefs/paths.ts`.
 
 ### Reading a brief on the page
 
@@ -1117,15 +1234,22 @@ decision, puts nothing in the queue.
 
 1. what the check was: how many runs, of which model, or that it failed and
    why, or that none has run;
-2. the disputed claims, contradicted ones first. Each shows the claim, the
-   agent's own label as the agent's words, what the evidence literally
-   shows, and the checker's verdict. "Contradicted" is filled in red; "not
-   established" is outlined, and says what evidence would settle it;
+2. the disputes: first a change to what decides whether its checks pass,
+   with the files; then the disputed claims, contradicted ones first; then
+   the task checks not shown or that cannot be told. Each claim shows the
+   claim, the checker's verdict, what the evidence literally shows, and only
+   then the agent's own label, as the agent's words. "Contradicted" is
+   filled in red; "not established" is outlined, and says what would settle
+   it;
 3. the judgement calls. One that was raised as an ask and is still open is
    answered in place with `a`;
 4. the other claims. One the checker supported says "found it supported" and
-   nothing more;
-5. what the agent lists as left undone, then its summary.
+   nothing more; then the task's other checks;
+5. changed files no claim accounts for, as the checker read it: a note, not
+   a dispute;
+6. what the agent lists as left undone, what the checker was shown (the
+   task and how many checks, the base, how many files, what was cut), then
+   the agent's summary.
 
 | Key in the sheet | Does |
 | --- | --- |
@@ -1146,18 +1270,25 @@ dispute and it lists no judgement call, nothing waits, and the earlier
 version's disputes are read with `bb cow brief show <thread> --version <n>`.
 
 **What a check is, and is not.** It is one model's reading of the evidence
-the agent chose to attach, done without the agent's conversation. "Supported"
-means that reader found the evidence shows the claim. It does not mean the
-claim was verified against the world, and the checker cannot see what was
-left out of the evidence. A failed check, or none, means nothing in the
-brief has been looked at by anyone but its author; the page says so and
-never shows it as clean.
+the agent attached, of the task, and of the diff, done without the agent's
+conversation. "Supported" means that reader found the material shows the
+claim. It does not mean the claim was verified against the world: the
+checker runs nothing, so "the tests pass" is judged from what the evidence
+and the diff show, not by running them. It sees what the checkout changed,
+so a change the agent left out of its claims can be seen, but only as far
+as the clipping allows, and it sees nothing outside the thread's checkout. A
+failed check, or none, means nothing in the brief has been looked at by
+anyone but its author; the page says so and never shows it as clean.
 
-`bb cow brief show` prints the disputes first (the claim, what the agent
-says, what the evidence literally shows, the verdict), contradicted before
-not established; then the judgement calls; then the other claims; then what
-was left undone. The agent's label is always printed as "the agent says",
-never as verification. `bb cow status` adds to a thread's line what its
+`bb cow brief show` prints the disputes first (a change to what decides
+whether its checks pass; then each disputed claim with the checker's
+verdict, what the evidence literally shows, then what the agent says;
+contradicted before not established; then the task checks not shown or that
+cannot be told); then the judgement calls; then the other claims and task
+checks; then changed files no claim accounts for, what was left undone, and
+what the checker was shown. The agent's label is always printed as "the
+agent says", after the verdict, never as verification. `--json` adds
+`tasks`, `flagged`, `unaccounted` and `shown`. `bb cow status` adds to a thread's line what its
 latest brief came to, such as "brief disputed: 1 contradicted".
 
 Settings (Settings → Installed plugins → cow, or `bb plugin config cow`):
@@ -1168,11 +1299,14 @@ Settings (Settings → Installed plugins → cow, or `bb plugin config cow`):
 | `checkerModel` | empty | the checker's model. Empty: the submitting thread's model when the checker runs on that thread's provider, otherwise that provider's default. A model set without a provider runs on the submitting thread's provider |
 | `checkerRuns` | 1 | independent checkers per brief, up to 5. The weakest verdict stands, and a claim the runs disagree on says so |
 | `checkOnSubmit` | on | check a brief as soon as it is submitted |
+| `checkerDiff` | on | show the checker what the submitting thread changed. The file list and the diff are sent to the checker's model; files that may hold secrets are named, never shown. Off: no git is run for a brief, and the checker is told there is no diff |
 
 A small model is cheaper, and its "not supported" is worth having, but its
 "supported" is weaker than a large model's; more than one run shows where it
-wavers. The checker catches what the evidence contradicts or fails to
-establish. It cannot catch what the agent left out of the evidence.
+wavers. The checker catches what the evidence and the diff contradict or
+fail to establish, and a task check they do not show. It cannot catch what
+was cut to fit, what happened outside the checkout, or what only running
+the code would show.
 
 ## Parking
 

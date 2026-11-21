@@ -250,6 +250,14 @@ async function main() {
     check("the claim its evidence supports is not", brief.claims.some((entry) => entry.id === "timeout" && entry.verdict === "supported"), JSON.stringify(brief.claims.map((entry) => [entry.id, entry.verdict])));
     const text = (await cow(null, "brief", "show", ids.briefer)).stdout;
     check("`brief show` puts the dispute first", text.indexOf("CONTRADICTED  tests") > 0 && text.indexOf("CONTRADICTED  tests") < text.indexOf("Judgement calls") && text.indexOf("Judgement calls") < text.indexOf("Other claims"));
+    const blocks = text.split(/\n(?=  (?:CONTRADICTED  |NOT ESTABLISHED  )?(?:timeout|tests)  “)/).slice(1).map((block) => block.split("\n\n")[0]);
+    check(
+      "`brief show` gives the checker's verdict before the agent's label, for every claim",
+      blocks.length === 2 && blocks.every((block) => block.indexOf("checker:") > 0 && block.indexOf("checker:") < block.indexOf("the agent says")),
+      JSON.stringify(blocks),
+    );
+    const shownTo = brief.shown;
+    check("the record says what the checker was shown: the fixture's first message, read by cow", shownTo?.task.state === "read" && shownTo.task.chars > 0, JSON.stringify(shownTo?.task));
     console.log(text.split("\n").map((line) => `      | ${line}`).join("\n"));
     const marked = JSON.parse((await cow(null, "status", "--main", ids.asker, "--json")).stdout);
     check("`bb cow status` marks the thread whose brief is disputed", marked.threads.some((entry) => entry.id === ids.briefer && /brief disputed: 1 contradicted|brief: 1 disputed/.test(entry.doing)), marked.threads.map((entry) => entry.doing).join(" | "));
