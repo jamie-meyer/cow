@@ -7304,6 +7304,8 @@ async function main() {
   if (page.networkErrors.length > failedRequests.length) {
     console.log(`note: ${page.networkErrors.length - failedRequests.length} failed requests of bb's own, e.g. ${page.networkErrors[0]}`);
   }
+  // The tab stays open after this, and a cow page in it would enrol its key again by first use once enrollment is reset below.
+  await page.goto("about:blank").catch(() => undefined);
   page.close();
 
   // -- put things back --
