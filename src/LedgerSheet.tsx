@@ -1,6 +1,6 @@
 // The ledger on the page: L opens a sheet over it with the summary by model,
 // by dispatching thread and by label (b shows one grouping at a time), and
-// the latest rows, with tokens and list-price dollars; and this month's spend
+// the latest rows, with tokens and list-price dollars; and the last 30 days' spend
 // under Main. Keyboard only; q or Esc closes it. The rows hold no titles: a
 // title shown here is bb's, read now.
 
@@ -49,7 +49,7 @@ export function useLedger(): LedgerData {
   return data;
 }
 
-/** This month's spend under Main, read when the sheet opens: cow keeps what it read of each thread, so an open asks bb only about threads that changed. */
+/** The last 30 days' spend under Main, read when the sheet opens: cow keeps what it read of each thread, so an open asks bb only about threads that changed. */
 function useSpend(mainId: string | null): { spend: Spend | null; error: string | null } {
   const rpc = useRpc<typeof rpcContract>();
   const [state, setState] = useState<{ spend: Spend | null; error: string | null }>({ spend: null, error: null });
@@ -90,12 +90,12 @@ function SpendLine({ name, part, kind }: { name: string; part: SpendPart; kind: 
   );
 }
 
-function MonthPart({ mainId }: { mainId: string | null }) {
+function SpendPartView({ mainId }: { mainId: string | null }) {
   const { spend, error } = useSpend(mainId);
   if (mainId === null) return null;
   return (
     <div data-cow-spend="">
-      <h3>This month under Main{spend ? ` · ${spend.month}` : ""}, archived threads included</h3>
+      <h3>The last 30 days under Main{spend ? ` · ${spend.period.first} to ${spend.period.last}` : ""}, archived threads included</h3>
       {error ? <p data-cow-spend-error="">{error}</p> : null}
       {spend === null ? (
         error ? null : <p>reading…</p>
@@ -186,7 +186,7 @@ export function LedgerSheet({
           model again. Groups of fewer than {SMALL_GROUP} are counted, not compared. {LEDGER_COST_NOTE}
         </p>
         {data.priceError ? <p data-cow-ledger-price-error="">{data.priceError}</p> : null}
-        <MonthPart mainId={mainId} />
+        <SpendPartView mainId={mainId} />
         {error ? <p data-cow-ledger-error="">could not read the ledger: {error}</p> : null}
         {summary === null ? (
           <p>reading…</p>

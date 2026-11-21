@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
 import type { LimitNotice, UsageReport } from "./limits-backend.ts";
-import { LIMITS_CHANGED, PACE_RULE, monthText, usageLineText, windowKey, windowText } from "./limits.ts";
+import { LIMITS_CHANGED, totalText, usageLineText, windowKey, windowText } from "./limits.ts";
 import type { Signer } from "./signing/page.ts";
 import { formatAge } from "./text.ts";
 
@@ -59,12 +59,13 @@ export function useLimits(signer: Signer): LimitsData {
   );
 }
 
-/** One quiet line: each window with its percent and reset, then the month. */
+/** One quiet line: each window with its percent and reset, then the last 30 days. */
 export function UsageLine({ data, now }: { data: LimitsData; now: number }) {
   const { report, error } = data;
-  const why = report?.month?.budget != null ? `pace: ${PACE_RULE}` : "list-price dollars of every thread on this bb; no monthly budget is set";
+  const t = report?.total ?? null;
+  const why = t ? `list-price dollars of every thread on this bb, ${t.first} to ${t.last}${t.budget === null ? "; no budget for 30 days is set" : ""}` : undefined;
   return (
-    <div className="cow-usage" data-cow-usage={report === null ? "loading" : "read"} title={report ? [usageLineText(report.windows, report.month, now), ...report.errors].join("\n") : undefined}>
+    <div className="cow-usage" data-cow-usage={report === null ? "loading" : "read"} title={report ? [usageLineText(report.windows, report.total, now), ...report.errors].join("\n") : undefined}>
       {report === null ? (
         <span>{error ? `usage: ${error}` : "usage …"}</span>
       ) : (
@@ -75,10 +76,10 @@ export function UsageLine({ data, now }: { data: LimitsData; now: number }) {
               {windowText(w, now)}
             </span>
           ))}
-          {report.month ? (
-            <span className="cow-usage-m" data-cow-usage-month={report.month.month} data-cow-usage-budget={report.month.budget ?? ""} data-cow-usage-pace={report.month.pace ?? ""} title={why}>
+          {t ? (
+            <span className="cow-usage-m" data-cow-usage-total={`${t.first}..${t.last}`} data-cow-usage-budget={t.budget ?? ""} title={why}>
               {report.windows.length > 0 ? " · " : ""}
-              {monthText(report.month)}
+              {totalText(t)}
             </span>
           ) : null}
         </>
@@ -96,7 +97,7 @@ export function UsageNotice({ notice, now, onAck }: { notice: LimitNotice; now: 
       <div>
         <p>{notice.text}</p>
         <small>
-          usage · {formatAge(Math.max(0, now - notice.at))} · a click or its hint acknowledges it; it does not come back until the next period
+          usage · {formatAge(Math.max(0, now - notice.at))} · a click or its hint acknowledges it; it does not come back until it is due again
         </small>
       </div>
     </li>

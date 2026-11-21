@@ -19,7 +19,7 @@ import { usageReportText } from "./limits.ts";
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
   Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">> & {
-    /** The month's spend under a Main: the one given, or this project's. */
+    /** The spend under a Main (the last 30 days, or the month given): the one given, or this project's. */
     spend?: (mainId: string | null, projectId: string | null, month: string | undefined) => Promise<Spend & { priceError: string | null; mainTitle: string | null }>;
     /** The usage line's figures and the usage notices waiting, read now. */
     usage?: () => Promise<UsageReport>;
@@ -86,11 +86,11 @@ function groupingsOf(value: string | undefined): readonly Grouping[] {
 /** `bb cow usage`: what the page's usage line shows, read now. */
 function usageCommand(usage: () => Promise<UsageReport>) {
   return cliCommand({
-    summary: "The usage line: every usage window of each signed-in provider, and this month's list-price dollars against the budget",
+    summary: "The usage line: every usage window of each signed-in provider, and the last 30 days' list-price dollars against the budget",
     description:
       "What cow's page shows on its usage line, read now: each usage window bb reports for every signed-in provider on this machine (its percent and when it resets; " +
-      "a provider not signed in, or that reports no windows, is left out), and this month's list-price dollars of every thread on this bb. With a monthly budget set " +
-      "(the monthlyBudget setting) it adds the budget and the month-end figure at the current pace. Then the usage notices waiting in the person's queue. " +
+      "a provider not signed in, or that reports no windows, is left out), and the last 30 days' list-price dollars of every thread on this bb (today and the 29 days before it). " +
+      "With a budget set (the budget30Days setting) it adds the budget. Then the usage notices waiting in the person's queue. " +
       "It only reads: nothing is ever paused or stopped, and only the person acknowledges a notice, on the page.",
     options: { json },
     async run(input) {
@@ -111,14 +111,14 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
     ...(spend
       ? {
           spend: cliCommand({
-            summary: "This month's tokens and list-price dollars under Main: workers, project threads, Main, and cow's checker runs",
+            summary: "The last 30 days' tokens and list-price dollars under Main: workers, project threads, Main, and cow's checker runs",
             description:
-              "Month to date (or --month YYYY-MM) for every thread under Main, archived or not, split into workers, project threads, Main itself and cow's checker runs " +
-              "(every check cow ran this month, whichever Main's brief it checked), with the total. Tokens are bb's own record of them, by the day it recorded them. " +
+              "The last 30 days, today and the 29 days before it (or a calendar month with --month YYYY-MM), for every thread under Main, archived or not, split into workers, project threads, Main itself and cow's checker runs " +
+              "(every check cow ran in those days, whichever Main's brief it checked), with the total. With --json, `period` says which days: its kind (last30Days or month), first and last day. Tokens are bb's own record of them, by the day it recorded them. " +
               "Dollars are an estimate at the providers' list prices, not a bill: on a subscription you are not billed this. A model with no list price shows tokens and no dollars. " +
               "Threads with no usage recorded are counted and said, never shown as zero.",
             options: {
-              month: { type: "string", description: "The month, YYYY-MM. Default: this one" },
+              month: { type: "string", description: "A calendar month, YYYY-MM. Default: the last 30 days" },
               main: { type: "string", description: "The Main thread's id. Default: the Main last chosen for this project on cow's page" },
               json,
             },

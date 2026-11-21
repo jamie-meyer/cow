@@ -1,13 +1,13 @@
 // The usage line and the notices before a limit. Pure: what bb reports of each
-// provider's usage windows, the month's list-price dollars against a budget,
-// the pace, and the rule for when the person is told, once. Reading bb, the
+// provider's usage windows, the last 30 days' list-price dollars against a
+// budget, and the rule for when the person is told, once. Reading bb, the
 // timer and the notices kept are in limits-backend.ts.
 //
 // Nothing here acts on a thread: a notice is a line in the person's queue
 // (and, when they allow it, a notification), never a stop.
 
 import { dollarText } from "./prices.ts";
-import { USAGE_GAPS_NOTE, monthStart } from "./usage.ts";
+import { LAST_DAYS, USAGE_GAPS_NOTE, monthOf } from "./usage.ts";
 
 /** Realtime channel: published whenever the line's figures or the notices change. */
 export const LIMITS_CHANGED = "cow-limits";
@@ -59,55 +59,42 @@ export function windowsOf(response: unknown): UsageWindow[] {
 /** Which window this is, the same from one read to the next. */
 export const windowKey = (w: UsageWindow): string => [w.provider, w.kind ?? "", w.model ?? "", w.label].join("|");
 
-/** When the month after this one (YYYY-MM) starts, local time. */
-export const monthEnd = (month: string): number => {
-  const year = Number(month.slice(0, 4));
-  const index = Number(month.slice(5, 7));
-  return new Date(index === 12 ? year + 1 : year, index === 12 ? 0 : index, 1).getTime();
-};
-
-/** No pace is worked out before this day of the month: two days say too little. */
-export const PACE_FROM_DAY = 3;
-
-/**
- * The month-end figure at the current pace: the dollars so far divided by
- * the fraction of the month gone (local time, to the millisecond). Null
- * before the third day of the month.
- */
-export function paceOf(dollars: number, month: string, now: number): number | null {
-  if (new Date(now).getDate() < PACE_FROM_DAY && now < monthEnd(month)) return null;
-  const start = monthStart(month);
-  const gone = Math.min(1, Math.max(0, (now - start) / (monthEnd(month) - start)));
-  return gone <= 0 ? null : dollars / gone;
-}
-
-export const PACE_RULE = `the dollars so far divided by the fraction of the month gone, from the ${PACE_FROM_DAY}rd day of the month`;
-
-/** The budget rule's first part: told when the month's dollars reach this share of the budget. */
+/** The budget rule's first part: told when the last 30 days' dollars reach this share of the budget. */
 export const SPENT_SHARE = 0.8;
 export const DEFAULT_WINDOW_PERCENT = 80;
 
-/** The month as the line shows it. */
-export interface MonthLine {
-  month: string;
-  /** List-price dollars so far, every thread bb has; null when no model used had a price. */
+/** The last 30 days as the line shows them. */
+export interface TotalLine {
+  /** The first and last day summed, local YYYY-MM-DD: 30 days, today the last. */
+  first: string;
+  last: string;
+  /** List-price dollars, every thread bb has; null when no model used had a price. */
   dollars: number | null;
   /** Threads with no usage recorded: not counted. */
   noUsage: number;
   /** Tokens of models with no list price: not in the dollars. */
   unpricedTokens: number;
+  /** The budget for 30 days; null when none is set. */
   budget: number | null;
-  pace: number | null;
 }
 
-/** The budget setting: a number of dollars, or empty for none. Anything else is an error, said. */
-export function budgetOf(value: string | number | undefined): { budget: number | null; error: string | null } {
+/** A budget setting: a number of dollars, or empty for none. Anything else is an error, said. */
+export function budgetOf(value: string | number | undefined, name = "budget for 30 days"): { budget: number | null; error: string | null } {
   if (typeof value === "number") return value > 0 && Number.isFinite(value) ? { budget: value, error: null } : { budget: null, error: null };
   const raw = (value ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
   if (raw === "") return { budget: null, error: null };
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return { budget: null, error: `the monthly budget "${value}" is not a number of dollars: no budget is applied` };
+  if (!Number.isFinite(n) || n <= 0) return { budget: null, error: `the ${name} "${value}" is not a number of dollars: no budget is applied` };
   return { budget: n, error: null };
+}
+
+/**
+ * The budget from the settings: `budget30Days`, or when that is empty the
+ * older `monthlyBudget` it was renamed from, read as the same thing.
+ */
+export function budgetSetting(budget30Days: string | undefined, monthlyBudget: string | undefined): { budget: number | null; error: string | null } {
+  if ((budget30Days ?? "").trim() !== "") return budgetOf(budget30Days, "budget for 30 days");
+  return budgetOf(monthlyBudget, "budget for 30 days (set as monthlyBudget)");
 }
 
 /** The window percent setting, 1 to 100; anything else is the default. */
@@ -136,39 +123,53 @@ const windowName = (w: UsageWindow) => `${providerName(w.provider)} ${w.label}`;
 /** One window on the line: "Claude Code Weekly limit 47%, resets in 3h (Sun 22 Nov 13:00)". */
 export const windowText = (w: UsageWindow, now: number): string => `${windowName(w)} ${percentText(w.usedPercent)}, ${resetText(w.resetsAt, now)}`;
 
-/** The month on the line: "November so far $43.03 at list price" and, with a budget, its budget and pace. */
-export function monthText(m: MonthLine): string {
-  const name = MONTHS[Number(m.month.slice(5, 7)) - 1] ?? m.month;
-  const so = m.dollars === null ? `${name} so far: no list-priced usage` : `${name} so far ${dollarText(m.dollars)} at list price`;
-  if (m.budget === null) return so;
-  const pace = m.pace === null ? `pace from the ${PACE_FROM_DAY}rd` : `pace ${dollarText(m.pace)} by month end`;
-  return `${so} of ${dollarText(m.budget)} budget · ${pace}`;
+/** The last 30 days on the line: "last 30 days $653.07 at list price" and, with a budget, the budget beside it. */
+export function totalText(t: TotalLine): string {
+  const so = t.dollars === null ? `last ${LAST_DAYS} days: no list-priced usage` : `last ${LAST_DAYS} days ${dollarText(t.dollars)} at list price`;
+  return t.budget === null ? so : `${so} of ${dollarText(t.budget)} budget`;
 }
 
 /** The whole line, in the order the page shows it. */
-export function usageLineText(windows: readonly UsageWindow[], month: MonthLine | null, now: number): string {
+export function usageLineText(windows: readonly UsageWindow[], total: TotalLine | null, now: number): string {
   const parts = windows.map((w) => windowText(w, now));
-  if (month) parts.push(monthText(month));
+  if (total) parts.push(totalText(total));
   return parts.length === 0 ? "No usage windows reported" : parts.join(" · ");
 }
 
 // ---- Telling the person, once ----------------------------------------------
 
-export type LimitRule = "window" | "spent" | "pace";
+/** "pace" is only in a notice kept from the monthly rules of an older cow: read and acknowledged, never raised. */
+export type LimitRule = "window" | "spent" | "budget" | "pace";
 
-/** What was raised already: each window's period, and each budget rule's month. */
+/** What was raised already: each window's period, and each budget rule while the total stays at or above it. */
 export interface Raised {
   /** Window key to the reset time of the period it was raised in (null: bb gave none). */
   windows: Record<string, { resetsAt: number | null; at: number }>;
-  /** Budget rule to the month (YYYY-MM) it was raised in. */
-  rules: { spent?: string; pace?: string };
+  /** Budget rule to when it was raised; gone once the total falls below its threshold. */
+  rules: { spent?: number; budget?: number };
 }
 export const NO_RAISED: Raised = { windows: {}, rules: {} };
+
+/**
+ * A stored record of what was raised, in today's shape or 0.2.20's, where a
+ * budget rule held the month (YYYY-MM) it was raised in and "pace" was a
+ * rule. A month's 80% notice raised this calendar month counts as raised
+ * now, so it is not raised twice; one from an earlier month, and the pace,
+ * are dropped.
+ */
+export function raisedOf(stored: { windows: Raised["windows"]; rules: { spent?: string | number; budget?: number; pace?: string } }, now: number): Raised {
+  const rules: Raised["rules"] = {};
+  const { spent, budget } = stored.rules;
+  if (typeof spent === "number") rules.spent = spent;
+  else if (typeof spent === "string" && spent === monthOf(now)) rules.spent = now;
+  if (typeof budget === "number") rules.budget = budget;
+  return { windows: stored.windows, rules };
+}
 
 /** A notice to raise: the facts, and the sentence that says them. */
 export interface NoticeDraft {
   rule: LimitRule;
-  /** The window's key, or the rule and month: one notice per key is kept. */
+  /** The window's key, or the budget rule: one notice per key is kept. */
   key: string;
   text: string;
 }
@@ -177,7 +178,7 @@ export interface LimitInput {
   windows: readonly UsageWindow[];
   /** Tell when a window reaches this percent. */
   windowPercent: number;
-  month: MonthLine | null;
+  total: TotalLine | null;
 }
 
 /** A reset time read again can move by a little; a new period is one that resets this much later than the last. */
@@ -187,13 +188,17 @@ const SAME_PERIOD_MS = 10 * 60_000;
 export const windowNoticeText = (w: UsageWindow, percent: number, now: number): string =>
   `${windowName(w)}${w.model && !w.label.toLowerCase().includes(w.model.toLowerCase()) ? ` (${w.model})` : ""} is at ${percentText(w.usedPercent)} of its window (told at ${percentText(percent)}); it ${resetText(w.resetsAt, now)}.`;
 
-export const spentNoticeText = (m: MonthLine & { dollars: number; budget: number }): string =>
-  `This month's list-price dollars are ${dollarText(m.dollars)}, ${percentText((m.dollars / m.budget) * 100)} of the ${dollarText(m.budget)} monthly budget (told at ${percentText(SPENT_SHARE * 100)}). Nothing is stopped.`;
+export const spentNoticeText = (t: TotalLine & { dollars: number; budget: number }): string =>
+  `The last ${LAST_DAYS} days' list-price dollars are ${dollarText(t.dollars)}, ${percentText((t.dollars / t.budget) * 100)} of the ${dollarText(t.budget)} budget for ${LAST_DAYS} days (told at ${percentText(SPENT_SHARE * 100)}). Nothing is stopped.`;
 
-export const paceNoticeText = (m: MonthLine & { dollars: number; budget: number; pace: number }, now: number): string => {
-  const gone = (now - monthStart(m.month)) / (monthEnd(m.month) - monthStart(m.month));
-  return `At this month's pace, ${dollarText(m.pace)} by the month's end, over the ${dollarText(m.budget)} monthly budget: ${dollarText(m.dollars)} so far with ${percentText(gone * 100)} of the month gone. Nothing is stopped.`;
-};
+export const budgetNoticeText = (t: TotalLine & { dollars: number; budget: number }): string =>
+  `The last ${LAST_DAYS} days' list-price dollars are ${dollarText(t.dollars)}, at or over the ${dollarText(t.budget)} budget for ${LAST_DAYS} days. Nothing is stopped.`;
+
+/** The budget rules: the share of the budget each is told at. */
+const BUDGET_RULES = [
+  { rule: "spent", share: SPENT_SHARE, text: spentNoticeText },
+  { rule: "budget", share: 1, text: budgetNoticeText },
+] as const;
 
 /**
  * What to raise now, and what is then recorded as raised. A window raises
@@ -201,8 +206,10 @@ export const paceNoticeText = (m: MonthLine & { dollars: number; budget: number;
  * reset: until bb reports it with a reset time later than the one it was
  * raised in, once that time has passed. A window bb gives no reset time for
  * can raise again once it was seen below its percent. A window whose reset
- * time is past is stale and raises nothing. Each budget rule raises once a
- * month: the dollars reaching 80% of the budget, and the pace going over it.
+ * time is past is stale and raises nothing. Each budget rule raises once
+ * when the last 30 days' dollars reach its threshold, 80% of the budget and
+ * the budget, and again only after the total has fallen below it and risen
+ * to it once more.
  */
 export function decide(raised: Raised, input: LimitInput, now: number): { raised: Raised; drafts: NoticeDraft[] } {
   const windows = { ...raised.windows };
@@ -227,16 +234,15 @@ export function decide(raised: Raised, input: LimitInput, now: number): { raised
     windows[key] = { resetsAt: w.resetsAt, at: now };
     drafts.push({ rule: "window", key: `window:${key}`, text: windowNoticeText(w, input.windowPercent, now) });
   }
-  const m = input.month;
-  if (m && m.budget !== null && m.dollars !== null) {
-    const facts = { ...m, budget: m.budget, dollars: m.dollars };
-    if (rules.spent !== m.month && m.dollars >= SPENT_SHARE * m.budget) {
-      rules.spent = m.month;
-      drafts.push({ rule: "spent", key: `spent:${m.month}`, text: spentNoticeText(facts) });
-    }
-    if (rules.pace !== m.month && m.pace !== null && m.pace > m.budget) {
-      rules.pace = m.month;
-      drafts.push({ rule: "pace", key: `pace:${m.month}`, text: paceNoticeText({ ...facts, pace: m.pace }, now) });
+  const t = input.total;
+  if (t && t.budget !== null && t.dollars !== null) {
+    const facts = { ...t, budget: t.budget, dollars: t.dollars };
+    for (const { rule, share, text } of BUDGET_RULES) {
+      if (t.dollars < share * t.budget) delete rules[rule];
+      else if (rules[rule] === undefined) {
+        rules[rule] = now;
+        drafts.push({ rule, key: rule, text: text(facts) });
+      }
     }
   }
   return { raised: { windows, rules }, drafts };
@@ -244,20 +250,20 @@ export function decide(raised: Raised, input: LimitInput, now: number): { raised
 
 /** `bb cow usage`: the line, then how it is worked out, then the notices waiting. */
 export function usageReportText(
-  report: { windows: readonly UsageWindow[]; month: MonthLine | null; windowPercent: number; errors: readonly string[]; notices: readonly { text: string; at: number }[] },
+  report: { windows: readonly UsageWindow[]; total: TotalLine | null; windowPercent: number; errors: readonly string[]; notices: readonly { text: string; at: number }[] },
   now: number,
 ): string {
-  const out = [usageLineText(report.windows, report.month, now), ""];
+  const out = [usageLineText(report.windows, report.total, now), ""];
   if (report.windows.length === 0) out.push("No signed-in provider reports a usage window.");
   for (const w of report.windows) out.push(`  ${windowText(w, now)}`);
-  const m = report.month;
-  if (m) {
-    out.push(`  ${monthText(m)}`);
-    out.push(`    Every thread on this bb, under any Main or none. An estimate at the providers' list prices, not a bill.${m.noUsage > 0 ? ` ${m.noUsage} ${m.noUsage === 1 ? "thread" : "threads"} with no usage recorded: not counted.` : ""}${m.unpricedTokens > 0 ? " Tokens of models with no list price are not in the dollars." : ""}`);
-    out.push(m.budget === null ? "    No monthly budget is set (the monthlyBudget setting)." : `    Pace: ${PACE_RULE}.`);
+  const t = report.total;
+  if (t) {
+    out.push(`  ${totalText(t)}`);
+    out.push(`    ${t.first} to ${t.last}: today and the ${LAST_DAYS - 1} days before it, local time. Every thread on this bb, under any Main or none. An estimate at the providers' list prices, not a bill.${t.noUsage > 0 ? ` ${t.noUsage} ${t.noUsage === 1 ? "thread" : "threads"} with no usage recorded: not counted.` : ""}${t.unpricedTokens > 0 ? " Tokens of models with no list price are not in the dollars." : ""}`);
+    if (t.budget === null) out.push(`    No budget is set (the budget30Days setting).`);
     out.push(`    ${USAGE_GAPS_NOTE}`);
   }
-  out.push("", `Told at ${Math.round(report.windowPercent)}% of a window, once per reset period${m?.budget != null ? `; and once a month each when the dollars reach ${SPENT_SHARE * 100}% of the budget and when the pace goes over it` : ""}. Nothing is ever paused or stopped.`);
+  out.push("", `Told at ${Math.round(report.windowPercent)}% of a window, once per reset period${t?.budget != null ? `; and once each when the last ${LAST_DAYS} days' dollars reach ${SPENT_SHARE * 100}% of the budget and when they reach the budget, again only after falling below it` : ""}. Nothing is ever paused or stopped.`);
   if (report.notices.length > 0) {
     out.push("", `Usage notices waiting for the person (acknowledged on the page): ${report.notices.length}`);
     for (const notice of report.notices) out.push(`  ${notice.text}`);

@@ -7,21 +7,20 @@ import { Refusal } from "../src/kv.ts";
 import { type LimitsDeps, createLimits } from "../src/limits-backend.ts";
 import {
   NO_RAISED,
-  PACE_FROM_DAY,
-  type MonthLine,
+  type Raised,
+  type TotalLine,
   type UsageWindow,
   budgetOf,
+  budgetSetting,
   decide,
-  monthEnd,
-  monthText,
-  paceOf,
+  raisedOf,
+  totalText,
   usageLineText,
   windowsOf,
 } from "../src/limits.ts";
 import { type Dispatch, runSigned, sha256Hex, verifyP256 } from "../src/signing/backend.ts";
 import { type Envelope, type PublicKey, fingerprintText, formatFingerprint, signedText } from "../src/signing/envelope.ts";
 import { createKeys } from "../src/signing/keys.ts";
-import { monthStart } from "../src/usage.ts";
 import { memoryKv } from "./memory.ts";
 
 // bb's usage response, in the shape `bb settings usage --json` gives it: one
@@ -64,27 +63,18 @@ test("two windows of a signed-in provider are read; a provider not signed in, in
   assert.deepEqual(windowsOf({ x: { status: "ok", windows: [{ label: "no percent" }] } }), []);
 });
 
-const month = (dollars: number | null, budget: number | null, at = NOW): MonthLine => ({ month: "2026-11", dollars, noUsage: 0, unpricedTokens: 0, budget, pace: dollars === null ? null : paceOf(dollars, "2026-11", at) });
+const total = (dollars: number | null, budget: number | null): TotalLine => ({ first: "2026-10-23", last: "2026-11-21", dollars, noUsage: 0, unpricedTokens: 0, budget });
+const NAMES = /pace|month|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/;
 
-test("with no budget the line gives the month's dollars and nothing of a budget; with one, the budget and the pace", () => {
-  const none = monthText(month(43.03, null));
-  assert.equal(none, "Nov so far $43.03 at list price");
-  assert.ok(!/budget|pace/.test(none));
-  const set = monthText(month(43.03, 500));
-  assert.match(set, /^Nov so far \$43\.03 at list price of \$500(\.00)? budget · pace \$[0-9.]+ by month end$/);
-  assert.match(usageLineText(windowsOf(response(47, 54)), month(43.03, null), NOW), /Fable 54%.* · Nov so far \$43\.03 at list price$/);
-});
-
-test("the pace is the dollars so far divided by the fraction of the month gone, and none before the third day", () => {
-  // June has 30 days and no change of clocks: at the start of the 16th, half of it is gone.
-  assert.equal(paceOf(100, "2026-06", new Date(2026, 5, 16).getTime()), 200);
-  const at = NOW;
-  const gone = (at - monthStart("2026-11")) / (monthEnd("2026-11") - monthStart("2026-11"));
-  assert.equal(paceOf(43.03, "2026-11", at), 43.03 / gone);
-  assert.equal(paceOf(10, "2026-11", new Date(2026, 10, 2, 23, 59).getTime()), null, "the 2nd");
-  assert.equal(paceOf(10, "2026-06", new Date(2026, 5, PACE_FROM_DAY).getTime()), 10 / (2 / 30), "from the 3rd");
-  assert.equal(monthEnd("2026-12"), new Date(2027, 0, 1).getTime());
-  assert.match(monthText(month(5, 500, new Date(2026, 10, 1, 9).getTime())), /pace from the 3rd$/);
+test("the line gives the last 30 days' dollars, and with a budget the budget beside them; never a pace or a month's name", () => {
+  const none = totalText(total(653.07, null));
+  assert.equal(none, "last 30 days $653.07 at list price");
+  assert.ok(!/budget/.test(none));
+  const set = totalText(total(653.07, 1000));
+  assert.equal(set, "last 30 days $653.07 at list price of $1000.00 budget");
+  assert.equal(totalText(total(null, 1000)), "last 30 days: no list-priced usage of $1000.00 budget");
+  for (const line of [none, set]) assert.ok(!NAMES.test(line), line);
+  assert.match(usageLineText(windowsOf(response(47, 54)), total(43.03, null), NOW), /Fable 54%.* · last 30 days \$43\.03 at list price$/);
 });
 
 test("the budget setting: dollars, empty for none, and anything else said", () => {
@@ -96,12 +86,23 @@ test("the budget setting: dollars, empty for none, and anything else said", () =
   assert.equal(budgetOf("-3").budget, null);
 });
 
+test("budget30Days is the budget; monthlyBudget, which it was renamed from, counts only when it is empty; a bad value is said", () => {
+  assert.deepEqual(budgetSetting("700", ""), { budget: 700, error: null });
+  assert.deepEqual(budgetSetting("", "500"), { budget: 500, error: null });
+  assert.deepEqual(budgetSetting(undefined, "500"), { budget: 500, error: null });
+  assert.deepEqual(budgetSetting("700", "500"), { budget: 700, error: null });
+  assert.deepEqual(budgetSetting("", ""), { budget: null, error: null });
+  assert.match(budgetSetting("lots", "500").error ?? "", /^the budget for 30 days "lots" is not a number of dollars: no budget is applied$/);
+  assert.equal(budgetSetting("lots", "500").budget, null);
+  assert.match(budgetSetting("", "lots").error ?? "", /set as monthlyBudget.*not a number of dollars/);
+});
+
 const twoWindows = (weekly: number, fable: number, resetsAt = RESETS): UsageWindow[] => windowsOf(response(weekly, fable, resetsAt));
 
 test("a window reaching its percent raises one notice; again in the same period none; after the reset, a new one can", () => {
   let raised = NO_RAISED;
   const step = (windows: UsageWindow[], at: number) => {
-    const got = decide(raised, { windows, windowPercent: 80, month: null }, at);
+    const got = decide(raised, { windows, windowPercent: 80, total: null }, at);
     raised = got.raised;
     return got.drafts;
   };
@@ -120,54 +121,68 @@ test("a window reaching its percent raises one notice; again in the same period 
   assert.equal(again.length, 1);
   assert.match(again[0]!.text, /Fable.* 85%/);
   // Both windows at once: one each.
-  assert.equal(decide(NO_RAISED, { windows: twoWindows(90, 90), windowPercent: 80, month: null }, NOW).drafts.length, 2);
+  assert.equal(decide(NO_RAISED, { windows: twoWindows(90, 90), windowPercent: 80, total: null }, NOW).drafts.length, 2);
 });
 
 test("a window past its reset time is stale and raises nothing; one with no reset time raises again only after it was seen below", () => {
-  assert.deepEqual(decide(NO_RAISED, { windows: twoWindows(99, 99, NOW - MINUTE), windowPercent: 80, month: null }, NOW).drafts, []);
+  assert.deepEqual(decide(NO_RAISED, { windows: twoWindows(99, 99, NOW - MINUTE), windowPercent: 80, total: null }, NOW).drafts, []);
   const open: UsageWindow = { provider: "codex", label: "Credits", usedPercent: 90, resetsAt: null, kind: null, model: null };
-  let got = decide(NO_RAISED, { windows: [open], windowPercent: 80, month: null }, NOW);
+  let got = decide(NO_RAISED, { windows: [open], windowPercent: 80, total: null }, NOW);
   assert.equal(got.drafts.length, 1);
   assert.match(got.drafts[0]!.text, /reset time not given/);
-  got = decide(got.raised, { windows: [open], windowPercent: 80, month: null }, NOW + HOUR);
+  got = decide(got.raised, { windows: [open], windowPercent: 80, total: null }, NOW + HOUR);
   assert.equal(got.drafts.length, 0);
-  got = decide(got.raised, { windows: [{ ...open, usedPercent: 20 }], windowPercent: 80, month: null }, NOW + 2 * HOUR);
-  got = decide(got.raised, { windows: [open], windowPercent: 80, month: null }, NOW + 3 * HOUR);
+  got = decide(got.raised, { windows: [{ ...open, usedPercent: 20 }], windowPercent: 80, total: null }, NOW + 2 * HOUR);
+  got = decide(got.raised, { windows: [open], windowPercent: 80, total: null }, NOW + 3 * HOUR);
   assert.equal(got.drafts.length, 1);
 });
 
-test("each budget rule raises once a month: the dollars reaching 80% of the budget, and the pace going over it", () => {
-  let raised = NO_RAISED;
-  const step = (m: MonthLine, at: number) => {
-    const got = decide(raised, { windows: [], windowPercent: 80, month: m }, at);
+test("each budget rule raises once on reaching its threshold, none while the total stays above, and again only after falling below", () => {
+  let raised: Raised = NO_RAISED;
+  let at = NOW;
+  const step = (dollars: number) => {
+    at += HOUR;
+    const got = decide(raised, { windows: [], windowPercent: 80, total: total(dollars, 500) }, at);
     raised = got.raised;
     return got.drafts.map((draft) => draft.rule);
   };
-  const early = new Date(2026, 10, 10).getTime();
-  // 9 of 30 days gone: $100 is a pace of $333, under a $500 budget.
-  assert.deepEqual(step(month(100, 500, early), early), []);
-  // $200 on the 10th: a pace of $667, over it.
-  assert.deepEqual(step(month(200, 500, early), early), ["pace"]);
-  assert.deepEqual(step(month(300, 500, early + HOUR), early + HOUR), []);
-  const late = new Date(2026, 10, 25).getTime();
-  assert.deepEqual(step(month(400, 500, late), late), ["spent"]);
-  assert.deepEqual(step(month(480, 500, late + HOUR), late + HOUR), []);
-  // A new month: each can be raised again.
-  const december = new Date(2026, 11, 20).getTime();
-  const dec: MonthLine = { month: "2026-12", dollars: 450, noUsage: 0, unpricedTokens: 0, budget: 500, pace: paceOf(450, "2026-12", december) };
-  assert.deepEqual(step(dec, december), ["spent", "pace"]);
-  assert.deepEqual(step(dec, december + HOUR), []);
-  // No budget, or no priced usage: no rule.
-  assert.deepEqual(decide(NO_RAISED, { windows: [], windowPercent: 80, month: month(10_000, null, late) }, late).drafts, []);
-  assert.deepEqual(decide(NO_RAISED, { windows: [], windowPercent: 80, month: month(null, 5, late) }, late).drafts, []);
-  const spent = decide(NO_RAISED, { windows: [], windowPercent: 80, month: month(400, 500, late) }, late).drafts[0]!;
-  assert.equal(spent.text, "This month's list-price dollars are $400.00, 80% of the $500.00 monthly budget (told at 80%). Nothing is stopped.");
-  const pace = decide(NO_RAISED, { windows: [], windowPercent: 80, month: month(200, 500, early) }, early).drafts[0]!;
-  assert.match(pace.text, /^At this month's pace, \$66[0-9]\.[0-9]{2} by the month's end, over the \$500\.00 monthly budget: \$200\.00 so far with 30% of the month gone\. Nothing is stopped\.$/);
+  assert.deepEqual(step(100), []);
+  assert.deepEqual(step(399), []);
+  assert.deepEqual(step(400), ["spent"], "rising through 80%");
+  assert.deepEqual(step(450), [], "staying above");
+  assert.deepEqual(step(420), []);
+  assert.deepEqual(step(399.99), [], "falling below");
+  assert.deepEqual(step(410), ["spent"], "rising to it again");
+  assert.deepEqual(step(500), ["budget"], "reaching the budget");
+  assert.deepEqual(step(600), []);
+  assert.deepEqual(step(499), [], "below the budget, still above 80%");
+  assert.deepEqual(step(520), ["budget"], "the budget again");
+  assert.deepEqual(step(100), [], "far below both");
+  assert.deepEqual(step(900), ["spent", "budget"], "through both at once");
+  assert.deepEqual(step(900), []);
+  // No budget, or no priced usage: no rule, and what was raised is kept.
+  assert.deepEqual(decide(NO_RAISED, { windows: [], windowPercent: 80, total: total(10_000, null) }, NOW).drafts, []);
+  assert.deepEqual(decide(NO_RAISED, { windows: [], windowPercent: 80, total: total(null, 5) }, NOW).drafts, []);
+  assert.deepEqual(decide(raised, { windows: [], windowPercent: 80, total: total(1, null) }, NOW).raised, raised);
+  const [spent, budget] = decide(NO_RAISED, { windows: [], windowPercent: 80, total: total(500, 500) }, NOW).drafts;
+  assert.equal(spent!.text, "The last 30 days' list-price dollars are $500.00, 100% of the $500.00 budget for 30 days (told at 80%). Nothing is stopped.");
+  assert.equal(budget!.text, "The last 30 days' list-price dollars are $500.00, at or over the $500.00 budget for 30 days. Nothing is stopped.");
+  for (const draft of [spent!, budget!]) assert.ok(!/pace|month/.test(draft.text), draft.text);
+});
+
+test("a record of what was raised in 0.2.20's shape is read without error: this month's 80% notice counts as raised, the pace and earlier months are dropped", () => {
+  const windows = { "claude-code|weekly||Weekly limit": { resetsAt: RESETS, at: NOW } };
+  const old = raisedOf({ windows, rules: { spent: "2026-11", pace: "2026-11" } }, NOW);
+  assert.deepEqual(old, { windows, rules: { spent: NOW } });
+  // Still above 80%: no second notice. Reaching the budget is new.
+  assert.deepEqual(decide(old, { windows: [], windowPercent: 80, total: total(450, 500) }, NOW).drafts, []);
+  assert.deepEqual(decide(old, { windows: [], windowPercent: 80, total: total(550, 500) }, NOW).drafts.map((d) => d.rule), ["budget"]);
+  assert.deepEqual(raisedOf({ windows: {}, rules: { spent: "2026-10", pace: "2026-10" } }, NOW), { windows: {}, rules: {} });
+  assert.deepEqual(raisedOf({ windows: {}, rules: { spent: 5, budget: 6 } }, NOW), { windows: {}, rules: { spent: 5, budget: 6 } });
 });
 
 /** The server's part, over storage that lives in the test, with a clock. */
-function world(opts: { budget?: string; notify?: boolean; failNotify?: boolean } = {}) {
+function world(opts: { budget?: string; monthlyBudget?: string; notify?: boolean; failNotify?: boolean } = {}) {
   const kv = memoryKv();
   const clock = { now: NOW };
   const bb = { response: response(47, 54) as unknown, dollars: 43.03 as number | null };
@@ -181,8 +196,8 @@ function world(opts: { budget?: string; notify?: boolean; failNotify?: boolean }
     now: () => clock.now,
     newId: () => `n${(ids += 1)}`,
     usageLimits: async () => bb.response,
-    month: async () => ({ threads: 3, noUsage: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, dollars: bb.dollars, unpricedTokens: 0, unpricedModels: [], priceError: null }),
-    settings: async () => ({ monthlyBudget: opts.budget ?? "", windowPercent: 80, notify: opts.notify ?? true }),
+    total: async () => ({ period: { kind: "last30Days", month: null, first: "2026-10-23", last: "2026-11-21" }, threads: 3, noUsage: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, dollars: bb.dollars, unpricedTokens: 0, unpricedModels: [], priceError: null }),
+    settings: async () => ({ budget30Days: opts.budget ?? "", monthlyBudget: opts.monthlyBudget ?? "", windowPercent: 80, notify: opts.notify ?? true }),
     notify: async (title, body) => {
       if (opts.failNotify) throw new Error("no plugin push-notifications");
       sent.push({ title, body });
@@ -237,24 +252,55 @@ test("acknowledged, a notice is gone, logged under the key that signed, and does
   await assert.rejects(w.limits.acknowledge("note_1", "x"), (cause: unknown) => cause instanceof Refusal && cause.code === "notice_not_found");
 });
 
-test("the budget rules on the server: once each a month; with notifications off, or with none to be had, the notice is still raised", async () => {
+test("the budget rules on the server: once each; with notifications off, or with none to be had, the notice is still raised", async () => {
   const w = world({ budget: "50", notify: false });
-  w.clock.now = new Date(2026, 10, 25).getTime();
   w.bb.response = {};
   w.bb.dollars = 41;
   const got = await w.limits.check();
-  assert.deepEqual(got.raised.map((n) => n.rule).sort(), ["pace", "spent"]);
-  assert.equal(got.report.month?.budget, 50);
+  assert.deepEqual(got.raised.map((n) => n.rule), ["spent"]);
+  assert.equal(got.report.total?.budget, 50);
   assert.equal(w.sent.length, 0);
   w.clock.now += 2 * HOUR;
   w.bb.dollars = 49;
   assert.deepEqual((await w.limits.check()).raised, []);
+  w.clock.now += 2 * HOUR;
+  w.bb.dollars = 50;
+  assert.deepEqual((await w.limits.check()).raised.map((n) => n.rule), ["budget"]);
   const failing = world({ budget: "50", failNotify: true });
-  failing.clock.now = w.clock.now;
   failing.bb.response = {};
   failing.bb.dollars = 45;
-  assert.equal((await failing.limits.check()).raised.length, 2);
+  assert.equal((await failing.limits.check()).raised.length, 1);
   assert.match(failing.warned[0] ?? "", /could not send a notification/);
+});
+
+test("the server reads a record and a notice kept by 0.2.20 without error and without a duplicate", async () => {
+  const w = world({ budget: "50" });
+  w.bb.response = {};
+  w.bb.dollars = 45;
+  await w.kv.set("limits-raised", { windows: {}, rules: { spent: "2026-11", pace: "2026-11" } });
+  await w.kv.set("limit-notice:limit_old1", { id: "limit_old1", rule: "pace", key: "pace:2026-11", text: "At this month's pace …", at: NOW - HOUR });
+  const got = await w.limits.check();
+  assert.deepEqual(got.raised, [], "80% was raised this month already");
+  assert.deepEqual((await w.limits.notices()).map((n) => n.id), ["limit_old1"], "the old notice is still there to acknowledge");
+  assert.deepEqual(await w.kv.get("limits-raised"), { windows: {}, rules: { spent: NOW } }, "rewritten in today's shape");
+  await w.limits.acknowledge("limit_old1", "abcd-ef01-2345-6789");
+  assert.deepEqual(await w.limits.notices(), []);
+  // A monthly 80% notice from an earlier month, not acknowledged, gives way to the new one.
+  const v = world({ budget: "50" });
+  v.bb.response = {};
+  v.bb.dollars = 45;
+  await v.kv.set("limits-raised", { windows: {}, rules: { spent: "2026-10" } });
+  await v.kv.set("limit-notice:limit_old2", { id: "limit_old2", rule: "spent", key: "spent:2026-10", text: "This month's …", at: NOW - 30 * 24 * HOUR });
+  const raised = (await v.limits.check()).raised;
+  assert.deepEqual(raised.map((n) => n.rule), ["spent"]);
+  assert.deepEqual((await v.limits.notices()).map((n) => n.id), [raised[0]!.id]);
+});
+
+test("monthlyBudget set alone is the budget on the server's line; with budget30Days set too, budget30Days wins", async () => {
+  const alone = world({ monthlyBudget: "300" });
+  assert.equal((await alone.limits.report(true)).total?.budget, 300);
+  const both = world({ budget: "700", monthlyBudget: "300" });
+  assert.equal((await both.limits.report(true)).total?.budget, 700);
 });
 
 test("the report says what could not be read, and still gives the rest", async () => {
@@ -262,11 +308,11 @@ test("the report says what could not be read, and still gives the rest", async (
   w.bb.response = response(10, 10);
   const report = await w.limits.report(true);
   assert.equal(report.windows.length, 2);
-  assert.equal(report.month?.budget, null);
+  assert.equal(report.total?.budget, null);
   assert.match(report.errors.join(" "), /not a number of dollars/);
 });
 
-test("bb cow usage prints the line, each window and the month, or JSON; a provider not signed in is not in it", async () => {
+test("bb cow usage prints the line, each window and the last 30 days, or JSON; a provider not signed in is not in it", async () => {
   const w = world({ budget: "500" });
   w.bb.response = response(47, 81);
   await w.limits.check();
@@ -277,14 +323,21 @@ test("bb cow usage prints the line, each window and the month, or JSON; a provid
   const cli = cowCli(actions);
   const run = async (args: string[]) => ({ stdout: (await cli.run(["usage", ...args], { projectId: "proj_1", threadId: undefined, signal: new AbortController().signal })).stdout ?? "" });
   const text = (await run([])).stdout;
-  assert.match(text, /^Claude Code Weekly limit 47%, resets in 19h \(Sun 22 Nov 13:00\) · Claude Code Fable 81%, resets in 19h \(Sun 22 Nov 13:00\) · Nov so far \$43\.03 at list price of \$500(\.00)? budget · pace \$[0-9.]+ by month end\n/);
-  assert.match(text, /Pace: the dollars so far divided by the fraction of the month gone, from the 3rd day of the month\./);
+  assert.match(text, /^Claude Code Weekly limit 47%, resets in 19h \(Sun 22 Nov 13:00\) · Claude Code Fable 81%, resets in 19h \(Sun 22 Nov 13:00\) · last 30 days \$43\.03 at list price of \$500\.00 budget\n/);
+  assert.match(text, /2026-10-23 to 2026-11-21: today and the 29 days before it/);
+  assert.ok(!/pace|Pace|November|Nov so far|month/.test(text), text);
   assert.match(text, /Usage notices waiting for the person \(acknowledged on the page\): 1\n  Claude Code Fable is at 81%/);
   assert.ok(!/codex|Codex|example\.invalid/.test(text));
   const json = JSON.parse((await run(["--json"])).stdout);
   assert.equal(json.ok, true);
   assert.deepEqual(json.windows.map((x: UsageWindow) => [x.label, x.usedPercent, x.resetsAt]), [["Weekly limit", 47, new Date(RESETS).toISOString()], ["Fable", 81, new Date(RESETS).toISOString()]]);
-  assert.equal(json.month.budget, 500);
+  assert.equal(json.total.budget, 500);
+  assert.equal(json.total.first, "2026-10-23");
+  const bare = world();
+  const plain = (await cowCli({ ...actions, usage: () => bare.limits.report(true) }).run(["usage"], { projectId: "proj_1", threadId: undefined, signal: new AbortController().signal })).stdout ?? "";
+  assert.match(plain, / · last 30 days \$43\.03 at list price\n/);
+  assert.match(plain, /No budget is set \(the budget30Days setting\)/);
+  assert.ok(!/pace|Pace|Nov so far|month/.test(plain), plain);
   assert.equal(json.notices.length, 1);
 });
 

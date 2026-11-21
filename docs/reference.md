@@ -1544,7 +1544,7 @@ workers, how many of each outcome and how many unsaid, the median time to
 first report, the median steers before it, and how many you judged. A group
 of fewer than 5 workers shows its counts and says it is too small to
 compare, with no percentages. `L` on the page opens the same summary for
-the last 14 days over the page, with this month under Main (see "Tokens
+the last 14 days over the page, with the last 30 days under Main (see "Tokens
 and dollars") and the latest 20 rows (the page adds each
 thread's title as bb has it now; the row holds none). `b` steps through
 every grouping, by model, by dispatching thread and by label; `j` `k` scroll
@@ -1629,23 +1629,26 @@ many. `--json` gives the numbers: each group's `tokens`, `dollars`,
 `dollarsPerDone`, `unknownUsage` and `unpriced`, and each row's
 `listPriceUsd`, with `listPrice: true` and `estimate: true`.
 
-**This month, everything.** `bb cow spend [--month YYYY-MM] [--main
+**The last 30 days, everything.** `bb cow spend [--month YYYY-MM] [--main
 <thread>] [--json]`, and the part of the `L` sheet below its note, give the
-month's tokens and list-price dollars for every thread under the chosen Main,
-archived or not (one archived before the month began is left out), split
-into workers, project threads (as the page tells them), Main itself, and
-cow's checker runs (the hidden threads cow starts to audit a brief, marked
-`checker: true`: every one cow ran in the month, whichever Main's brief it
-checked), with the total, and how many threads had no usage recorded. Days
-are local time. Usage cow read before it first watched a thread's turns end
-(a thread older than 0.2.19, or a turn that ended while cow was not
-running) is put on the day of the latest event bb kept.
+last 30 days' tokens and list-price dollars (today and the 29 local days
+before it; with `--month`, that calendar month instead) for every thread
+under the chosen Main, archived or not (one archived before the first day is
+left out), split into workers, project threads (as the page tells them),
+Main itself, and cow's checker runs (the hidden threads cow starts to audit
+a brief, marked `checker: true`: every one cow ran in those days, whichever
+Main's brief it checked), with the total, and how many threads had no usage
+recorded. Days are local time. `--json` carries `period`: its `kind`
+(`last30Days` or `month`), its `month` (or null), and its `first` and `last`
+day. Usage cow read before it first watched a thread's turns end (a thread
+older than 0.2.19, or a turn that ended while cow was not running) is put on
+the day of the latest event bb kept.
 
 **Kept cheap.** cow keeps, per thread, what it has read of its usage, in
 its own storage (one small value per thread, the last 400 days of it, kept
 under bb's 256 KB a value): the counts so far, by day and model, and the
 last event read. A turn's end reads only the events after that one. The
-month's read lists bb's threads once and asks bb about a thread's events
+spend's read lists bb's threads once and asks bb about a thread's events
 only when bb has changed the thread since cow last read it: opening the
 sheet again asks about nothing that has not changed.
 
@@ -1660,26 +1663,26 @@ the same from `bb cow usage [--json]`:
   provider that is not installed, not signed in, expired, in error, or
   reports no windows is left out, not shown as an error. The account bb
   signs in with is never read.
-- this month's list-price dollars of **every thread on this bb**, under any
-  Main or none, hidden ones and cow's checker runs included, read as
-  `bb cow spend` reads one Main's. With a monthly budget set: the budget,
-  and the month-end figure at the current pace. With none, the month alone.
+- the last 30 days' list-price dollars of **every thread on this bb**,
+  under any Main or none, hidden ones and cow's checker runs included, read
+  as `bb cow spend` reads one Main's. The last 30 days are today and the 29
+  local days before it, summed from the usage cow keeps by day: a running
+  total, with no month to reset on. With a budget set, the budget beside
+  them.
 
 For example: `Claude Code Weekly limit 47%, resets in 19h (Sun 22 Nov 13:00) ·
-Claude Code Fable 54%, resets in 19h (Sun 22 Nov 13:00) · Nov so far $43.03
-at list price`. A window at or past its percent is drawn in the colour of
-what needs you.
-
-**The pace** is the dollars so far divided by the fraction of the month
-gone (local time, to the millisecond), from the 3rd day of the month on;
-before that it is not worked out, and the line says "pace from the 3rd".
+Claude Code Fable 54%, resets in 19h (Sun 22 Nov 13:00) · last 30 days
+$653.07 at list price`, or with a budget `… · last 30 days $653.07 at list
+price of $1000.00 budget`. A window at or past its percent is drawn in the
+colour of what needs you.
 
 **Settings** (bb's settings for the plugin, or `bb plugin config cow set
 <name> <value>`):
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `monthlyBudget` | empty: none | US dollars at list price for the month, every thread on this bb, such as `500`. **Not a hard stop.** |
+| `budget30Days` | empty: none | US dollars at list price for the last 30 days, every thread on this bb, such as `500`. **Not a hard stop.** |
+| `monthlyBudget` | empty: none | renamed `budget30Days`: while `budget30Days` is empty, a value here is read as it. With both set, `budget30Days` counts. |
 | `usageWindowPercent` | 80 | tell you when a usage window reaches this percent |
 | `usageNotify` | on | also send a notification, through bb's push-notifications plugin, with the notice's text |
 
@@ -1693,14 +1696,17 @@ your queue:
   has passed. A window bb gives no reset time for can come again once it was
   seen below its percent. A window whose reset time has passed (bb has not
   read it again) raises nothing.
-- with a budget set, when the month's dollars reach 80% of it (dollars so
-  far and the budget), and when the pace goes over it (the pace, the
-  budget, the dollars so far and how much of the month is gone). Each once
-  a month.
+- with a budget set, when the last 30 days' dollars reach 80% of it, and
+  when they reach it (the dollars and the budget). Each once: it comes
+  again only after the total has fallen below its mark and risen to it
+  once more. A record of what was told under the monthly rules of 0.2.20
+  and 0.2.21 is read as it stands: this calendar month's 80% notice counts
+  as told, the pace's is dropped, and a notice of theirs not yet
+  acknowledged stays until you acknowledge it.
 
 A click on the notice, or its hint (`f`), acknowledges it, as a signed call
 (`limit_ack`) logged under your key, like cow's other notices; it does not
-come back until the next period. A notice not acknowledged when the next
+come back until it is due again. A notice not acknowledged when the next
 period's comes gives way to it. With `usageNotify` on, the same text goes
 to bb's notification channels when it is raised; without the
 push-notifications plugin, or with no channel on, only the queue has it.
@@ -2225,8 +2231,8 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main. With `--outcome`, also as `outcome` below | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
 | `outcome` | says what a worker came to, open or archived, under `archive`'s rule of who may | nothing leaves the queue. Run in a thread, the ledger records that thread as the judge, and an outcome you set is refused. A caller that names no thread is taken for you, as everywhere here: its outcome is recorded as yours, and only the signed `outcome_set` is certainly yours |
 | `ledger` | reads the ledger | nothing |
-| `spend` | reads the month's tokens and list-price dollars | nothing |
-| `usage` | reads the usage line: windows, the month, the budget and pace, the usage notices waiting | nothing. Only the signed `limit_ack` acknowledges a usage notice |
+| `spend` | reads the last 30 days' (or a month's) tokens and list-price dollars | nothing |
+| `usage` | reads the usage line: windows, the last 30 days, the budget, the usage notices waiting | nothing. Only the signed `limit_ack` acknowledges a usage notice |
 | `status`'s caps and stuck-check marks | read: a worker's marks, beside its line and in `--json` | nothing. Only the signed `watch_ack` acknowledges a worker notice, and nothing stops a worker |
 
 What follows from this: **the queue is everything cow knows waits on you,
@@ -2380,7 +2386,7 @@ to bb's database or to the log.
 | `archive` | archives a done or failed thread in bb and records the reason; refused while threads under it are still open. `--outcome` says what a worker came to (see "The ledger") |
 | `outcome` | sets or changes what a worker came to, open or archived; never over an outcome you set |
 | `ledger` | the ledger's rows and its summary by model, by dispatching thread and by label, for `--days` (14 by default), with tokens, list-price dollars and dollars per done (see "Tokens and dollars") |
-| `spend` | the month's (`--month`, this one by default) tokens and list-price dollars under Main: workers, project threads, Main, cow's checker runs, the total, and how many had no usage recorded |
+| `spend` | the last 30 days' (or with `--month YYYY-MM`, that month's) tokens and list-price dollars under Main: workers, project threads, Main, cow's checker runs, the total, and how many had no usage recorded |
 | `park` | sets a thread aside; the reason is required, and `--pickup` is read exactly as the page reads a pick-up |
 | `resume` | takes a parked thread off the shelf |
 | `next` | sets, or with `--clear` removes, the one line that says what happens next for a thread |

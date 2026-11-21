@@ -284,8 +284,9 @@ holds no titles, prompts or message text.
 
 ### `bb cow spend [--month YYYY-MM] [--json]`
 
-This month's tokens and list-price dollars under Main, archived threads
-included: workers, project threads, Main, cow's checker runs, the total,
+The last 30 days' tokens and list-price dollars under Main (today and the
+29 days before it; `--month` gives a calendar month instead), archived
+threads included: workers, project threads, Main, cow's checker runs, the total,
 and how many threads had no usage recorded. Use it when the user asks what
 work is costing. Dollars are an estimate at the providers' list prices, not
 a bill (on a subscription the user is not billed this); say so when you
@@ -296,9 +297,9 @@ it shows less than it used: say that too when you quote a long-lived thread.
 ### `bb cow usage [--json]`
 
 What the usage line on cow's page shows: each usage window of every
-signed-in provider (percent, and when it resets), this month's list-price
-dollars of every thread on this bb, and with a monthly budget set, the
-budget and the month-end figure at the current pace; then the usage notices
+signed-in provider (percent, and when it resets), the last 30 days'
+list-price dollars of every thread on this bb, and with a budget set, the
+budget for 30 days; then the usage notices
 waiting for the user. Use it when the user asks how close they are to a
 limit or a budget. cow tells the user itself, in their queue and by
 notification, when a window or the budget passes its mark: you do not need

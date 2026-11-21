@@ -2096,7 +2096,15 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
     spent.ok === true && spent.parts.main.threads === 1 && spent.parts.projects.threads >= 1 && spent.parts.workers.threads >= 2 && spent.total.threads >= spent.parts.main.threads + spent.parts.projects.threads + spent.parts.workers.threads && typeof spent.total.noUsage === "number",
     JSON.stringify({ main: spent.parts?.main?.threads, projects: spent.parts?.projects?.threads, workers: spent.parts?.workers?.threads, total: spent.total?.threads, noUsage: spent.total?.noUsage }),
   );
-  check("--json gives the month's tokens and list-price dollars", spent.listPrice === true && spent.estimate === true && /^\d{4}-\d{2}$/.test(spent.month) && typeof spent.total.tokens.output === "number" && spent.total.tokens.output > 0 && typeof spent.total.dollars === "number");
+  check(
+    "bb cow spend with no option covers the last 30 days and says so; --json carries the period",
+    /^Spend in the last 30 days \(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\) under Main/.test(spendText) && spent.period?.kind === "last30Days" && spent.period.month === null && spent.period.last === localDay(Date.now()) && spent.period.first === localDay(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 29).getTime()),
+    JSON.stringify(spent.period),
+  );
+  const october = await cow("spend", "--main", lmain, "--month", "2026-10");
+  const octoberJson = JSON.parse((await cow("spend", "--main", lmain, "--month", "2026-10", "--json")).stdout);
+  check("bb cow spend --month 2026-10 still gives October", october.stdout.startsWith("Spend in 2026-10 under Main") && octoberJson.period?.kind === "month" && octoberJson.period.first === "2026-10-01" && octoberJson.period.last === "2026-10-31", october.stdout.split("\n")[0]);
+  check("--json gives the last 30 days' tokens and list-price dollars", spent.listPrice === true && spent.estimate === true && typeof spent.total.tokens.output === "number" && spent.total.tokens.output > 0 && typeof spent.total.dollars === "number");
   check("--json gives the rows and the summary; the small group has counts and no percentages", json.ok === true && json.rows.some((row) => row.threadId === lone) && dispatcher?.workers === 2 && dispatcher?.small === true && dispatcher?.shares === null && dispatcher?.outcomes.redone === 1 && dispatcher?.outcomes.dropped === 1, JSON.stringify(dispatcher));
   await page.key("L");
   await page.waitFor(`${mode} === "ledger" && !!document.querySelector('[data-cow-ledger-row="${lone}"]')`, { label: "the ledger sheet", timeout: 20_000 });
@@ -2105,9 +2113,9 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   const groupCost = await page.eval(`document.querySelector('[data-cow-ledger-group="${lmain}"] [data-cow-ledger-cost]')?.textContent ?? ""`);
   check("the sheet gives each group its tokens and list-price dollars", / tokens · \$[0-9.]+ at list price/.test(groupCost), groupCost);
   check("the sheet gives each row its tokens", (await page.eval(`document.querySelector('[data-cow-ledger-row="${lone}"] [data-cow-ledger-usage]')?.dataset.cowLedgerUsage`)) === "known");
-  await page.waitFor(`!!document.querySelector('[data-cow-spend-part="total"]')`, { label: "this month in the sheet", timeout: 30_000 });
+  await page.waitFor(`!!document.querySelector('[data-cow-spend-part="total"]')`, { label: "the last 30 days in the sheet", timeout: 30_000 });
   const parts = await page.eval(`[...document.querySelectorAll("[data-cow-spend-part]")].map((el) => el.dataset.cowSpendPart + ":" + el.dataset.cowSpendThreads).join(" ")`);
-  check("the sheet shows this month under Main: workers, project threads, Main, checker runs and the total, and how many had no usage recorded", /workers:\d+ projects:\d+ main:1 checkers:\d+ total:\d+/.test(parts) && (await page.eval(`document.querySelector("[data-cow-spend-unknown]") !== null`)), parts);
+  check("the sheet shows the last 30 days under Main: workers, project threads, Main, checker runs and the total, and how many had no usage recorded", /workers:\d+ projects:\d+ main:1 checkers:\d+ total:\d+/.test(parts) && (await page.eval(`document.querySelector("[data-cow-spend-unknown]") !== null`)), parts);
   await shot("ledger-sheet");
   for (const key of ["b", "b", "b"]) await page.key(key);
   await page.waitFor(`document.querySelector("[data-cow-ledger]")?.dataset.cowLedgerBy === "label"`, { label: "the sheet by label" });
@@ -2193,10 +2201,16 @@ async function watchChecks(page, ids, shot) {
   check("its row counts its three commands and its minutes", repRow?.toolCalls >= 3 && repRow?.workingMinutes > 0, JSON.stringify(repRow && { toolCalls: repRow.toolCalls, workingMinutes: repRow.workingMinutes }));
 }
 
+/** A local day, YYYY-MM-DD, as cow names it. */
+const localDay = (at) => {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
 /**
  * The usage line and the usage notices, on the copy's own settings (put back
  * after): every window bb reports for this machine's signed-in providers, the
- * month, and a notice raised once by lowering the copy's window percent and
+ * last 30 days, and a notice raised once by lowering the copy's window percent and
  * budget. Notifications are turned off on the copy first, so the check sends
  * the person none.
  */
@@ -2207,6 +2221,7 @@ async function usageChecks(page, shot) {
   try {
     await set("usageNotify", false);
     await set("monthlyBudget", "");
+    await set("budget30Days", "");
     await set("usageWindowPercent", 100);
     const text = (await cow("usage")).stdout;
     // The account bb signs in with is never in it: cow does not read it.
@@ -2223,20 +2238,20 @@ async function usageChecks(page, shot) {
     );
     const firstLine = text.split("\n")[0] ?? "";
     check(
-      "bb cow usage's line gives each window as its label, percent and reset, then the month's list-price dollars, and nothing of a budget with none set",
-      json.windows.every((w) => firstLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && / so far \$[0-9.,]+ at list price$/.test(firstLine) && !/budget|pace/.test(firstLine) && !/@/.test(text),
+      "bb cow usage's line gives each window as its label, percent and reset, then the last 30 days' list-price dollars, and nothing of a budget, a pace or a month with none set",
+      json.windows.every((w) => firstLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && /last 30 days \$[0-9.,]+ at list price$/.test(firstLine) && !/budget|pace|so far/i.test(firstLine) && !/pace/i.test(text) && !/@/.test(text),
       firstLine,
     );
     await page.waitFor(`document.querySelector("[data-cow-usage]")?.dataset.cowUsage === "read"`, { label: "the usage line", timeout: 180_000 });
     const pageLine = await page.eval(`document.querySelector("[data-cow-usage]").textContent`);
-    // Read a moment apart: the minutes to a reset and the cents of the month can move between the two.
+    // Read a moment apart: the minutes to a reset and the cents of the total can move between the two.
     const unreset = (line) => line.replace(/resets in [^)]*\)/g, "resets").replace(/\$[0-9.,]+/g, "$");
     check("the page's line reads as bb cow usage's first line", unreset(pageLine) === unreset(firstLine), `${pageLine} | ${firstLine}`);
     console.log(`note: the page's usage line: ${pageLine}`);
     const pageWindows = await page.eval(`document.querySelectorAll("[data-cow-usage-window]").length`);
     check(
-      "the page's usage line shows the same windows, and the month with no budget",
-      pageWindows === json.windows.length && json.windows.every((w) => pageLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && (await page.eval(`document.querySelector("[data-cow-usage-month]")?.dataset.cowUsageBudget`)) === "" && !/budget/.test(pageLine),
+      "the page's usage line shows the same windows, and the last 30 days with no budget",
+      pageWindows === json.windows.length && json.windows.every((w) => pageLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && (await page.eval(`document.querySelector("[data-cow-usage-total]")?.dataset.cowUsageBudget`)) === "" && !/budget|pace|so far/.test(pageLine),
       pageLine,
     );
     const ack = async (id) => page.eval(`document.querySelector('[data-cow-limit-notice="${id}"]').click(); true`);
@@ -2262,25 +2277,33 @@ async function usageChecks(page, shot) {
       const after = JSON.parse((await cow("usage", "--json")).stdout);
       check("acknowledged on the page (signed), the notices are gone and the same period raises none again", (await notices()) === "" && after.notices.length === 0, await notices());
     } else check("no signed-in provider reports a window here: the window notice is not checked", true);
-    // A budget the month is already over: the dollars and the pace rules, once each.
+    // A budget the last 30 days are already over: both marks, 80% and the budget, once each.
     await set("usageWindowPercent", 100);
-    await set("monthlyBudget", "0.01");
-    await page.waitFor(`document.querySelectorAll('[data-cow-limit-rule="spent"]').length === 1`, { label: "the budget notice", timeout: 180_000 });
-    const day = new Date().getDate();
+    await set("budget30Days", "0.01");
+    await page.waitFor(`document.querySelectorAll('[data-cow-limit-rule="budget"]').length === 1`, { label: "the budget notices", timeout: 180_000 });
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const budgetNotices = (await notices()).split(" ").filter((entry) => !entry.startsWith("window:")).filter(Boolean);
-    const withBudget = await page.eval(`document.querySelector("[data-cow-usage-month]").textContent`);
+    const withBudget = await page.eval(`document.querySelector("[data-cow-usage-total]").textContent`);
+    const budgetText = (await cow("usage")).stdout;
+    console.log(`note: bb ${PLUGIN} usage with a budget:\n${budgetText}`);
     check(
-      "with a budget set the line shows it and the pace, and the budget rules raise one notice each",
-      /of \$0\.010? budget · pace/.test(withBudget) && budgetNotices.length === (day >= 3 ? 2 : 1),
+      "with budget30Days set the line shows it beside the last 30 days, no pace, and the 80% and budget marks raise one notice each",
+      /last 30 days \$[0-9.,]+ at list price of \$0\.010? budget$/.test(withBudget) && !/pace|so far/.test(withBudget) && budgetNotices.map((entry) => entry.split(":")[0]).sort().join(" ") === "budget spent" && !/pace|so far/i.test(budgetText.split("\n")[0]),
       `${withBudget} · ${budgetNotices.join(" ")}`,
     );
     for (const entry of budgetNotices) await ack(entry.split(":")[1]);
+    // The renamed setting alone is read as the budget; budget30Days wins when both are set.
+    await set("budget30Days", "");
     await set("monthlyBudget", "0.02");
     await new Promise((resolve) => setTimeout(resolve, 8000));
-    check("the budget rules do not raise again in the month once acknowledged", (await notices()) === "", await notices());
+    const alone = JSON.parse((await cow("usage", "--json")).stdout);
+    await set("budget30Days", "0.03");
+    await new Promise((resolve) => setTimeout(resolve, 8000));
+    const both = JSON.parse((await cow("usage", "--json")).stdout);
+    check("monthlyBudget alone is read as the budget for 30 days; with both set, budget30Days counts", alone.total?.budget === 0.02 && both.total?.budget === 0.03, `${alone.total?.budget} ${both.total?.budget}`);
+    check("the budget marks do not raise again while the total stays above them", (await notices()) === "", await notices());
   } finally {
-    for (const key of ["usageNotify", "monthlyBudget", "usageWindowPercent"]) await set(key, before[key]);
+    for (const key of ["usageNotify", "monthlyBudget", "budget30Days", "usageWindowPercent"]) await set(key, before[key]);
   }
 }
 
