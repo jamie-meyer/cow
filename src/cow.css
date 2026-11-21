@@ -75,10 +75,10 @@
   scrollbar-width: thin;
 }
 /* The notices above the list (asides, the key's banner) share one cap
-   between them, low enough that with the head and the verb bar the list
+   between them, low enough that with the head, the usage line and the verb bar the list
    keeps 70% of the page: a notice added later scrolls, the list stays. */
 .cow-app > .cow-notices {
-  max-height: min(16%, 120px);
+  max-height: min(13%, 98px);
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -2115,9 +2115,11 @@
 
 /* the usage line: one quiet line, always above the status line */
 .cow-usage {
-  display: flex;
-  flex-wrap: wrap;
-  white-space: pre-wrap;
+  display: block;
+  flex: none;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 3px 0 2px;
   font: 11px/16px var(--cow-sans);
   color: var(--cow-muted);

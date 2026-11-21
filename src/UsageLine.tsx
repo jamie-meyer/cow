@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server.ts";
 import type { LimitNotice, UsageReport } from "./limits-backend.ts";
-import { LIMITS_CHANGED, PACE_RULE, monthText, windowKey, windowText } from "./limits.ts";
+import { LIMITS_CHANGED, PACE_RULE, monthText, usageLineText, windowKey, windowText } from "./limits.ts";
 import type { Signer } from "./signing/page.ts";
 import { formatAge } from "./text.ts";
 
@@ -64,7 +64,7 @@ export function UsageLine({ data, now }: { data: LimitsData; now: number }) {
   const { report, error } = data;
   const why = report?.month?.budget != null ? `pace: ${PACE_RULE}` : "list-price dollars of every thread on this bb; no monthly budget is set";
   return (
-    <div className="cow-usage" data-cow-usage={report === null ? "loading" : "read"} title={report?.errors.join("\n") || undefined}>
+    <div className="cow-usage" data-cow-usage={report === null ? "loading" : "read"} title={report ? [usageLineText(report.windows, report.month, now), ...report.errors].join("\n") : undefined}>
       {report === null ? (
         <span>{error ? `usage: ${error}` : "usage …"}</span>
       ) : (
