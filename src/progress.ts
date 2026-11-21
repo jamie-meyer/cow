@@ -28,8 +28,12 @@ export const PROGRESS_EVENT_TYPES = [
   "thread/contextWindowUsage/updated",
 ] as const;
 
-/** Items that are no tool call: what the agent says, thinks or plans, and what it is told. */
-const NOT_CALLS = new Set(["userMessage", "agentMessage", "reasoning", "plan", "planSteps", "contextCompaction"]);
+/**
+ * Items that are no tool call: what the agent says, thinks or plans, and what
+ * it is told; and a background task, which is a command already counted,
+ * moved to the background.
+ */
+const NOT_CALLS = new Set(["userMessage", "agentMessage", "reasoning", "plan", "planSteps", "contextCompaction", "backgroundTask"]);
 /** A call's label is clipped to this many characters. */
 export const CALL_LABEL_CHARS = 60;
 /** The last calls kept. */

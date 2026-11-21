@@ -4,6 +4,42 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.21
+
+- **Caps and stuck checks, shown and never enforced.** cow keeps a small
+  record of each running worker's progress, from bb's events: its tool calls
+  (items that are not reasoning or messages), when its turns started and how
+  long they ran, its last event, what is in progress and since when, when a
+  file last changed, and its last five calls as a kind, a hash and a label of
+  at most 60 characters (a command's first line, or a tool's name). No
+  message text, output, file contents or tool arguments are kept.
+- **Caps, from one setting.** `caps` is JSON keyed by label, with `*` for
+  workers of any other label or none, each with any of `toolCalls`,
+  `minutes` (since the worker's first turn started) and `dollars` (list
+  price, known only once a turn has ended). Empty, the default, is no caps.
+  A value not in that form is reported on the page, and then no cap applies.
+- **Stuck checks, on by default**, for workers only and only while a turn
+  runs: the same call 3 or more times in a row (`stuckRepeats`), a turn with
+  no event and nothing in progress for 15 minutes (`stuckQuietMinutes`), one
+  item in progress for 45 minutes (`stuckLongItemMinutes`); 0 turns each off.
+- **A mark and one notice.** A worker over a cap or caught by a check has a
+  mark on its line while it is true ("over cap: 41 of 40 tool calls", "the
+  same command 4 times", "quiet 22m"), beside its line in `bb cow status`
+  and as `watch` in `--json`; and one notice per worker per reason in your
+  queue, with the facts cow collected. A click acknowledges it as a signed
+  call, and that reason does not come back for that worker. cow's server
+  checks when a worker's events change and once a minute on one timer, which
+  the usage notices now share. Main and project threads are never marked.
+  Nothing is stopped, paused, interrupted or sent.
+- **Two more numbers in the ledger row:** the worker's tool calls and its
+  working minutes (its turns' lengths, summed). Rows written before read as
+  null. Nothing summarises them yet.
+- **A worker with threads of its own is still a worker.** A thread under a
+  parent, not marked as a project, whose own threads are all archived, can be
+  given an outcome and gets its ledger row. One with a thread under it still
+  open, a marked project and Main are refused as before; the page draws
+  groups as it did.
+
 ## 0.2.20
 
 - **A usage line.** One quiet line above the status line, and `bb cow usage

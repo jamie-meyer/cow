@@ -199,6 +199,18 @@ tells:** nothing is paused or stopped, and no agent is shown the budget.
 `bb cow usage` prints the same. Details are under
 [Usage and a budget](docs/reference.md#usage-and-a-budget).
 
+**Caps and stuck checks, shown only.** cow keeps a small record of each
+running worker's progress: its tool calls, its turns' times, its last event,
+what is in progress, and its last few calls as a kind, a hash and a clipped
+label (no message text, output or file contents). The setting `caps` (JSON
+keyed by label, `*` for any other, each with any of `toolCalls`, `minutes`
+and `dollars`; empty means none) and three stuck checks, on by default (the
+same call 3 times in a row, a running turn quiet for 15 minutes, one item in
+progress for 45; 0 turns each off), put a mark on the worker's line, such as
+`over cap: 41 of 40 tool calls` or `quiet 22m`, and one notice per worker per
+reason in your queue. **cow never stops, pauses or messages the worker.**
+Details are under [Caps and stuck checks](docs/reference.md#caps-and-stuck-checks).
+
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
 goes to the Kept section, folded by default, never coloured, with no
@@ -803,7 +815,7 @@ uses one that is not listed.
 | `experimental_listAncestors` (backend) | which threads are above a thread: who may act for whom, and which capabilities apply |
 | `experimental_listPluginMetadata` (backend) | finding cow's notes on threads that bb has since deleted, and which hidden threads are cow's checker runs, for the month's spend |
 | `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
-| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, and usageWindowPercent from 1 to 100 |
+| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, usageWindowPercent from 1 to 100, and the stuck checks' settings as numbers of 0 or more |
 | `experimental_environments` (backend) | registering the copy-on-write workspace as an environment provider |
 | `experimental_client` (backend) | the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed |
 | `experimental_defineHostEntry` (backend) | the copy-on-write workspace: the host entry that clones and removes a workspace |

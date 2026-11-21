@@ -79,6 +79,8 @@ test("three different commands in a row are no repeat, and each threshold at 0 r
   const tool = (id: string, args: unknown) => item("item/started", at, { type: "toolCall", id, tool: "Read", arguments: args, status: "pending" });
   assert.equal(foldProgress(NO_PROGRESS, [tool("x", { path: "a" }), tool("y", { path: "b" }), tool("z", { path: "a" })]).repeat, 1);
   assert.equal(foldProgress(NO_PROGRESS, [tool("x", { path: "a", n: 1 }), tool("y", { n: 1, path: "a" }), tool("z", { path: "a", n: 1 })]).repeat, 3);
+  // A command moved to the background is the same call, not another.
+  assert.equal(foldProgress(same, [item("item/started", at + 6, { type: "backgroundTask", id: "bg", status: "pending" })]).toolCalls, same.toolCalls);
   // Not while the turn is at rest.
   assert.deepEqual(findings({ ...running(same), running: false }, {}, DEFAULT_STUCK, at + 5), []);
 });

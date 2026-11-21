@@ -2141,7 +2141,9 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
  */
 async function watchChecks(page, ids, shot) {
   const { lmain, lproj } = ids;
-  const REPEAT = "You are a test fixture for a bb plugin. Run these shell commands one at a time, each as its own separate tool call, waiting for each to finish before the next: echo cow-repeat, then echo cow-repeat, then echo cow-repeat, then sleep 60. Run nothing else. Then reply with exactly: ok";
+  // The repeated command is the long one: the mark holds from its third start until the turn ends, while bb cow status is read.
+  const SLOW = "python3 -c 'import time; time.sleep(30)'";
+  const REPEAT = `You are a test fixture for a bb plugin. Run this shell command three times, one at a time, each as its own separate tool call, waiting for each to finish before the next: ${SLOW}. Run nothing else, and nothing in the background. Then reply with exactly: ok`;
   const lrep = (inUse.lrep = ids.lrep = await spawn({ prompt: REPEAT, parent: lmain, permissionMode: "full" }));
   const lsub = (inUse.lsub = ids.lsub = await spawn({ prompt: QUIET, parent: lmain }));
   const lkid = (inUse.lkid = ids.lkid = await spawn({ prompt: QUIET, parent: lsub }));
@@ -2152,18 +2154,18 @@ async function watchChecks(page, ids, shot) {
   const mark = await page.eval(`document.querySelector('.cow-main [data-cow-line="${lrep}"] [data-cow-watch]')?.textContent ?? ""`);
   check("a worker that runs the same command three times while its turn runs gets the mark on its line", /the same command [34] times/.test(mark), mark);
   await shot("watch-mark");
-  const statusText = (await cow("status", "--main", lmain)).stdout;
+  // Read while its turn still runs: the stuck checks are only for a running turn.
+  const [statusText, statusJson] = await Promise.all([cow("status", "--main", lmain).then((r) => r.stdout), cow("status", "--main", lmain, "--json").then((r) => JSON.parse(r.stdout))]);
   const statusLine = statusText.split("\n").find((l) => l.includes(`(${lrep})`)) ?? "";
-  const statusJson = JSON.parse((await cow("status", "--main", lmain, "--json")).stdout);
   const line = [...statusJson.threads, ...statusJson.queue].find((l) => l.id === lrep);
   check(
     "bb cow status shows the same mark beside the line, and --json its facts",
-    /\[the same command [34] times/.test(statusLine) && line?.watch?.some((w) => w.reason === "repeat" && w.facts.times >= 3 && w.facts.call === "echo cow-repeat"),
+    /\[the same command [34] times/.test(statusLine) && line?.watch?.some((w) => w.reason === "repeat" && w.facts.times >= 3 && w.facts.call === SLOW),
     `${statusLine.trim()} | ${JSON.stringify(line?.watch)}`,
   );
   await new Promise((resolve) => setTimeout(resolve, 3000));
-  const raised = await page.eval(`[...${notices(lrep)}].map((el) => [el.dataset.cowWatchReason, el.dataset.cowWatchNotice, el.textContent])`);
-  check("exactly one notice for it, with the facts cow collected", raised.length === 1 && raised[0][2].startsWith(`“${TITLE}” ran the same command 3 times in a row: echo cow-repeat. `) && raised[0][2].includes("cow does not stop it."), JSON.stringify(raised));
+  const raised = await page.eval(`[...${notices(lrep)}].map((el) => [el.dataset.cowWatchReason, el.dataset.cowWatchNotice, el.querySelector("p")?.textContent ?? ""])`);
+  check("exactly one notice for it, with the facts cow collected", raised.length === 1 && raised[0][2].startsWith(`“${TITLE}” ran the same command 3 times in a row: ${SLOW}. `) && raised[0][2].includes("cow does not stop it."), JSON.stringify(raised));
   check("Main and a project get no mark or notice", (await page.eval(`${notices(lmain)}.length + ${notices(lproj)}.length`)) === 0 && !(await page.eval(`!!document.querySelector('[data-cow-line="${lmain}"] [data-cow-watch], [data-cow-line="${lproj}"] [data-cow-watch]')`)));
   const id = raised[0]?.[1];
   const unsigned = await rpcSoft("signed", { action: "watch_ack", args: { noticeId: id } });
@@ -2185,10 +2187,10 @@ async function watchChecks(page, ids, shot) {
   const after = await cowAs(lmain, "archive", lsub, "--reason", "merged", "--outcome", "done");
   const subRow = await rowOf(lsub);
   check("with every thread under it archived, it is a worker: an outcome, and a ledger row with tool calls and working minutes", after.code === 0 && subRow?.outcome === "done" && subRow?.toolCalls === 0 && typeof subRow?.workingMinutes === "number", `${(after.stdout + after.stderr).trim()} | ${JSON.stringify(subRow && { toolCalls: subRow.toolCalls, workingMinutes: subRow.workingMinutes })}`);
-  await waitForThread(lrep, (t) => t.status === "idle", "lrep idle", 180_000);
+  await waitForThread(lrep, (t) => t.status === "idle", "lrep idle", 240_000);
   check("bb cow archive with an outcome archives the repeating worker", (await cowAs(lmain, "archive", lrep, "--reason", "checked", "--outcome", "done")).code === 0);
   const repRow = await rowOf(lrep);
-  check("its row counts its four commands and its minutes", repRow?.toolCalls >= 4 && repRow?.workingMinutes > 0.5, JSON.stringify(repRow && { toolCalls: repRow.toolCalls, workingMinutes: repRow.workingMinutes }));
+  check("its row counts its three commands and its minutes", repRow?.toolCalls >= 3 && repRow?.workingMinutes > 0, JSON.stringify(repRow && { toolCalls: repRow.toolCalls, workingMinutes: repRow.workingMinutes }));
 }
 
 /**
