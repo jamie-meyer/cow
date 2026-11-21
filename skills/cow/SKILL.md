@@ -165,6 +165,7 @@ bb cow outcome <thread> done|partial|redone|dropped [--label <label>]
 bb cow label <thread> [<label>] [--clear]
 bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]
 bb cow spend [--month YYYY-MM] [--main <thread>] [--json]
+bb cow usage [--json]
 bb cow park <thread> --reason <text> [--pickup <date|+3d|+2w|text>] [--stop]
 bb cow resume <thread>
 bb cow next <thread> "<text>" | --clear
@@ -288,7 +289,21 @@ included: workers, project threads, Main, cow's checker runs, the total,
 and how many threads had no usage recorded. Use it when the user asks what
 work is costing. Dollars are an estimate at the providers' list prices, not
 a bill (on a subscription the user is not billed this); say so when you
-quote them, and never quote a model with no list price as $0.
+quote them, and never quote a model with no list price as $0. bb keeps only
+a thread's latest usage events, so a thread older than cow's first read of
+it shows less than it used: say that too when you quote a long-lived thread.
+
+### `bb cow usage [--json]`
+
+What the usage line on cow's page shows: each usage window of every
+signed-in provider (percent, and when it resets), this month's list-price
+dollars of every thread on this bb, and with a monthly budget set, the
+budget and the month-end figure at the current pace; then the usage notices
+waiting for the user. Use it when the user asks how close they are to a
+limit or a budget. cow tells the user itself, in their queue and by
+notification, when a window or the budget passes its mark: you do not need
+to watch it, and it is not a reason to stop, shorten or change work you were
+asked to do. Only the user acknowledges a usage notice, on the page.
 
 ### `bb cow park <thread> --reason <text> [--pickup …]`
 

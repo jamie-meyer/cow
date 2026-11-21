@@ -4,15 +4,18 @@
 // is in usage-store.ts.
 //
 // What the event holds, as found on bb 0.50 with Claude Code: `total` is the
-// running sum of every model call of the provider's session so far (calls a
-// turn's sub-agents made included, and on across a compaction, whose own
-// summarizing call is not in it), and `last` is the usage of the latest
-// single model call, not of the whole turn. bb does not keep every such
-// event: older ones go, and after a compaction only the latest was left. So
-// a thread's usage is its latest `total` per provider session, and what was
-// used between two reads is the step from the `total` read before; it is put
-// on the day of the event that showed it. When a `total` falls below the one
-// before it, the session started over, and the new `total` is all new.
+// running sum of every model call of the provider's process so far, across
+// its turns and on across a compaction (whose own summarizing call is not in
+// it), and `last` is the usage of the latest turn. A new provider process
+// (bb writes `thread/identity` when one starts, which on a long-lived thread
+// happens every few turns) starts its `total`
+// at zero again, under the same session id. bb does not keep every usage
+// event: older ones go after a few turns, and a compaction takes all but the
+// latest. So what was used between two reads is the step from the `total`
+// read before, put on the day of the event that showed it; after a
+// `thread/identity`, or when a `total` falls below the one before it, the
+// new `total` is all new. Usage of turns bb dropped before cow read them,
+// and everything from before cow first read a thread, is not known.
 
 /** The four counts cow keeps, as most providers price them. */
 export interface Tokens {
@@ -29,7 +32,9 @@ export const TOKEN_KEYS = ["input", "cacheRead", "cacheWrite", "output"] as cons
 export const USAGE_EVENT_TYPE = "thread/tokenUsage/updated";
 /** The prompt that starts a turn names the model it runs on: usage after it is that model's. */
 export const PROMPT_EVENT_TYPE = "client/turn/requested";
-export const USAGE_EVENT_TYPES = [USAGE_EVENT_TYPE, PROMPT_EVENT_TYPE] as const;
+/** A new provider process: the next `total` of its session starts from zero. */
+export const IDENTITY_EVENT_TYPE = "thread/identity";
+export const USAGE_EVENT_TYPES = [USAGE_EVENT_TYPE, PROMPT_EVENT_TYPE, IDENTITY_EVENT_TYPE] as const;
 
 /** The key of usage whose model bb did not record. */
 export const UNKNOWN_MODEL = "unknown";
@@ -86,6 +91,8 @@ export interface UsageState {
   model: string | null;
   /** The latest `total` of each provider session. */
   sessions: Record<string, Tokens>;
+  /** Sessions whose provider process started again since their latest `total`: the next one is all new. Absent in records kept before 0.2.20. */
+  restarted?: string[];
   /** The cache lifetime bb last reported, in ms; it picks a cache-write price. */
   ttlMs: number | null;
   /** All of it, by model. */
@@ -135,6 +142,7 @@ export function foldUsage(state: UsageState, events: readonly unknown[], day: (a
   const next: UsageState = {
     ...state,
     sessions: { ...state.sessions },
+    restarted: [...(state.restarted ?? [])],
     total: { ...state.total },
     days: Object.fromEntries(Object.entries(state.days).map(([d, models]) => [d, { ...models }])),
   };
@@ -142,6 +150,11 @@ export function foldUsage(state: UsageState, events: readonly unknown[], day: (a
     next.lastSeq = event.seq;
     if (event.type === PROMPT_EVENT_TYPE) {
       next.model = text(record(event.data.execution)?.model) ?? next.model;
+      continue;
+    }
+    if (event.type === IDENTITY_EVENT_TYPE) {
+      const session = text(event.data.providerThreadId) ?? "";
+      if (next.sessions[session] !== undefined && !next.restarted?.includes(session)) next.restarted?.push(session);
       continue;
     }
     if (event.type !== USAGE_EVENT_TYPE) continue;
@@ -153,8 +166,10 @@ export function foldUsage(state: UsageState, events: readonly unknown[], day: (a
     if (ttl !== null) next.ttlMs = ttl;
     const session = text(event.data.providerThreadId) ?? "";
     const before = next.sessions[session];
-    const step = before === undefined || behind(total, before) ? total : minus(total, before);
+    const fresh = next.restarted?.includes(session) ?? false;
+    const step = before === undefined || fresh || behind(total, before) ? total : minus(total, before);
     next.sessions[session] = total;
+    if (fresh) next.restarted = next.restarted?.filter((other) => other !== session);
     const model = next.model ?? UNKNOWN_MODEL;
     addTo(next.total, model, step);
     const d = day(event.at);
@@ -183,6 +198,10 @@ export function monthUsage(state: UsageState, month: string): Record<string, Tok
   }
   return out;
 }
+
+/** What cannot be known, said wherever the month's usage is shown. */
+export const USAGE_GAPS_NOTE =
+  "bb keeps only a thread's latest usage events, so what a thread used before cow first read it (cow reads each thread as each of its turns ends, from 0.2.19 on) is not known: a thread older than that shows less than it used. Before 0.2.20, a turn that started a new provider process could be counted short.";
 
 /** A count of tokens, short: 950, 12.3k, 4.56M. */
 export function tokensText(n: number): string {

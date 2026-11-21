@@ -97,6 +97,56 @@ test("a total that falls back is a new session: it is added, not subtracted", ()
   assert.equal(usageTotal(two)?.input, 20, "two sessions of one thread both count");
 });
 
+// A long-lived thread, as bb recorded one: its provider process starts again
+// often (bb writes `thread/identity`), the session id stays the same, and the
+// new process's `total` starts from zero. With a context that only grows, the
+// new `total` can be above the old one in all four counts after a single
+// turn, so it does not look like a fall.
+const identityEvent = (createdAt: number, session = SESSION) => ({ id: `evt_${++seq}`, threadId: "thr_w", seq, createdAt, type: "thread/identity", data: { providerThreadId: session } });
+const BIG_TURN = counts(290563, 12, 256151, 34000, 400);
+
+test("a new provider process starts its total again: after thread/identity the next total is all new, even when it is above the last", () => {
+  seq = 0;
+  const events = [identityEvent(NOW), promptEvent(NOW, "claude-haiku-5-5"), usageEvent(NOW + 1, T1, L1), identityEvent(NOW + 2), usageEvent(NOW + 3, BIG_TURN, BIG_TURN)];
+  const state = readUsage(events);
+  // Every count is above T1's, so 0.2.19 took the step from T1, as if one process had gone on: 133,938 of the turn's 290,563 tokens were lost.
+  assert.ok(BIG_TURN.inputTokens >= T1.inputTokens && BIG_TURN.cacheReadInputTokens >= T1.cacheReadInputTokens && BIG_TURN.cacheWriteInputTokens >= T1.cacheWriteInputTokens && BIG_TURN.outputTokens >= T1.outputTokens);
+  assert.deepEqual(usageTotal(state), { input: 10 + 12, cacheRead: 99646 + 256151, cacheWrite: 33896 + 34000, output: 386 + 400 });
+  // Read one event at a time, as cow does at the end of each turn, it comes to the same.
+  let piecewise = NO_USAGE;
+  for (const event of events) piecewise = foldUsage(piecewise, [event]);
+  assert.deepEqual(usageTotal(piecewise), usageTotal(state));
+  // The mark is used once: the same process's next turn is a step again.
+  const next = foldUsage(state, [usageEvent(NOW + 4, counts(BIG_TURN.totalTokens + 999, 12, 256151 + 900, 34000, 400 + 99), L1)]);
+  assert.equal(usageTotal(next)!.cacheRead, 99646 + 256151 + 900);
+  assert.deepEqual(next.restarted, []);
+});
+
+test("a thread/identity before any usage, or of another session, changes nothing", () => {
+  seq = 0;
+  const state = readUsage([identityEvent(NOW), usageEvent(NOW + 1, T1, L1), identityEvent(NOW + 2, "other"), usageEvent(NOW + 3, T2, L2)]);
+  assert.deepEqual(usageTotal(state), usageTotal(readUsage([usageEvent(NOW + 1, T1, L1), usageEvent(NOW + 3, T2, L2)])));
+});
+
+test("the mark of a new process is kept with the rest: read before its usage arrives, it still counts", async () => {
+  const kv = memoryKv();
+  seq = 0;
+  const pages = [[usageEvent(NOW, T1, L1), identityEvent(NOW + 1)], [usageEvent(NOW + 2, BIG_TURN, BIG_TURN)]];
+  let at = 0;
+  const store = createUsageStore(kv, async () => pages[at++] ?? []);
+  await store.read("thr_w");
+  assert.deepEqual((await store.kept("thr_w"))?.restarted, [SESSION]);
+  // A new store, as after cow is loaded again, over the same storage.
+  const again = createUsageStore(kv, async () => pages[at++] ?? []);
+  const { state } = await again.read("thr_w");
+  assert.equal(usageTotal(state)!.cacheRead, 99646 + 256151);
+  // A record kept by 0.2.19 has no such mark, and reads as before.
+  const old = { ...(kv.data.get(USAGE_PREFIX + "thr_w") as { state: Record<string, unknown> }) };
+  const { restarted: _gone, ...state19 } = old.state;
+  kv.data.set(USAGE_PREFIX + "thr_old", { ...old, state: state19 });
+  assert.equal(usageTotal((await again.kept("thr_old"))!)!.cacheRead, 99646 + 256151);
+});
+
 test("usage is kept by day, so a month is summed for a thread that spans months", () => {
   seq = 0;
   const oct = new Date(2026, 9, 31, 22).getTime();

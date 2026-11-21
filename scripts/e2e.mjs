@@ -90,7 +90,9 @@
 //                       from the page (e, then o) and from bb cow archive,
 //                       outcome and ledger, the L sheet, and a project not
 //                       asked: four fixtures, a stand-in Main, two workers
-//                       under it and a project under it
+//                       under it and a project under it. Then the usage
+//                       line and its notices, on the copy's own settings
+//                       (its notifications turned off), put back after
 //   --only-history      only bb's back and forward between chats, a reload
 //                       with a chat open, and an address naming an unknown
 //                       or archived thread: four fixtures. Back and forward
@@ -2120,6 +2122,95 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   await page.key("Escape");
   await page.waitFor(`${mode} === "normal"`, { label: "closed with Escape" });
   check("q and Escape close it", true);
+  await usageChecks(page, shot);
+}
+
+/**
+ * The usage line and the usage notices, on the copy's own settings (put back
+ * after): every window bb reports for this machine's signed-in providers, the
+ * month, and a notice raised once by lowering the copy's window percent and
+ * budget. Notifications are turned off on the copy first, so the check sends
+ * the person none.
+ */
+async function usageChecks(page, shot) {
+  const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", PLUGIN, ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  const notices = () => page.eval(`[...document.querySelectorAll("[data-cow-limit-notice]")].map((el) => el.dataset.cowLimitRule + ":" + el.dataset.cowLimitNotice).join(" ")`);
+  try {
+    await set("usageNotify", false);
+    await set("monthlyBudget", "");
+    await set("usageWindowPercent", 100);
+    const text = (await cow("usage")).stdout;
+    // The account bb signs in with is never in it: cow does not read it.
+    console.log(`note: bb ${PLUGIN} usage:\n${text}`);
+    const json = JSON.parse((await cow("usage", "--json")).stdout);
+    const providers = JSON.parse(await plain("settings", "usage", "--json"));
+    const signedIn = Object.entries(providers).filter(([, entry]) => entry.status === "ok" && (entry.windows ?? []).length > 0).map(([id]) => id);
+    const left = Object.entries(providers).filter(([, entry]) => entry.status !== "ok").map(([id]) => id);
+    const expected = Object.entries(providers).flatMap(([id, entry]) => (entry.status === "ok" ? (entry.windows ?? []).map((w) => `${id}:${w.label}:${w.usedPercent}`) : []));
+    check(
+      "bb cow usage --json gives every window of every signed-in provider, with percent and reset time, and none of a provider not signed in",
+      json.ok === true && JSON.stringify(json.windows.map((w) => `${w.provider}:${w.label}:${w.usedPercent}`)) === JSON.stringify(expected) && json.windows.every((w) => w.resetsAt === null || !Number.isNaN(Date.parse(w.resetsAt))) && json.windows.every((w) => !left.includes(w.provider)),
+      `${json.windows?.length} windows of ${signedIn.join(", ") || "none"}; left out: ${left.join(", ")}`,
+    );
+    const firstLine = text.split("\n")[0] ?? "";
+    check(
+      "bb cow usage's line gives each window as its label, percent and reset, then the month's list-price dollars, and nothing of a budget with none set",
+      json.windows.every((w) => firstLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && / so far \$[0-9.,]+ at list price$/.test(firstLine) && !/budget|pace/.test(firstLine) && !/@/.test(text),
+      firstLine,
+    );
+    await page.waitFor(`document.querySelector("[data-cow-usage]")?.dataset.cowUsage === "read"`, { label: "the usage line", timeout: 180_000 });
+    const pageLine = await page.eval(`document.querySelector("[data-cow-usage]").textContent`);
+    console.log(`note: the page's usage line: ${pageLine}`);
+    const pageWindows = await page.eval(`document.querySelectorAll("[data-cow-usage-window]").length`);
+    check(
+      "the page's usage line shows the same windows, and the month with no budget",
+      pageWindows === json.windows.length && json.windows.every((w) => pageLine.includes(`${w.label} ${Math.round(w.usedPercent)}%`)) && (await page.eval(`document.querySelector("[data-cow-usage-month]")?.dataset.cowUsageBudget`)) === "" && !/budget/.test(pageLine),
+      pageLine,
+    );
+    const ack = async (id) => page.eval(`document.querySelector('[data-cow-limit-notice="${id}"]').click(); true`);
+    if (json.windows.length > 0) {
+      // A percent every window has reached: one notice per window, raised by the server's check when the setting changes.
+      const lowest = Math.max(1, Math.floor(Math.min(...json.windows.map((w) => w.usedPercent))));
+      await set("usageWindowPercent", lowest);
+      await page.waitFor(`document.querySelectorAll('[data-cow-limit-rule="window"]').length > 0`, { label: "a usage notice", timeout: 180_000 });
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const raised = (await notices()).split(" ").filter(Boolean);
+      const live = json.windows.filter((w) => w.resetsAt === null || Date.parse(w.resetsAt) > Date.now()).length;
+      check("a window at its percent puts exactly one notice per window in the queue", raised.length === live, raised.join(" "));
+      await shot("usage-notice");
+      const id = raised[0].split(":")[1];
+      const unsigned = await rpcSoft("signed", { action: "limit_ack", args: { noticeId: id } });
+      const forged = await rpcSoft("signed", { action: "limit_ack", args: { noticeId: id }, at: Date.now(), nonce: "x".repeat(20), key: "0000-0000-0000-0000", sig: "AAAA" });
+      check("an unsigned or forged acknowledgement is refused, and the notice stays", unsigned.ok === false && forged.ok === false && (await notices()).includes(id), JSON.stringify([unsigned, forged]).slice(0, 200));
+      for (const entry of raised) await ack(entry.split(":")[1]);
+      await page.waitFor(`document.querySelectorAll("[data-cow-limit-notice]").length === 0`, { label: "acknowledged", timeout: 20_000 });
+      // The setting changed again: the server checks again, and the same period raises nothing.
+      await set("usageWindowPercent", lowest === 1 ? 2 : lowest - 1);
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+      const after = JSON.parse((await cow("usage", "--json")).stdout);
+      check("acknowledged on the page (signed), the notices are gone and the same period raises none again", (await notices()) === "" && after.notices.length === 0, await notices());
+    } else check("no signed-in provider reports a window here: the window notice is not checked", true);
+    // A budget the month is already over: the dollars and the pace rules, once each.
+    await set("usageWindowPercent", 100);
+    await set("monthlyBudget", "0.01");
+    await page.waitFor(`document.querySelectorAll('[data-cow-limit-rule="spent"]').length === 1`, { label: "the budget notice", timeout: 180_000 });
+    const day = new Date().getDate();
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const budgetNotices = (await notices()).split(" ").filter((entry) => !entry.startsWith("window:")).filter(Boolean);
+    const withBudget = await page.eval(`document.querySelector("[data-cow-usage-month]").textContent`);
+    check(
+      "with a budget set the line shows it and the pace, and the budget rules raise one notice each",
+      /of \$0\.01 budget · pace/.test(withBudget) && budgetNotices.length === (day >= 3 ? 2 : 1),
+      `${withBudget} · ${budgetNotices.join(" ")}`,
+    );
+    for (const entry of budgetNotices) await ack(entry.split(":")[1]);
+    await set("monthlyBudget", "0.02");
+    await new Promise((resolve) => setTimeout(resolve, 8000));
+    check("the budget rules do not raise again in the month once acknowledged", (await notices()) === "", await notices());
+  } finally {
+    for (const key of ["usageNotify", "monthlyBudget", "usageWindowPercent"]) await set(key, before[key]);
+  }
 }
 
 // ---- The context card ------------------------------------------------------------

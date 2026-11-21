@@ -7,7 +7,7 @@
 import { type Prices, LIST_PRICE_NOTE, dollarText, dollarsOf, priceOf } from "./prices.ts";
 import type { ThreadFacts } from "./state.ts";
 import { descendantIds, projectIds } from "./tree.ts";
-import { NO_TOKENS, type Tokens, UNKNOWN_MODEL, type UsageState, addTokens, monthUsage, tokenSum, tokensLine } from "./usage.ts";
+import { NO_TOKENS, type Tokens, UNKNOWN_MODEL, USAGE_GAPS_NOTE, type UsageState, addTokens, monthUsage, tokenSum, tokensLine } from "./usage.ts";
 
 export const SPEND_KINDS = ["workers", "projects", "main", "checkers"] as const;
 export type SpendKind = (typeof SPEND_KINDS)[number];
@@ -125,5 +125,6 @@ export function spendText(spend: Spend, mainTitle: string | null = null): string
   out.push("", "cow's checker runs are every check cow ran in the month, whichever Main's brief it checked.");
   out.push(spend.total.noUsage === 0 ? "Every thread had usage recorded." : `${spend.total.noUsage} ${spend.total.noUsage === 1 ? "thread" : "threads"} with no usage recorded: not counted as zero, not counted at all.`);
   if (spend.truncated) out.push("bb's thread list stopped short: there may be threads this does not count.");
+  out.push(USAGE_GAPS_NOTE);
   return out.join("\n");
 }

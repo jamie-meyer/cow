@@ -2112,3 +2112,17 @@
   color: var(--cow-muted);
   font-weight: 400;
 }
+
+/* the usage line: one quiet line, always above the status line */
+.cow-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 14px;
+  padding: 3px 0 2px;
+  font: 11px/16px var(--cow-sans);
+  color: var(--cow-muted);
+  border-top: 1px solid var(--cow-rule);
+}
+.cow-usage-hot {
+  color: var(--cow-needs);
+}

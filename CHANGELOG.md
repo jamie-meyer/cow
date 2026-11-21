@@ -4,6 +4,36 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.20
+
+- **A usage line.** One quiet line above the status line, and `bb cow usage
+  [--json]`, show every usage window bb reports for each signed-in provider
+  on this machine (Claude Code's weekly limit and its per-model one, Codex's,
+  any provider's): its label, percent and when it resets. A provider not
+  signed in, or that reports no windows, is left out. Then this month's
+  list-price dollars of every thread on this bb, and with a budget set, the
+  budget and the month-end figure at the current pace.
+- **A monthly budget, not a hard stop.** The setting `monthlyBudget` (US
+  dollars; empty means none). The pace is the dollars so far divided by the
+  fraction of the month gone, from the 3rd day of the month on.
+- **A notice before a limit, once.** When a window reaches
+  `usageWindowPercent` (default 80), when the month's dollars reach 80% of
+  the budget, or when the pace goes over it, cow puts one notice in your
+  queue with the facts: once per window per reset period, once per rule a
+  month. A click, or its hint, acknowledges it as a signed call, and it does
+  not come back until the next period. cow's server checks every five
+  minutes, with the page open or not. With `usageNotify` on (the default)
+  the same text is sent as a notification through bb's push-notifications
+  plugin. Nothing is ever paused or stopped, and no thread is sent anything.
+- **Long-lived threads counted right.** A new provider process starts its
+  running total from zero under the same session; on a thread whose context
+  only grows, cow took the new total for the old one carried on and counted
+  only the difference, so a busy Main showed a fraction of what it used.
+  From 0.2.20 a `thread/identity` (a new process) makes the next total count
+  in full. Months already counted stay as they were, and what bb dropped
+  before cow first read a thread cannot be got back: `bb cow spend` now
+  says so.
+
 ## 0.2.19
 
 - **Tokens in the ledger.** Each worker's row now holds the tokens it used,

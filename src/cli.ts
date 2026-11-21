@@ -12,13 +12,17 @@ import { LIMITS } from "./state.ts";
 import { GROUPINGS, type Grouping, LABEL_RULE, OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, labelOf, ledgerText, whoText } from "./ledger.ts";
 import { statusText, withCapabilities } from "./status.ts";
 import { type Spend, spendText } from "./spend.ts";
-import { MONTH_PATTERN } from "./usage.ts";
+import { MONTH_PATTERN, USAGE_GAPS_NOTE } from "./usage.ts";
+import type { UsageReport } from "./limits-backend.ts";
+import { usageReportText } from "./limits.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
   Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">> & {
     /** The month's spend under a Main: the one given, or this project's. */
     spend?: (mainId: string | null, projectId: string | null, month: string | undefined) => Promise<Spend & { priceError: string | null; mainTitle: string | null }>;
+    /** The usage line's figures and the usage notices waiting, read now. */
+    usage?: () => Promise<UsageReport>;
   };
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
@@ -77,6 +81,26 @@ function groupingsOf(value: string | undefined): readonly Grouping[] {
   return [by as Grouping];
 }
 
+/** `bb cow usage`: what the page's usage line shows, read now. */
+function usageCommand(usage: () => Promise<UsageReport>) {
+  return cliCommand({
+    summary: "The usage line: every usage window of each signed-in provider, and this month's list-price dollars against the budget",
+    description:
+      "What cow's page shows on its usage line, read now: each usage window bb reports for every signed-in provider on this machine (its percent and when it resets; " +
+      "a provider not signed in, or that reports no windows, is left out), and this month's list-price dollars of every thread on this bb. With a monthly budget set " +
+      "(the monthlyBudget setting) it adds the budget and the month-end figure at the current pace. Then the usage notices waiting in the person's queue. " +
+      "It only reads: nothing is ever paused or stopped, and only the person acknowledges a notice, on the page.",
+    options: { json },
+    async run(input) {
+      const got = await acting(usage);
+      const at = got.at;
+      return input.options.json
+        ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, listPrice: true, estimate: true, ...got, windows: got.windows.map((w) => ({ ...w, resetsAt: w.resetsAt === null ? null : new Date(w.resetsAt).toISOString() })) })}\n` }
+        : { exitCode: 0, stdout: `${usageReportText(got, at)}\n` };
+    },
+  });
+}
+
 /** The ledger commands: what a finished worker came to, and the rows and summary. */
 function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof cliCommand>> {
   const { outcomeChecked, ledger, labelChecked, spend } = actions;
@@ -103,7 +127,7 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
               const spent = await acting(() => spend(main, ctx.projectId ?? null, month));
               const { mainTitle, priceError, ...data } = spent;
               return input.options.json
-                ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, listPrice: true, estimate: true, ...data, priceError })}\n` }
+                ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, listPrice: true, estimate: true, ...data, priceError, gaps: USAGE_GAPS_NOTE })}\n` }
                 : { exitCode: 0, stdout: `${spendText(data, mainTitle)}${priceError ? `\n${priceError}` : ""}\n` };
             },
           }),
@@ -471,6 +495,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
         },
       }),
       ...ledgerCommands(actions),
+      ...(actions.usage ? { usage: usageCommand(actions.usage) } : {}),
       ...(attention ? attentionCommands(attention) : {}),
       ...(extra ?? {}),
     },

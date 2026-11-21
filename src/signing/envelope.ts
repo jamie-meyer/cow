@@ -21,6 +21,8 @@ export const PERSON_ACTIONS = [
   "cap_restore",
   /** Acknowledge a notice: a new capability, or a decision made outside cow. */
   "cap_ack",
+  /** Acknowledge a usage notice: a window near its limit, or the month against its budget. */
+  "limit_ack",
   /** Decide one of bb's permission requests. */
   "permission_decide",
   /** Send a thread a message as the person: "ask again as me", "carry on without it", the reason for a denial, and what is said to a thread from the page. */

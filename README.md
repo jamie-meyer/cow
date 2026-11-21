@@ -184,6 +184,21 @@ not a bill:** on a subscription you are not billed this. The setting
 `listPrices` changes or adds prices.
 Details are under [The ledger](docs/reference.md#the-ledger).
 
+**Usage, and a budget.** One quiet line above the status line shows every
+usage window bb reports for each signed-in provider (Claude Code's weekly
+limit and its per-model one, Codex's, any provider's), each with its percent
+and when it resets, and this month's list-price dollars of every thread on
+this bb; with a `monthlyBudget` set, the budget and the month-end figure at
+the current pace (the dollars so far divided by the fraction of the month
+gone, from the 3rd). When a window reaches `usageWindowPercent` (80), or the
+month's dollars reach 80% of the budget, or the pace goes over it, cow puts
+one notice in your queue, once per window per reset period and once per rule
+a month, and sends the same text as a notification unless `usageNotify` is
+off. cow's server checks every five minutes, page open or not. **It only
+tells:** nothing is paused or stopped, and no agent is shown the budget.
+`bb cow usage` prints the same. Details are under
+[Usage and a budget](docs/reference.md#usage-and-a-budget).
+
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
 goes to the Kept section, folded by default, never coloured, with no
@@ -432,6 +447,7 @@ bb cow outcome <thread> done|partial|redone|dropped [--label <label>]   # what a
 bb cow label <thread> [<label>] [--clear]        # the kind of job, for grouping the ledger
 bb cow ledger [--days 14] [--by model|dispatcher|label] [--json]   # what finished workers came to, and their tokens and list-price dollars
 bb cow spend [--month YYYY-MM] [--main <thread>] [--json]          # this month's tokens and list-price dollars under Main
+bb cow usage [--json]                            # the usage line: each provider's usage windows, the month against its budget
 bb cow workspace [<folder>]                      # workspace files: approved or not, each repository's last sync
 bb cow workspace add <folder>                    # propose one: you approve its file on the page
 bb cow workspace sync [<folder>] [--only <as>]   # run the approved sync commands
@@ -463,7 +479,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, and the last event read (no text). No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, and which provider sessions started a new process since (no text). The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or month. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
 | the same database, table `plugin_settings` | the five settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -554,6 +570,20 @@ changes an automation; it deletes one only when you press `e` on its row
 and confirm, through the plugin's `automations_delete`, as a signed call.
 When the plugin is absent, disabled, or does not answer within a few
 seconds, the page has no Automations section and nothing else changes.
+
+For the usage line, cow's server asks bb every five minutes for the usage
+windows of each signed-in provider (`system.usageLimits`, what `bb settings
+usage` shows; bb asks the providers). cow reads each window's label, percent
+and reset time, and never the account bb returns with them. When a usage
+notice is raised and `usageNotify` is on (the default), cow hands its text,
+one sentence of percent and reset time or of dollars and budget, to bb's
+own push-notifications plugin, which sends it on the channels you turned on
+there: to a registered phone that goes through Expo's push service. To keep
+it in cow's queue only:
+
+```sh
+bb plugin config cow set usageNotify false
+```
 
 For the context card, cow's server asks bb's own git and pull-request
 plugins about the selected thread's environment, and asks each plugin that
@@ -773,7 +803,7 @@ uses one that is not listed.
 | `experimental_listAncestors` (backend) | which threads are above a thread: who may act for whom, and which capabilities apply |
 | `experimental_listPluginMetadata` (backend) | finding cow's notes on threads that bb has since deleted, and which hidden threads are cow's checker runs, for the month's spend |
 | `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
-| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5 |
+| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, and usageWindowPercent from 1 to 100 |
 | `experimental_environments` (backend) | registering the copy-on-write workspace as an environment provider |
 | `experimental_client` (backend) | the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed |
 | `experimental_defineHostEntry` (backend) | the copy-on-write workspace: the host entry that clones and removes a workspace |

@@ -8,7 +8,7 @@ import { LEDGER_CHANGED, type LedgerStore, createLedgerStore, sdkEvents } from "
 import { type LedgerRow, type RowCost, rowTokens } from "./ledger.ts";
 import { PRICES_SETTING_HELP, type Prices, dollarsOf, priceOf, pricesWith } from "./prices.ts";
 import { descendantIds } from "./tree.ts";
-import { type Spend, type SpendFacts, spendOf, spendThreads } from "./spend.ts";
+import { type Spend, type SpendFacts, type SpendPart, spendOf, spendThreads } from "./spend.ts";
 import { type UsageStore, createUsageStore, sdkUsageEvents } from "./usage-store.ts";
 import { MONTH_PATTERN, NO_USAGE, monthOf, monthStart } from "./usage.ts";
 
@@ -24,6 +24,8 @@ export interface LedgerBackend {
   costing(rows: readonly LedgerRow[]): Promise<{ cost: RowCost; error: string | null }>;
   /** The month's (YYYY-MM; default this one) spend under a Main. */
   spend(mainId: string, month?: string): Promise<Spend & { priceError: string | null }>;
+  /** The month's (YYYY-MM; default this one) tokens and list-price dollars of every thread bb has, under any Main or none, hidden ones too. */
+  everything(month?: string): Promise<SpendPart & { month: string; truncated: boolean; priceError: string | null }>;
 }
 
 async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<void> {
@@ -128,5 +130,19 @@ export function registerLedger(bb: BbPluginApi, projectMarks: (threadIds: readon
     return { ...spendOf(month, mainId, read, set.prices, truncated), priceError: set.error };
   };
 
-  return { ledger, usage, costing, spend };
+  const everything: LedgerBackend["everything"] = async (month = monthOf(Date.now())) => {
+    if (!MONTH_PATTERN.test(month)) throw new Error(`"${month}" is not a month: YYYY-MM`);
+    const since = monthStart(month);
+    const { threads, truncated } = await allThreads();
+    const recent = threads.filter((thread) => thread.updatedAt === null || thread.updatedAt >= since);
+    const read: { kind: "workers"; state: typeof NO_USAGE }[] = [];
+    await eachLimited(recent, async ({ id, updatedAt }) => {
+      const got = await usage.read(id, updatedAt).catch(() => ({ state: NO_USAGE, fresh: false }));
+      read.push({ kind: "workers", state: got.state });
+    });
+    const set = await prices();
+    return { ...spendOf(month, "", read, set.prices, truncated).total, month, truncated, priceError: set.error };
+  };
+
+  return { ledger, usage, costing, spend, everything };
 }

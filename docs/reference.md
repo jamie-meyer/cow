@@ -1542,14 +1542,28 @@ shows "came to: done" on a line under Archived or To settle.
 **Where the tokens come from.** bb records, at the end of a turn, an event
 `thread/tokenUsage/updated` with two sets of counts. On bb 0.50 with Claude
 Code, `total` is the running sum of every model call of the provider's
-session so far, the calls of the turn's sub-agents included, and it carries
-on across a compaction (the compaction's own summarizing call is not in
-it); `last` is the latest single model call, not the whole turn. bb does not
-keep every such event: older ones are dropped, and after a compaction only
-the latest was left. So cow takes a thread's usage from its latest `total`
-(per provider session; a `total` that falls back is a new session, and
-counts in full), and reads the usage of every thread as each of its turns
-ends, so that what each turn added is put on the day it was used. No
+process so far, across its turns, the calls of the turn's sub-agents
+included, and it carries on across a compaction (the compaction's own
+summarizing call is not in it); `last` is the latest turn's. bb does not
+keep every such event: older ones are dropped after a few turns, and a
+compaction drops all but the latest. A new provider process starts its
+`total` from zero again under the same session id, and bb writes
+`thread/identity` when one starts; on a long-lived thread that is often,
+every few turns. So cow takes a thread's usage from its
+latest `total` per provider session, the step from the one read before;
+after a `thread/identity`, or when a `total` falls back, the new `total`
+counts in full. It reads the usage of every thread as each of its turns
+ends, so that what each turn added is put on the day it was used.
+
+**Why a long-lived thread can show less than it used.** Two causes.
+First, what bb dropped before cow read it is gone: everything a thread used
+before cow first read it (0.2.19 is the first version that reads usage), and
+any turn whose event bb dropped before cow read it. That is past only, and
+cannot be got back: `bb cow spend` says so. Second, until 0.2.20 cow took a
+new process's `total` for the old one's carried on whenever it was higher in
+all four counts, which on a thread whose context only grows is often the
+case after a single turn, and counted only the difference. That one is
+fixed from 0.2.20 on; months already counted stay as they were. No
 transcript is read. A thread with no such event has unknown usage: it is
 counted as such and said, never shown as zero. A provider that counts cached
 input inside its input (OpenAI's convention) is recognised from its
@@ -1619,6 +1633,67 @@ last event read. A turn's end reads only the events after that one. The
 month's read lists bb's threads once and asks bb about a thread's events
 only when bb has changed the thread since cow last read it: opening the
 sheet again asks about nothing that has not changed.
+
+## Usage and a budget
+
+**The usage line.** One quiet line, always just above the status line, and
+the same from `bb cow usage [--json]`:
+
+- every usage window bb reports for every signed-in provider on this
+  machine (what `bb settings usage` shows, read through the SDK's
+  `system.usageLimits`): its label, the percent used and when it resets. A
+  provider that is not installed, not signed in, expired, in error, or
+  reports no windows is left out, not shown as an error. The account bb
+  signs in with is never read.
+- this month's list-price dollars of **every thread on this bb**, under any
+  Main or none, hidden ones and cow's checker runs included, read as
+  `bb cow spend` reads one Main's. With a monthly budget set: the budget,
+  and the month-end figure at the current pace. With none, the month alone.
+
+For example: `Claude Code Weekly limit 47%, resets in 19h (Sun 22 Nov 13:00) ·
+Claude Code Fable 54%, resets in 19h (Sun 22 Nov 13:00) · Nov so far $43.03
+at list price`. A window at or past its percent is drawn in the colour of
+what needs you.
+
+**The pace** is the dollars so far divided by the fraction of the month
+gone (local time, to the millisecond), from the 3rd day of the month on;
+before that it is not worked out, and the line says "pace from the 3rd".
+
+**Settings** (bb's settings for the plugin, or `bb plugin config cow set
+<name> <value>`):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `monthlyBudget` | empty: none | US dollars at list price for the month, every thread on this bb, such as `500`. **Not a hard stop.** |
+| `usageWindowPercent` | 80 | tell you when a usage window reaches this percent |
+| `usageNotify` | on | also send a notification, through bb's push-notifications plugin, with the notice's text |
+
+**A notice, once.** cow's server checks every five minutes, and when a
+setting changes, whether the page is open or not. It puts one notice in
+your queue:
+
+- when a window reaches `usageWindowPercent`: which window, its percent and
+  when it resets. Once per window per reset period: another can come only
+  once bb reports that window with a later reset time, after the old one
+  has passed. A window bb gives no reset time for can come again once it was
+  seen below its percent. A window whose reset time has passed (bb has not
+  read it again) raises nothing.
+- with a budget set, when the month's dollars reach 80% of it (dollars so
+  far and the budget), and when the pace goes over it (the pace, the
+  budget, the dollars so far and how much of the month is gone). Each once
+  a month.
+
+A click on the notice, or its hint (`f`), acknowledges it, as a signed call
+(`limit_ack`) logged under your key, like cow's other notices; it does not
+come back until the next period. A notice not acknowledged when the next
+period's comes gives way to it. With `usageNotify` on, the same text goes
+to bb's notification channels when it is raised; without the
+push-notifications plugin, or with no channel on, only the queue has it.
+
+**It only tells.** Nothing in this part of cow starts a thread, sends a
+thread a message, or pauses or stops one, and no agent is shown a budget or
+asked to watch one: the check is code on cow's server, and what it finds is
+for you.
 
 ## Undo
 
@@ -2057,6 +2132,7 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `outcome` | says what a worker came to, open or archived, under `archive`'s rule of who may | nothing leaves the queue. Run in a thread, the ledger records that thread as the judge, and an outcome you set is refused. A caller that names no thread is taken for you, as everywhere here: its outcome is recorded as yours, and only the signed `outcome_set` is certainly yours |
 | `ledger` | reads the ledger | nothing |
 | `spend` | reads the month's tokens and list-price dollars | nothing |
+| `usage` | reads the usage line: windows, the month, the budget and pace, the usage notices waiting | nothing. Only the signed `limit_ack` acknowledges a usage notice |
 
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked, kept or archived.** Nothing else of cow's that is

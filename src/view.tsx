@@ -33,6 +33,7 @@ import { type Held, ancestorsOf, held as heldBy } from "./caps/scope.ts";
 import type { Use } from "./caps/service.ts";
 import type { Refusal } from "./refusal.ts";
 import { type Signer, useSigner } from "./signing/page.ts";
+import { UsageLine, UsageNotice, useLimits } from "./UsageLine.tsx";
 import { type RaisedData, useRaised } from "./raisedData.ts";
 import { Asides } from "./Asides.tsx";
 import { useNow } from "./clock.ts";
@@ -1654,6 +1655,13 @@ function OverviewScreen({
   const [ledgerBy, setLedgerBy] = useState<LedgerBy>("all");
   const ledger = useLedger();
   const [message, setMessage] = useState("");
+  // The usage line and the usage notices: read from cow's server, which checks on a timer.
+  const limits = useLimits(signer);
+  const ackLimit = (noticeId: string) =>
+    void limits.acknowledge(noticeId).then(
+      () => setMessage("usage notice acknowledged"),
+      (cause: unknown) => setMessage(`not acknowledged: ${cause instanceof Error ? cause.message : String(cause)}`),
+    );
   const sidebarIndex = useSidebarIndex();
   /** What other plugins offer for the selected line, as its probe last reported. */
   const [otherRows, setOtherRows] = useState<{ threadId: string; rows: ActionRow[] }>({ threadId: "", rows: [] });
@@ -2380,7 +2388,7 @@ function OverviewScreen({
   const workspaceNotices = workspaces.views.filter((view) => view.waiting);
   // A clone bb removed that cow held back: work might be lost with it, so it stays in the queue until the person decides.
   const heldNotices = workspaces.held;
-  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length + heldNotices.length;
+  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length + heldNotices.length + limits.notices.length;
   const waiting = overview.queue.length + notices;
   const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
@@ -2676,10 +2684,13 @@ function OverviewScreen({
               </h2>
               <p className="cow-sub">
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
-                replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, oldest first.
+                replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, usage near a limit or a budget, oldest first.
               </p>
               {notices > 0 ? (
                 <ul className="cow-queue cow-notices" data-cow-notices={notices}>
+                  {limits.notices.map((notice) => (
+                    <UsageNotice key={notice.id} notice={notice} now={now} onAck={ackLimit} />
+                  ))}
                   {workspaceNotices.map((view) => (
                     <li key={view.folder} className="cow-q cow-q-notice" data-cow-workspace-notice={view.folder} data-cow-hint="" onClick={() => reader.open(reviewTarget(workspaces, view))}>
                       <span className="cow-qn">!</span>
@@ -2825,6 +2836,7 @@ function OverviewScreen({
           )}
         </div>
 
+        <UsageLine data={limits} now={now} />
         <footer className="cow-foot">
           {sayTo !== null ? (
             <>

@@ -18,6 +18,7 @@ export interface ActionResult {
   cap_delete: Capability;
   cap_restore: Capability;
   cap_ack: null;
+  limit_ack: null;
   permission_decide: null;
   send: null;
   ask_answer: Ask;

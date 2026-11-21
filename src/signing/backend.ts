@@ -23,6 +23,7 @@ import { OUTCOMES, type Outcome } from "../ledger.ts";
 import { PERSON_ACTIONS, type PersonAction, type PublicKey, keysStateSchema } from "./envelope.ts";
 import { type Keys, createKeys } from "./keys.ts";
 import type { Workspaces } from "../workspace/service.ts";
+import type { Limits } from "../limits-backend.ts";
 
 const id = z.string().min(1).max(200);
 const fingerprint = z.string().regex(/^[0-9a-f]{4}(-[0-9a-f]{4}){3}$/);
@@ -54,6 +55,7 @@ export const ACTION_ARGS = {
   cap_delete: z.object({ id }),
   cap_restore: z.object({ id }),
   cap_ack: z.object({ noticeId: id }),
+  limit_ack: z.object({ noticeId: id }),
   permission_decide: z.object({ threadId: id, interactionId: id, resolution: resolutionSchema }),
   send: z.object({ threadId: id, text: z.string().min(1).max(20_000) }),
   ask_answer: z.object({ id, option: z.number().int().min(1).nullable(), text: z.string().max(4000).nullable() }),
@@ -215,7 +217,7 @@ export function workspaceDispatch(
   };
 }
 
-export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks, judgeOutcome: JudgeOutcome, workspaces: Workspaces): Keys {
+export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks: Asks, marks: QueueMarks, judgeOutcome: JudgeOutcome, workspaces: Workspaces, limits: Pick<Limits, "acknowledge">): Keys {
   const changed = () => bb.realtime.publish(CAPS_CHANGED, {});
   const resetPath = join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "reset-enrollment");
   const keys = createKeys({
@@ -243,6 +245,10 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
     cap_restore: (args, by) => caps.restore(args.id, by),
     cap_ack: async (args, by) => {
       await caps.acknowledge(args.noticeId, by);
+      return null;
+    },
+    limit_ack: async (args, by) => {
+      await limits.acknowledge(args.noticeId, by);
       return null;
     },
     permission_decide: async (args, by) => {

@@ -8,6 +8,7 @@ import { CowError, createActions } from "./src/actions.ts";
 import { Refusal } from "./src/kv.ts";
 import { judgementSchema, rowSchema, type LedgerSummary } from "./src/ledger.ts";
 import { registerLedger } from "./src/ledger-backend.ts";
+import { type UsageReport, registerLimits } from "./src/limits-backend.ts";
 import type { Spend } from "./src/spend.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
@@ -117,6 +118,16 @@ export const rpcContract = defineRpcContract({
     output: z.custom<Spend & { priceError: string | null }>(),
   },
   /**
+   * The usage line: every usage window bb reports for each signed-in provider,
+   * the month's list-price dollars of every thread on this bb with the budget
+   * and pace when one is set, and the usage notices waiting. Only reads; a
+   * notice is acknowledged by a signed call.
+   */
+  usage_read: {
+    input: z.object({ fresh: z.boolean().optional() }),
+    output: z.custom<UsageReport>(),
+  },
+  /**
    * Archive a thread in bb with cow's reason for it; a null reason forgets an
    * earlier one. `dropped` stops its turn first. A worker gets its ledger row,
    * archived by the person.
@@ -156,6 +167,8 @@ export default async function plugin(bb: BbPluginApi) {
   // (Called only once the actions below exist.)
   const ledgers = registerLedger(bb, async (ids) => Object.keys((await actions.notes(ids)).projects));
   const ledger = ledgers.ledger;
+  // The usage line and the notices before a limit: checked on a timer, page open or not. It only tells.
+  const limits = registerLimits(bb, log, (month) => ledgers.everything(month));
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -216,9 +229,10 @@ export default async function plugin(bb: BbPluginApi) {
       if (cause instanceof CowError) throw new Refusal(cause.code, cause.message, cause.hint);
       throw cause;
     }
-  }, workspaces);
+  }, workspaces, limits);
 
   bb.rpc.register(rpcContract, {
+    usage_read: ({ fresh }) => limits.report(fresh === true),
     main_state: () => readState(),
     ledger_read: ({ days }) => actions.ledger(days),
     spend_read: ({ mainId, month }) => ledgers.spend(mainId, month),
@@ -271,7 +285,7 @@ export default async function plugin(bb: BbPluginApi) {
     cowCli({ ...actions, spend: async (mainId, projectId, month) => {
       const main = await actions.mainFor(mainId, projectId);
       return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
-    } }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
+    }, usage: () => limits.report(true) }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was

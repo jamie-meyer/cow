@@ -23,6 +23,7 @@ const stateSchema = z.object({
   events: z.number().int().min(0),
   model: z.string().nullable(),
   sessions: byModel,
+  restarted: z.array(z.string()).optional(),
   ttlMs: z.number().nullable(),
   total: byModel,
   days: z.record(z.string(), byModel),
