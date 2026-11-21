@@ -243,8 +243,10 @@ export interface BriefMark {
    * queue, so the brief waits on the person whatever the new check says.
    */
   earlierDisputes?: number;
-  /** With `earlierDisputes`: how many of them the evidence contradicted, the rest it could not confirm. Null when not recorded (before 0.2.14). */
+  /** With `earlierDisputes`: how many of them were claims the evidence contradicted. Null when not recorded (before 0.2.14). */
   earlierContradicted?: number | null;
+  /** With `earlierDisputes`: how many of them were task checks. Null when not recorded (before 0.2.19). */
+  earlierTasks?: number | null;
   /** Set when this is not the version's first check: a check that was run again. */
   rechecked?: true;
   /** Set when the checker disputes checks the task sets: how many it found not shown or could not tell. */
@@ -253,10 +255,19 @@ export interface BriefMark {
   flagged?: number;
 }
 
-export function markOf(version: number, seen: Review, at = 0, read = false, earlierDisputes = 0, rechecked = false, earlierContradicted: number | null = null): BriefMark {
+export function markOf(
+  version: number,
+  seen: Review,
+  at = 0,
+  read = false,
+  earlierDisputes = 0,
+  rechecked = false,
+  earlierContradicted: number | null = null,
+  earlierTasks: number | null = null,
+): BriefMark {
   const tasks = seen.taskDisputes.length;
   return {
-    ...(earlierDisputes > 0 ? { earlierDisputes, earlierContradicted } : {}),
+    ...(earlierDisputes > 0 ? { earlierDisputes, earlierContradicted, earlierTasks } : {}),
     ...(rechecked ? { rechecked: true as const } : {}),
     ...(tasks > 0 ? { tasks } : {}),
     ...(seen.flagged.length > 0 ? { flagged: seen.flagged.length } : {}),
@@ -297,25 +308,36 @@ export function briefWaits(mark: BriefMark): boolean {
   return disputeCount(mark) > 0 || mark.judgementCalls > 0;
 }
 
-const claims = (n: number) => `${n} ${n === 1 ? "claim" : "claims"}`;
+const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const claims = (n: number) => counted(n, "claim", "claims");
+const andList = (parts: readonly string[]) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`);
 
 /**
  * What an earlier check found, in the words of what was counted: claims the
- * evidence contradicted, and claims it could not confirm. Both put a brief in
- * front of the person; only the first is the evidence saying a claim is wrong.
- * "contradicted 1 claim and could not confirm 2 claims".
+ * evidence contradicted, claims it could not confirm, and checks the task
+ * sets that it disputed. All put a brief in front of the person; only the
+ * first is the evidence saying a claim is wrong.
+ * "contradicted 1 claim, could not confirm 2 claims and disputed 1 task check".
+ * A record from before the split was kept says only what it knows.
  */
-export function foundText(count: number, contradicted: number | null): string {
+export function foundText(count: number, contradicted: number | null, tasks: number | null = null): string {
   if (contradicted === null) return `contradicted or could not confirm ${claims(count)}`;
-  const unconfirmed = Math.max(0, count - contradicted);
-  const parts = [...(contradicted > 0 ? [`contradicted ${claims(contradicted)}`] : []), ...(unconfirmed > 0 ? [`could not confirm ${claims(unconfirmed)}`] : [])];
-  return parts.join(" and ");
+  if (tasks === null) {
+    const rest = Math.max(0, count - contradicted);
+    return andList([...(contradicted > 0 ? [`contradicted ${claims(contradicted)}`] : []), ...(rest > 0 ? [`could not confirm ${counted(rest, "claim or task check", "claims or task checks")}`] : [])]);
+  }
+  const unconfirmed = Math.max(0, count - contradicted - tasks);
+  return andList([
+    ...(contradicted > 0 ? [`contradicted ${claims(contradicted)}`] : []),
+    ...(unconfirmed > 0 ? [`could not confirm ${claims(unconfirmed)}`] : []),
+    ...(tasks > 0 ? [`disputed ${counted(tasks, "task check", "task checks")}`] : []),
+  ]);
 }
 
 /** What a brief says of disputes an earlier check found and the person never read; empty when there are none. */
-export function earlierDisputesText(count: number, contradicted: number | null = null): string {
+export function earlierDisputesText(count: number, contradicted: number | null = null, tasks: number | null = null): string {
   if (count <= 0) return "";
-  return `an earlier check of this version ${foundText(count, contradicted)}, and the check was run again before you had read ${count === 1 ? "it" : "them"}`;
+  return `an earlier check of this version ${foundText(count, contradicted, tasks)}, and the check was run again before you had read ${count === 1 ? "it" : "them"}`;
 }
 
 /** "2026-11-19 14:03 UTC": the same on every machine, so the CLI and the page agree. */
@@ -348,7 +370,7 @@ export function briefWaitText(mark: BriefMark): string {
   if (disputed > 0) parts.push(`${disputed} disputed`);
   if (mark.judgementCalls > 0) parts.push(`${mark.judgementCalls} ${mark.judgementCalls === 1 ? "judgement call" : "judgement calls"}`);
   const earlier = mark.earlierDisputes ?? 0;
-  if (earlier > 0) parts.push(`an earlier check, run again unread, ${foundText(earlier, mark.earlierContradicted ?? null)}`);
+  if (earlier > 0) parts.push(`an earlier check, run again unread, ${foundText(earlier, mark.earlierContradicted ?? null, mark.earlierTasks ?? null)}`);
   return `brief: ${parts.join(", ")}`;
 }
 
@@ -433,7 +455,15 @@ export function shownLines(shown: Shown | null): string[] {
  * says, never as a check.
  */
 export function reviewText(
-  head: { threadId: string; version: number; summary: string; earlierDisputes?: number; earlierContradicted?: number | null; failedRecheck?: FailedRecheck | null },
+  head: {
+    threadId: string;
+    version: number;
+    summary: string;
+    earlierDisputes?: number;
+    earlierContradicted?: number | null;
+    earlierTasks?: number | null;
+    failedRecheck?: FailedRecheck | null;
+  },
   seen: Review,
 ): string {
   const out: string[] = [`Brief v${head.version} from ${head.threadId}`, `  ${cut(head.summary, 1200)}`, ""];
@@ -451,7 +481,7 @@ export function reviewText(
     }
   }
 
-  const earlier = earlierDisputesText(head.earlierDisputes ?? 0, head.earlierContradicted ?? null);
+  const earlier = earlierDisputesText(head.earlierDisputes ?? 0, head.earlierContradicted ?? null, head.earlierTasks ?? null);
   if (earlier !== "") out.push(`  NOTE: ${earlier}. This check replaced that one.`);
 
   const gate = seen.flagged.length > 0 ? 1 : 0;

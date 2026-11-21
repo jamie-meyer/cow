@@ -24,44 +24,57 @@ const twoAndFive = JSON.stringify({
 const allSupported = JSON.stringify({ claims: ids.map((id) => ({ id, shows: `About ${id}.`, verdict: "supported", needs: null })) });
 const HINT = /To check it on another provider/;
 
+const PRIMARY = { type: "personal", hostId: null };
+/** What bb says when its primary machine is away: the refusal of a personal workspace seen in use. */
+const AWAY = "HTTP 502: Host is not connected";
+
 test("a checker starts in a personal workspace, whatever became of the thread's environment", async () => {
   const w = world();
   w.env.id = null;
   const record = await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
-  assert.deepEqual(w.started.map((start) => start.place), [{ type: "personal" }]);
+  assert.deepEqual(w.started.map((start) => start.place), [PRIMARY]);
   assert.equal(record.check?.runs[0]?.status, "running");
 });
 
-test("when bb will not make a personal workspace, the thread's own environment is used if it is there", async () => {
+test("when bb will not make a personal workspace on its primary machine, one is made on the thread's machine, never the thread's environment", async () => {
   const w = world();
-  w.refuse.set("personal", "HTTP 400: personal workspaces are turned off");
-  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
-  assert.deepEqual(w.started.map((start) => start.place), [{ type: "reuse", projectId: "proj_1", environmentId: "env_1" }]);
+  w.refuse.set("primary", AWAY);
+  const record = await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  assert.deepEqual(w.started.map((start) => start.place), [{ type: "personal", hostId: "host_1" }]);
+  assert.ok(w.started.every((start) => start.place.type === "personal"));
+  assert.equal(record.check?.runs[0]?.status, "running");
 });
 
-test("with nowhere to start, the failure says so and suggests no other provider", async () => {
+test("with nowhere to start, the check fails with a reason to act on, and nothing starts in the thread's environment", async () => {
   const gone = world();
-  gone.refuse.set("personal", "HTTP 400: personal workspaces are turned off");
-  gone.refuse.set("reuse", "HTTP 409: Environment unavailable.");
+  gone.refuse.set("primary", AWAY);
+  gone.refuse.set("machine", "HTTP 404: Host is unavailable");
   const record = await gone.briefs.submit({ caller: "child", threadId: null, raw: RAW });
-  const [error] = briefView(record).review.failures;
+  assert.deepEqual(gone.started, []);
+  const view = briefView(record);
+  assert.equal(view.review.state, "failed");
+  const [error] = view.review.failures;
   assert.equal(
     error,
-    "the checker could not be started: the thread's environment is gone, and there is nowhere else to start a check (bb would not make a personal workspace for it: HTTP 400: personal workspaces are turned off; and in the thread's own environment: HTTP 409: Environment unavailable)",
+    "the checker could not be started: bb would not make it a personal workspace (on bb's primary machine: HTTP 502: Host is not connected; on the thread's machine: HTTP 404: Host is unavailable). A checker runs only in an empty workspace of its own, never in the thread's checkout. When a machine of yours is connected, check it again: bb cow brief check child",
   );
   assert.doesNotMatch(error ?? "", HINT);
+  // A failed check, like any other: the brief waits on the person, and the text says the check failed.
+  assert.equal(view.mark.state, "failed");
+  assert.match(reviewText({ threadId: "child", version: 1, summary: "s" }, view.review), /CHECK FAILED/);
 
   const none = world();
-  none.env.id = null;
-  none.refuse.set("personal", "bb has no personal project to make a personal workspace in");
+  none.env.hostId = null;
+  none.refuse.set("primary", "bb has no personal project to make a personal workspace in");
   const alone = briefView(await none.briefs.submit({ caller: "child", threadId: null, raw: RAW })).review.failures[0] ?? "";
-  assert.match(alone, /^the checker could not be started: the thread's environment is gone, and there is nowhere else to start a check \(bb would not make a personal workspace for it: bb has no personal project to make a personal workspace in\)$/);
+  assert.deepEqual(none.started, []);
+  assert.match(alone, /^the checker could not be started: bb would not make it a personal workspace \(on bb's primary machine: bb has no personal project to make a personal workspace in; the thread is on no machine bb knows, so there was no other to try\)\. /);
 });
 
 test("a refusal another provider could get past is said with the way to it, and not tried elsewhere", async () => {
   const w = world();
   Object.assign(w.own, { provider: "nope", model: null });
-  w.refuse.set("personal", 'HTTP 400: Unknown provider "nope".');
+  w.refuse.set("primary", 'HTTP 400: Unknown provider "nope".');
   const record = await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
   assert.equal(w.started.length, 0);
   assert.equal(
@@ -137,11 +150,11 @@ test("a rerun that cannot start at all keeps the earlier check too", async () =>
   await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
   w.reply("chk_1", twoAndFive);
   const first = await w.briefs.get("child");
-  w.refuse.set("personal", "HTTP 400: personal workspaces are turned off");
-  w.refuse.set("reuse", "HTTP 409: Environment unavailable.");
+  w.refuse.set("primary", AWAY);
+  w.refuse.set("machine", "HTTP 404: Host is unavailable");
   const after = await w.briefs.check({ caller: "main", threadId: "child" });
   assert.deepEqual(after.check, first.check);
-  assert.match(after.failedRecheck?.errors[0] ?? "", /^the checker could not be started: the thread's environment is gone, and there is nowhere else to start a check/);
+  assert.match(after.failedRecheck?.errors[0] ?? "", /^the checker could not be started: bb would not make it a personal workspace/);
 });
 
 test("a rerun that answers replaces the earlier check, and takes the failed attempt with it", async () => {
@@ -157,21 +170,24 @@ test("a rerun that answers replaces the earlier check, and takes the failed atte
   const replaced = await w.briefs.get("child");
   assert.deepEqual([briefView(replaced).mark.notEstablished, replaced.failedRecheck, replaced.replaced, replaced.earlierChecks], [0, null, null, 1]);
   // The earlier check had five it could not confirm and nobody had read it: today's note, in the words of what it counted.
-  assert.deepEqual([replaced.earlierDisputes, replaced.earlierContradicted], [5, 0]);
+  assert.deepEqual([replaced.earlierDisputes, replaced.earlierContradicted, replaced.earlierTasks], [5, 0, 0]);
   const mark = briefView(replaced).mark;
   assert.equal(briefWaits(mark), true);
-  const text = reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: replaced.earlierDisputes, earlierContradicted: replaced.earlierContradicted }, briefView(replaced).review);
+  const text = reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: replaced.earlierDisputes, earlierContradicted: replaced.earlierContradicted, earlierTasks: replaced.earlierTasks }, briefView(replaced).review);
   assert.match(text, /\n {2}NOTE: an earlier check of this version could not confirm 5 claims, and the check was run again before you had read them\. This check replaced that one\.\n/);
   assert.equal(briefWaitText(mark), "brief: an earlier check, run again unread, could not confirm 5 claims");
 });
 
-test("the note says what it counted: contradicted, could not confirm, or both", () => {
-  assert.equal(foundText(5, 0), "could not confirm 5 claims");
-  assert.equal(foundText(1, 1), "contradicted 1 claim");
-  assert.equal(foundText(3, 1), "contradicted 1 claim and could not confirm 2 claims");
-  // A record from before the split was kept.
+test("the note says what it counted: claims contradicted, claims it could not confirm, task checks disputed", () => {
+  assert.equal(foundText(5, 0, 0), "could not confirm 5 claims");
+  assert.equal(foundText(1, 1, 0), "contradicted 1 claim");
+  assert.equal(foundText(3, 1, 0), "contradicted 1 claim and could not confirm 2 claims");
+  assert.equal(foundText(2, 0, 2), "disputed 2 task checks");
+  assert.equal(foundText(4, 1, 1), "contradicted 1 claim, could not confirm 2 claims and disputed 1 task check");
+  // Records from before the splits were kept: before 0.2.19 task checks were counted in with the claims it could not confirm.
+  assert.equal(foundText(3, 1), "contradicted 1 claim and could not confirm 2 claims or task checks");
   assert.equal(foundText(5, null), "contradicted or could not confirm 5 claims");
-  assert.equal(earlierDisputesText(1, 0), "an earlier check of this version could not confirm 1 claim, and the check was run again before you had read it");
+  assert.equal(earlierDisputesText(1, 0, 0), "an earlier check of this version could not confirm 1 claim, and the check was run again before you had read it");
   assert.equal(earlierDisputesText(0, 0), "");
   assert.equal(dateText(Date.UTC(2026, 10, 19, 14, 3, 30)), "2026-11-19 14:03 UTC");
 });

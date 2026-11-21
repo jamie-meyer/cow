@@ -4,9 +4,9 @@ import { type Brief, validateBrief } from "../src/briefs/brief.ts";
 import { checkerPrompt, parseCheckerReply } from "../src/briefs/checker.ts";
 import type { DiffResult } from "../src/briefs/diff.ts";
 import type { ChangedFile } from "../src/briefs/paths.ts";
-import { type Check, type ClaimVerdict, briefWaitText, briefWaits, disputeCount, disputeOf, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
+import { type Check, type ClaimVerdict, briefWaitText, briefWaits, disputeCount, disputeOf, earlierDisputesText, markOf, markText, review, reviewText } from "../src/briefs/review.ts";
 import { checkLine, sheetItems } from "../src/briefs/sheet.ts";
-import { CHECK_TIMEOUT_MS, briefView } from "../src/briefs/service.ts";
+import { CHECK_TIMEOUT_MS, briefView, toolUsedText } from "../src/briefs/service.ts";
 import { Refusal } from "../src/kv.ts";
 import { NOW } from "./fixtures.ts";
 import { memoryKv, world } from "./memory.ts";
@@ -250,7 +250,7 @@ test("submitting stores the brief with its evidence copied, and starts the check
   assert.equal(w.started.length, 1);
   assert.match(w.started[0]?.prompt ?? "", /\+ rate = 5\/min/);
   // It starts in a personal workspace, not in the thread's worktree.
-  assert.deepEqual(w.started[0]?.place, { type: "personal" });
+  assert.deepEqual(w.started[0]?.place, { type: "personal", hostId: null });
   assert.equal(briefView(record).mark.state, "running");
 
   // The file changing later does not change what was submitted.
@@ -308,7 +308,7 @@ test("the checker's answer settles the check: a contradicted claim is disputed, 
 
 test("a malformed answer, a tool call, an error and silence are each a failed check, never a pass", async () => {
   const cases: [string, (w: ReturnType<typeof world>) => void, RegExp][] = [
-    ["a tool", (w) => w.reply("chk_1", answerAll("supported"), ["Read"]), /used a tool \(Read\)/],
+    ["a tool", (w) => w.reply("chk_1", answerAll("supported"), ["Read"]), /used a tool: Read\./],
     ["an error", (w) => w.checkers.set("chk_1", { state: "error", reply: null, tools: [] }), /turn failed/],
     ["gone", (w) => w.checkers.delete("chk_1"), /thread is gone/],
     ["silence", (w) => (w.clock.now += CHECK_TIMEOUT_MS + 1), /did not answer in time/],
@@ -507,6 +507,7 @@ test("a checker that cannot be started is a failed run", async () => {
     now: () => NOW,
     newId: () => "n",
     thread: async () => ({ projectId: "proj_1", environmentId: null }),
+    machine: async () => null,
     execution: async () => ({ provider: "codex", model: null }),
     ancestors: async () => ["main"],
     storageRoot: async () => null,
@@ -636,6 +637,50 @@ test("cow reads the task itself: its three checks are in the prompt, and an answ
   assert.match(text, /The task's other checks \(1\)\n {2}task t1/);
   const items = sheetItems(view.review, []);
   assert.deepEqual(items.map((item) => item.id), ["task:t2", "task:t3", "call:0", "claim:c1", "claim:c2", "claim:c3", "task:t1"]);
+});
+
+test("a check run again unread names what the earlier one disputed: a claim and a task check, each by its name", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "+ rate = 5/min");
+  w.tasks.set("child", TASK);
+  const submitted = await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  // c1 is contradicted, t2 not shown: one disputed claim, one disputed task check.
+  const disputing = JSON.parse(answerWith([{ id: "t1", verdict: "supported" }, { id: "t2", verdict: "not-supported" }, { id: "t3", verdict: "supported" }]));
+  disputing.claims[0].verdict = "not-supported";
+  w.reply("chk_1", JSON.stringify(disputing));
+  const first = briefView(await w.briefs.get("child"));
+  assert.deepEqual([first.mark.contradicted, first.mark.tasks], [1, 1]);
+
+  // Run again before anyone read it; the new check finds nothing.
+  await w.briefs.check({ caller: "main", threadId: "child" });
+  w.reply("chk_2", answerWith([{ id: "t1", verdict: "supported" }, { id: "t2", verdict: "supported" }, { id: "t3", verdict: "supported" }]));
+  const record = await w.briefs.get("child", submitted.version);
+  const view = briefView(record);
+  assert.deepEqual([record.earlierDisputes, record.earlierContradicted, record.earlierTasks], [2, 1, 1]);
+  const said = "an earlier check of this version contradicted 1 claim and disputed 1 task check, and the check was run again before you had read them";
+  // The sheet's line is made from the record's fields.
+  assert.equal(earlierDisputesText(record.earlierDisputes, record.earlierContradicted, record.earlierTasks), said);
+  const text = reviewText({ threadId: "child", version: 1, summary: "s", earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted, earlierTasks: record.earlierTasks }, view.review);
+  assert.ok(text.includes(`  NOTE: ${said}. This check replaced that one.\n`), text);
+  assert.ok(briefWaits(view.mark));
+  assert.match(briefWaitText(view.mark), /an earlier check, run again unread, contradicted 1 claim and disputed 1 task check$/);
+});
+
+test("a checker that used a tool fails saying so, naming the tools bb's timeline gives and where to look", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  w.reply("chk_1", answerAll("supported"), ["Edit", "command", "Edit"]);
+  const view = briefView(await w.briefs.get("child"));
+  assert.equal(view.review.state, "failed");
+  assert.equal(view.mark.state, "failed");
+  assert.equal(
+    view.review.failures[0],
+    "the checker used tools: Edit, command. It was told to use none, so its answer is discarded. What it did is in its thread: bb thread log chk_1",
+  );
+  // When the timeline does not name it, it says that much.
+  assert.match(toolUsedText(["tool"], "chk_9"), /^the checker used a tool bb did not name\. .*bb thread log chk_9$/);
+  assert.match(toolUsedText(["a", "b", "c", "d", "e", "f", "g"], "x"), /^the checker used tools: a, b, c, d, e and 2 more\./);
 });
 
 test("a thread with no readable first message: the checker is told there is no task", async () => {

@@ -308,7 +308,7 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         ) : null}
         {record.earlierDisputes > 0 ? (
           <p className="cow-bf-check cow-bf-check-bad" data-cow-brief-earlier={record.earlierDisputes}>
-            {upper(earlierDisputesText(record.earlierDisputes, record.earlierContradicted))}. This check replaced that one.
+            {upper(earlierDisputesText(record.earlierDisputes, record.earlierContradicted, record.earlierTasks))}. This check replaced that one.
           </p>
         ) : null}
         {seen.failed.map((failure, index) => (

@@ -39,6 +39,7 @@ const markSchema = z.object({
   read: z.boolean(),
   earlierDisputes: z.number().optional(),
   earlierContradicted: z.number().nullable().optional(),
+  earlierTasks: z.number().nullable().optional(),
   rechecked: z.literal(true).optional(),
   tasks: z.number().optional(),
   flagged: z.number().optional(),
@@ -214,6 +215,11 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
     now: Date.now,
     newId: () => randomUUID().replace(/-/g, "").slice(0, 12),
     thread,
+    machine: async (threadId) => {
+      const found = await thread(threadId);
+      if (!found?.environmentId) return null;
+      return (await bb.sdk.environments.get({ environmentId: found.environmentId })).hostId ?? null;
+    },
     execution: async (threadId) => {
       const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
       const options = await bb.sdk.threads.defaultExecutionOptions({ threadId }).catch(() => null);
@@ -261,14 +267,15 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
       // thrown away if it used one.
       // It reads nothing but its prompt, so it starts in a personal
       // workspace: an empty directory of its own in bb's personal project,
-      // removed with the thread, with nothing in it to read or change. Only
-      // when bb will not make one does it start in the submitting thread's
-      // environment (see `launch` in briefs/service.ts).
+      // removed with the thread, with nothing in it to read or change. bb
+      // makes one on its primary machine, and refuses when that machine is
+      // not connected; then cow asks for one on the submitting thread's
+      // machine (see `launch` in briefs/service.ts). It never starts in an
+      // environment that holds someone's work.
       start: async ({ place, prompt, model, provider }) => {
         const spawned = await bb.sdk.threads.spawn({
-          ...(place.type === "personal" ?
-            { projectId: await personalProject(), environment: { type: "host" as const, workspace: { type: "personal" as const } } }
-          : { projectId: place.projectId, environment: { type: "reuse" as const, environmentId: place.environmentId } }),
+          projectId: await personalProject(),
+          environment: { type: "host" as const, ...(place.hostId === null ? {} : { hostId: place.hostId }), workspace: { type: "personal" as const } },
           prompt,
           title: CHECKER_TITLE,
           visibility: "hidden",

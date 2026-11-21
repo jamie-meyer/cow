@@ -1060,14 +1060,19 @@ changed files that no claim accounts for.
   away, not trusted to have been stopped.
 - **Where its thread starts.** The checker reads only its prompt, so it needs
   no checkout. Its thread starts in a personal workspace: an empty folder of
-  its own in bb's personal project, which bb removes with the thread. It
-  never starts in the submitting thread's worktree unless bb will not make a
-  personal workspace; then it uses that environment if it is still there. A
-  brief from a thread that is archived, and whose worktree bb has removed,
-  is checked like any other. With nowhere to start, the check fails with
-  "the checker could not be started: the thread's environment is gone, and
-  there is nowhere else to start a check (bb would not make a personal
-  workspace for it: …)".
+  its own in bb's personal project, which bb removes with the thread. bb makes
+  it on its primary machine, and refuses when that machine is not connected
+  or there is none; then cow asks for a personal workspace on the machine the
+  submitting thread is on. It never starts in the submitting thread's
+  worktree or in any other environment that holds someone's work: in
+  `accept-edits` an edit there would be made before its answer could be
+  thrown away. A brief from a thread that is archived, and whose worktree bb
+  has removed, is checked like any other. With nowhere to start, the check
+  fails, like any failed check, with "the checker could not be started: bb
+  would not make it a personal workspace (on bb's primary machine: …; on the
+  thread's machine: …). A checker runs only in an empty workspace of its own,
+  never in the thread's checkout. When a machine of yours is connected, check
+  it again: bb cow brief check <thread>".
 - **When the checker cannot run.** A checker bb would not start, or whose
   turn failed, is a failed check whose reason says the provider and model it
   was started on, the cause in plain words where bb recorded one (such as
