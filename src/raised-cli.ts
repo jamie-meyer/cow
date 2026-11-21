@@ -80,6 +80,14 @@ function briefJson(record: BriefRecord) {
     judgementCalls: review.judgementCalls,
     claims: review.claims.map(slim),
     notDone: review.notDone,
+    /** Each check the task's "Done means" section sets, with the checker's verdict; disputed when not shown or cannot tell. */
+    tasks: review.tasks.map((entry) => ({ id: entry.id, text: entry.text, shows: entry.verdict?.shows ?? null, verdict: entry.verdict?.verdict ?? null, needs: entry.verdict?.needs ?? null, dispute: entry.dispute, disagreement: entry.disagreement })),
+    /** Files that changed what decides whether the job's checks pass: a dispute found with no model. */
+    flagged: review.flagged,
+    /** Changed files no claim accounts for, as the checker read it: a note, not a dispute. */
+    unaccounted: review.unaccounted,
+    /** What the checker was shown besides the brief; null for a brief stored before 0.2.18. */
+    shown: record.shown,
   };
 }
 
@@ -196,8 +204,10 @@ export function attentionCommands(attention: Attention) {
       summary: "Submit the brief of your finished job: claims, evidence, judgement calls, what was left undone",
       description:
         "Reads a JSON file and stores it as your thread's brief; submitting again stores a new version. An independent " +
-        "checker then audits each claim against its evidence, and the user is shown the disputes first. Label claims " +
-        "honestly: your label is shown as what you say, never as verification. Evidence files are read from " +
+        "checker then audits each claim against its evidence, and the user is shown the disputes first. cow itself " +
+        "shows the checker the task your thread was started with (and each check of its \"Done means\" section) and " +
+        "what your checkout changed; it is not shown your summary or your labels. Label claims honestly: your label " +
+        "is shown to the user as what you say, never as verification. Evidence files are read from " +
         `$BB_THREAD_STORAGE when you submit.\n\nThe file:\n${BRIEF_SHAPE}`,
       positionals: [{ name: "file", description: "Path to the brief's JSON file", required: true }],
       options: {
@@ -234,8 +244,9 @@ export function attentionCommands(attention: Attention) {
     "brief check": cliCommand({
       summary: "Run the independent checker on a thread's latest brief",
       description:
-        "Starts a new audit: a separate agent that sees only the brief and its evidence. Refused for the thread the " +
-        "brief is from; the thread above it, or the user, can run it.",
+        "Starts a new audit: a separate agent that sees the claims and their evidence, the task the thread was started " +
+        "with and what it changed, and nothing else. Refused for the thread the brief is from; the thread above it, " +
+        "or the user, can run it.",
       positionals: [{ name: "thread", description: "The thread whose brief to check", required: true }],
       options: {
         model: { type: "string", description: "The checker's model. Default: cow's setting, else the submitting thread's model on its provider, else the provider's default" },
@@ -263,8 +274,10 @@ export function attentionCommands(attention: Attention) {
     "brief show": cliCommand({
       summary: "A thread's brief as the checker left it: disputes first",
       description:
-        "Disputed claims (the claim, the agent's own label, what the evidence literally shows, the checker's verdict), " +
-        "then judgement calls, then the other claims, then what was left undone. At most 30 disputes and 30 other claims.",
+        "Disputes (a change to what decides whether its checks pass, then claims: the checker's verdict, what the " +
+        "evidence literally shows, then the agent's own label; then the task's checks), then judgement calls, then the " +
+        "other claims and task checks, then what was left undone and what the checker was shown. At most 30 disputes " +
+        "and 30 other claims.",
       positionals: [{ name: "thread", description: "The thread whose brief to show", required: true }],
       options: { version: { type: "integer", min: 1, max: 9999, description: "An earlier version. Default: the latest" }, wait, json },
       async run(input, ctx) {

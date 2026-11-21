@@ -6,12 +6,21 @@ import { z } from "zod";
 import { storagePath } from "../asks/ask.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { BRIEF_LIMITS, BRIEF_SHAPE, type Brief, type Evidence, briefSchema, clip, validateBrief } from "./brief.ts";
-import { checkerPrompt, parseCheckerReply } from "./checker.ts";
+import { type Material, NO_MATERIAL, changedPathsOf, checkerPrompt, parseCheckerReply } from "./checker.ts";
+import type { DiffResult } from "./diff.ts";
+import { gateChanges } from "./paths.ts";
+import { readTask } from "./task.ts";
 import { type CheckerFailure, chooseChecker, nowhereText, startCouldFix, startFailedText, turnFailedText } from "./provider.ts";
-import { type BriefMark, type CheckRun, type Review, VERDICTS, disputeCount, markOf, review } from "./review.ts";
+import { type BriefMark, type CheckRun, type Review, SHOWN_FILES, type Shown, VERDICTS, checkerDisputes, markOf, review } from "./review.ts";
 
 const PREFIX = "brief:";
 const RUN_PREFIX = "check-run:";
+/** What a brief's checker is shown besides the brief (the task, the file list, the diff text), kept beside the record in parts. */
+const INPUT_PREFIX = "brief-input:";
+/** Characters of one part. bb keeps each value to 256 KB; a part this long stays under it even if every character took six bytes as JSON. */
+const INPUT_PART = 30_000;
+/** The most flagged files a record names. */
+const MAX_FLAGGED = 100;
 export const MAX_RUNS = 5;
 /** A checker that has not answered after this long has failed. */
 export const CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -40,7 +49,15 @@ const checkSchema = z.object({
   runs: z.array(
     z.discriminatedUnion("status", [
       z.object({ status: z.literal("running"), ...runBase }),
-      z.object({ status: z.literal("done"), verdicts: z.array(verdictSchema), ...runBase }),
+      z.object({
+        status: z.literal("done"),
+        verdicts: z.array(verdictSchema),
+        /** A verdict on each check the task sets; none on runs from before 0.2.18. */
+        tasks: z.array(verdictSchema).optional(),
+        /** Changed files the checker said no claim accounts for. */
+        unaccounted: z.array(z.string()).optional(),
+        ...runBase,
+      }),
       /** `answer`: what the checker said, when it said something that could not be used. */
       z.object({ status: z.literal("failed"), error: z.string(), answer: z.string().nullable().optional(), ...runBase }),
     ]),
@@ -65,6 +82,31 @@ const replacedSchema = z.object({
   earlierDisputes: z.number().int().min(0),
   earlierContradicted: z.number().int().min(0).nullable(),
 });
+
+const changedFileSchema = z.object({ path: z.string(), status: z.enum(["added", "modified", "deleted", "renamed"]), from: z.string().nullable(), untracked: z.boolean() });
+const shownSchema = z.object({
+  task: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("none"), why: z.string() }),
+    z.object({ state: z.literal("read"), chars: z.number(), clipped: z.boolean(), hasSection: z.boolean(), checks: z.array(z.string()), checksDropped: z.number() }),
+  ]),
+  diff: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("off") }),
+    z.object({ state: z.literal("none"), why: z.string() }),
+    z.object({
+      state: z.literal("collected"),
+      base: z.string(),
+      baseText: z.string(),
+      files: z.array(changedFileSchema),
+      filesTotal: z.number(),
+      chars: z.number(),
+      clipped: z.array(z.string()),
+      omitted: z.array(z.string()),
+      namesOnly: z.array(z.object({ path: z.string(), why: z.enum(["lock file", "binary", "secret"]) })),
+    }),
+  ]),
+  flagged: z.array(z.string()),
+  at: z.number(),
+}) satisfies z.ZodType<Shown>;
 
 export const briefRecordSchema = z.object({
   threadId: z.string(),
@@ -94,6 +136,8 @@ export const briefRecordSchema = z.object({
   replaced: replacedSchema.nullable().default(null),
   /** The latest run of the check again that gave no usable answer, when the check before it was kept. */
   failedRecheck: failedRecheckSchema.nullable().default(null),
+  /** What the checker was shown besides the brief: the task, the base, the file list, what was cut, the flagged files. Null on briefs stored before 0.2.18. */
+  shown: shownSchema.nullable().default(null),
 });
 export type BriefRecord = z.infer<typeof briefRecordSchema>;
 
@@ -112,6 +156,8 @@ export interface CheckerSettings {
   runs: number;
   /** Check a brief as soon as it is submitted. */
   onSubmit: boolean;
+  /** Show the checker the thread's diff. */
+  diff: boolean;
 }
 
 /** What cow can see of a checker's thread. */
@@ -138,6 +184,10 @@ export interface BriefDeps {
   readEvidence(threadId: string, path: string): Promise<string>;
   /** Is this an ask of this thread? */
   hasAsk(askId: string, threadId: string): Promise<boolean>;
+  /** The text of the first message the thread was started with; null when there is none to read. */
+  task(threadId: string): Promise<string | null>;
+  /** What the thread's checkout changed since its base, or why there is nothing to show. */
+  diff(threadId: string): Promise<DiffResult>;
   settings(): Promise<CheckerSettings>;
   checker: {
     /** Start a checker in a hidden thread of its own, given only `prompt`. Returns the thread's id. */
@@ -180,6 +230,63 @@ export function createBriefs(deps: BriefDeps): Briefs {
   const { kv } = deps;
   const locked = serial();
   const key = (threadId: string, version: number) => `${PREFIX}${threadId}:${pad(version)}`;
+  const inputKey = (threadId: string, version: number) => `${INPUT_PREFIX}${threadId}:${pad(version)}:`;
+
+  const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+  /** Read the task and collect the diff, as cow sees them now. */
+  const collect = async (threadId: string): Promise<Material> => {
+    const settings = await deps.settings();
+    const first = await deps.task(threadId).catch(() => null);
+    const task: Material["task"] = first === null ? { state: "none", why: "cow could not read the first message the agent's thread was started with" } : { state: "read", ...readTask(first) };
+    const diff: Material["diff"] =
+      !settings.diff ? { state: "off" }
+      : await deps.diff(threadId).then(
+          (result): Material["diff"] => (result.ok ? { state: "collected", ...result.diff } : { state: "none", why: result.why }),
+          (cause): Material["diff"] => ({ state: "none", why: `cow could not collect it (${message(cause)})` }),
+        );
+    return { task, diff };
+  };
+  const shownOf = (material: Material): Shown => {
+    const { task, diff } = material;
+    return {
+      task: task.state === "none" ? task : { state: "read", chars: task.chars, clipped: task.clipped, hasSection: task.hasSection, checks: task.checks, checksDropped: task.checksDropped },
+      diff:
+        diff.state !== "collected" ? diff : (
+          { state: "collected", base: diff.base, baseText: diff.baseText, files: diff.files.slice(0, SHOWN_FILES), filesTotal: diff.filesTotal, chars: diff.chars, clipped: diff.clipped, omitted: diff.omitted, namesOnly: diff.namesOnly }
+        ),
+      flagged: diff.state === "collected" ? gateChanges(diff.files).slice(0, MAX_FLAGGED) : [],
+      at: deps.now(),
+    };
+  };
+  /** Keep what the checker is shown, in parts small enough for bb's store; any parts left from before are dropped. */
+  const keepMaterial = async (threadId: string, version: number, material: Material) => {
+    const text = JSON.stringify(material);
+    const prefix = inputKey(threadId, version);
+    for (const old of await kv.list(prefix)) await kv.delete(old);
+    for (let at = 0, n = 0; at < text.length; at += INPUT_PART, n += 1) await kv.set(`${prefix}${String(n).padStart(3, "0")}`, text.slice(at, at + INPUT_PART));
+  };
+  const materialOf = async (threadId: string, version: number): Promise<Material | null> => {
+    const parts: string[] = [];
+    for (const k of await kv.list(inputKey(threadId, version))) {
+      const part = await kv.get<unknown>(k);
+      if (typeof part !== "string") return null;
+      parts.push(part);
+    }
+    if (parts.length === 0) return null;
+    try {
+      return JSON.parse(parts.join("")) as Material;
+    } catch {
+      return null;
+    }
+  };
+  /** What a version's checker is shown. A brief stored before 0.2.18 has none kept: it is collected now, and the record says so. */
+  const materialFor = async (record: BriefRecord): Promise<{ material: Material; record: BriefRecord }> => {
+    const kept = record.shown === null ? null : await materialOf(record.threadId, record.version);
+    if (kept !== null) return { material: kept, record };
+    const material = await collect(record.threadId).catch(() => NO_MATERIAL);
+    await keepMaterial(record.threadId, record.version, material);
+    return { material, record: { ...record, shown: shownOf(material) } };
+  };
 
   const versions = async (threadId: string): Promise<number[]> =>
     (await kv.list(`${PREFIX}${threadId}:`)).map((k) => Number(k.slice(k.lastIndexOf(":") + 1))).filter(Number.isInteger).sort((a, b) => a - b);
@@ -201,7 +308,6 @@ export function createBriefs(deps: BriefDeps): Briefs {
     deps.changed();
   };
 
-  const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
   /**
    * Start one checker: in a personal workspace, or failing that in the
    * submitting thread's environment. Throws an Error whose message is the
@@ -253,7 +359,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
   };
 
   /** Where one running run stands now: still running, or its final state. `unreadable`: it answered, and the answer could not be read. */
-  const judge = async (run: CheckRun, record: BriefRecord): Promise<CheckRun & { unreadable?: true }> => {
+  const judge = async (run: CheckRun, record: BriefRecord, material: Material | null): Promise<CheckRun & { unreadable?: true }> => {
     const { brief } = record;
     const now = deps.now();
     const attempt = run.attempt ?? 1;
@@ -271,17 +377,20 @@ export function createBriefs(deps: BriefDeps): Briefs {
       // It was given everything in its prompt. A checker that went looking elsewhere is not independent of what it found.
       return { ...base, status: "failed", error: `the checker used a tool (${sight.tools.slice(0, 3).join(", ")}); its answer is discarded`, answer: sight.reply?.slice(0, MAX_KEPT_ANSWER) ?? null };
     }
-    const parsed = parseCheckerReply(sight.reply, brief.claims.map((claim) => claim.id));
-    if (parsed.ok) return { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now, attempt, status: "done", verdicts: parsed.verdicts };
+    const taskIds = record.shown?.task.state === "read" ? record.shown.task.checks.map((_, index) => `t${index + 1}`) : [];
+    const changed = material ? changedPathsOf(material) : record.shown?.diff.state === "collected" ? record.shown.diff.files.map((file) => file.path) : [];
+    const parsed = parseCheckerReply(sight.reply, brief.claims.map((claim) => claim.id), taskIds, changed);
+    if (parsed.ok) return { threadId: run.threadId, startedAt: run.startedAt, finishedAt: now, attempt, status: "done", verdicts: parsed.verdicts, tasks: parsed.tasks, unaccounted: parsed.unaccounted };
     // What it said is kept, so that whoever reads the failure can see what went wrong.
     const answer = sight.reply === null || sight.reply.trim() === "" ? null : sight.reply.slice(0, MAX_KEPT_ANSWER);
     return { ...base, status: "failed", error: parsed.error, answer, ...(answer === null ? {} : { unreadable: true as const }) };
   };
 
   /** Run a checker again, once, when its answer could not be read: a slip in its JSON is not a verdict on the brief. */
-  const again = async (record: BriefRecord, failed: CheckRun & { status: "failed" }): Promise<CheckRun> => {
+  const again = async (record: BriefRecord, material: Material | null, failed: CheckRun & { status: "failed" }): Promise<CheckRun> => {
     try {
-      const checker = await launch(record, checkerPrompt(record.brief, deps.newId()), record.check?.model ?? null, record.check?.provider ?? null);
+      // The same material as the first try: what the thread changed since is not what was submitted.
+      const checker = await launch(record, checkerPrompt(record.brief, deps.newId(), material ?? NO_MATERIAL), record.check?.model ?? null, record.check?.provider ?? null);
       await kv.set(`${RUN_PREFIX}${checker}`, { threadId: record.threadId, version: record.version });
       return { status: "running", threadId: checker, startedAt: deps.now(), finishedAt: null, attempt: 2 };
     } catch (cause) {
@@ -297,14 +406,15 @@ export function createBriefs(deps: BriefDeps): Briefs {
       const runs: CheckRun[] = [];
       /** The checker threads that have finished, whatever became of their run. */
       const over: string[] = [];
+      const material = record.shown === null ? null : await materialOf(record.threadId, record.version);
       for (const run of record.check.runs) {
         if (run.status !== "running") {
           runs.push(run);
           continue;
         }
-        const { unreadable, ...judged } = await judge(run, record);
+        const { unreadable, ...judged } = await judge(run, record, material);
         if (judged.status !== "running") over.push(run.threadId);
-        runs.push(unreadable && judged.status === "failed" && (judged.attempt ?? 1) < 2 ? await again(record, judged) : judged);
+        runs.push(unreadable && judged.status === "failed" && (judged.attempt ?? 1) < 2 ? await again(record, material, judged) : judged);
       }
       if (over.length === 0) return record;
       const next = keepEarlier({ ...record, check: { ...record.check, runs } });
@@ -318,16 +428,17 @@ export function createBriefs(deps: BriefDeps): Briefs {
 
   const startCheck = (threadId: string, overrides: { model?: string | null; provider?: string | null; runs?: number }): Promise<BriefRecord> =>
     locked(threadId, async () => {
-      const record = await read(threadId);
-      if (record.check?.runs.some((run) => run.status === "running")) {
-        throw new Refusal("check_running", `a check of ${threadId}'s brief v${record.version} is already running`, "Wait for it: `bb cow brief show` says when it is done.");
+      const stored = await read(threadId);
+      if (stored.check?.runs.some((run) => run.status === "running")) {
+        throw new Refusal("check_running", `a check of ${threadId}'s brief v${stored.version} is already running`, "Wait for it: `bb cow brief show` says when it is done.");
       }
+      const { material, record } = await materialFor(stored);
       const settings = await deps.settings();
       // The thread that submitted the brief ran on its provider, so that one works here; bb's default may not.
       const own = await deps.execution(threadId).catch(() => ({ provider: null, model: null }));
       const { provider, model, chosen } = chooseChecker(overrides, settings, own);
       const count = Math.min(MAX_RUNS, Math.max(1, Math.trunc(overrides.runs ?? settings.runs)));
-      const prompt = checkerPrompt(record.brief, deps.newId());
+      const prompt = checkerPrompt(record.brief, deps.newId(), material);
       const startedAt = deps.now();
       const runs: CheckRun[] = [];
       for (let n = 0; n < count; n += 1) {
@@ -341,10 +452,11 @@ export function createBriefs(deps: BriefDeps): Briefs {
       }
       // A new check may say something new, so the brief is the person's to read again.
       // What the check being replaced disputed, and the person has not read, is not lost with it.
+      // (The flag cow raises from the file list is not the check's: every check of this version has it.)
       const mark = briefView(record).mark;
       const earlier =
         record.readAt !== null ? { earlierDisputes: 0, earlierContradicted: null }
-        : disputeCount(mark) > record.earlierDisputes ? { earlierDisputes: disputeCount(mark), earlierContradicted: mark.contradicted }
+        : checkerDisputes(mark) > record.earlierDisputes ? { earlierDisputes: checkerDisputes(mark), earlierContradicted: mark.contradicted }
         : { earlierDisputes: record.earlierDisputes, earlierContradicted: record.earlierContradicted };
       // A check that gave an answer is kept until the new one gives one: a rerun that fails takes nothing away.
       const usable = record.check?.runs.some((run) => run.status === "done") ?? false;
@@ -424,8 +536,11 @@ export function createBriefs(deps: BriefDeps): Briefs {
       }
       if (problems.length > 0) throw new Refusal("bad_brief", `the brief is not valid:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 
+      // What the checker is shown besides the brief is read now, by cow, not given by the agent.
+      const material = await collect(target);
       const record = await locked(target, async () => {
         const version = ((await versions(target)).at(-1) ?? 0) + 1;
+        await keepMaterial(target, version, material);
         const made: BriefRecord = {
           threadId: target,
           projectId: thread.projectId,
@@ -440,6 +555,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
           earlierContradicted: null,
           replaced: null,
           failedRecheck: null,
+          shown: shownOf(material),
         };
         await write(made);
         return made;
@@ -509,7 +625,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
 
 /** A stored brief as the page and `--json` get it: the record and how to read it. */
 export function briefView(record: BriefRecord): { record: BriefRecord; review: Review; mark: BriefMark } {
-  const seen = review(record.brief, record.check);
+  const seen = review(record.brief, record.check, record.shown);
   const at = Math.max(record.submittedAt, ...(record.check?.runs ?? []).map((run) => run.finishedAt ?? 0));
   return { record, review: seen, mark: markOf(record.version, seen, at, record.readAt !== null, record.earlierDisputes, record.earlierChecks > 0, record.earlierContradicted) };
 }

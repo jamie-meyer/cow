@@ -2,6 +2,8 @@
 // that makes and removes copy-on-write workspaces. cow's server calls it.
 import { type ExperimentalHostRpcContext, experimental_defineHostEntry } from "@get-bb/plugin-sdk";
 import { cloneHostContract } from "./contract.ts";
+import { git } from "./git.ts";
+import { collectDiff, readTextFile } from "../briefs/diff.ts";
 import { type CloneCall, startHelper } from "./helper.ts";
 import { heldOutput, listHeld, reasonText, removeHeld, removeOrHold, teardownHeld } from "./held.ts";
 import { layout, sweepTrash } from "./remove.ts";
@@ -149,6 +151,14 @@ export default experimental_defineHostEntry({
           return { status: "failed" as const, message: message(error) };
         }
       }),
+    brief_diff: async (input) => {
+      try {
+        const found = await collectDiff(git, input.path, input.bases, readTextFile);
+        return found.ok ? { status: "done" as const, diff: found.diff } : { status: "none" as const, why: found.why };
+      } catch (error) {
+        return { status: "none" as const, why: `cow could not collect it (${message(error)})` };
+      }
+    },
     held_list: async (_input, context) => {
       macOnly();
       return listHeld(layout(context.experimental_paths.dataDir));

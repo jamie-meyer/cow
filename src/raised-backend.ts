@@ -12,6 +12,9 @@ import type { Attention } from "./raised-cli.ts";
 import { type CheckerSight, type CheckerSettings, MAX_RUNS, briefRecordSchema, createBriefs } from "./briefs/service.ts";
 import { Refusal } from "./kv.ts";
 import { failureOf } from "./briefs/provider.ts";
+import type { DiffResult } from "./briefs/diff.ts";
+import { firstMessageText } from "./briefs/task.ts";
+import { cloneHostContract } from "./clone/contract.ts";
 import { RAISED_CHANGED } from "./raised.ts";
 import { readActivity } from "./activity.ts";
 import type { TraceInput } from "./traces.ts";
@@ -22,6 +25,8 @@ export const CHECKER_TITLE = "cow check";
 const MAX_BRIEF_FILE = 400_000;
 /** The largest evidence file read; the checker is given less (see BRIEF_LIMITS). */
 const MAX_EVIDENCE_FILE = 1_000_000;
+/** How long collecting a thread's diff may take on its machine. */
+const DIFF_MS = 60_000;
 
 const id = z.string().min(1).max(200);
 const markSchema = z.object({
@@ -35,6 +40,8 @@ const markSchema = z.object({
   earlierDisputes: z.number().optional(),
   earlierContradicted: z.number().nullable().optional(),
   rechecked: z.literal(true).optional(),
+  tasks: z.number().optional(),
+  flagged: z.number().optional(),
 });
 
 /** What the page reads, and what anyone may do. Answering an ask, closing one as answered in chat, and marking a brief as read are the person's: they are signed calls (see signing/backend.ts). */
@@ -128,7 +135,15 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
       label: "Check a brief when it is submitted",
       default: true,
     },
+    checkerDiff: {
+      type: "boolean",
+      label: "Show the checker the diff",
+      description:
+        "Show the checker what the submitting thread changed: the changed files and their diff, from its git checkout, clipped. The diff is sent to the checker's model. Files that may hold secrets (.env, keys and the like) are named, never shown. Off: the checker sees the task, the claims and their evidence only.",
+      default: true,
+    },
   });
+  const host = bb.hosts.experimental_client({ contract: cloneHostContract });
 
   const changed = () => bb.realtime.publish(RAISED_CHANGED, {});
   let personal: string | null = null;
@@ -217,14 +232,33 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
       ),
     settings: async (): Promise<CheckerSettings> => {
       const now = await settings.get();
-      return { model: now.checkerModel.trim() || null, provider: now.checkerProvider.trim() || null, runs: now.checkerRuns, onSubmit: now.checkOnSubmit };
+      return { model: now.checkerModel.trim() || null, provider: now.checkerProvider.trim() || null, runs: now.checkerRuns, onSubmit: now.checkOnSubmit, diff: now.checkerDiff };
+    },
+    // cow reads the task itself: the first message the thread was started with, whatever the agent says it was.
+    task: async (threadId) => {
+      const events = await bb.sdk.threads.events.list({ threadId, limit: "5", order: "asc", types: ["client/turn/requested"] as never });
+      return firstMessageText(events as readonly unknown[]);
+    },
+    // And collects the diff itself, in the thread's checkout, on the machine it is on.
+    diff: async (threadId): Promise<DiffResult> => {
+      const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+      if (!found?.environmentId) return { ok: false, why: "the agent's thread has no environment" };
+      const environment = await bb.sdk.environments.get({ environmentId: found.environmentId }).catch(() => null);
+      if (environment === null || environment.path === null || environment.status === "destroyed") return { ok: false, why: "the agent's thread has no checkout to read" };
+      if (!environment.isGitRepo) return { ok: false, why: "the agent's thread's folder is not a git checkout" };
+      const bases = [environment.mergeBaseBranch, environment.baseBranch, environment.defaultBranch].filter((name): name is string => typeof name === "string" && name.trim() !== "");
+      const result = await host.call("brief_diff", { path: environment.path, bases }, { hostId: environment.hostId, timeoutMs: DIFF_MS });
+      return result.status === "done" ? { ok: true, diff: result.diff } : { ok: false, why: result.why };
     },
     checker: {
-      // The checker gets the brief in its prompt and nothing else: a thread
+      // The checker gets everything in its prompt and nothing else: a thread
       // of its own with no parent, so it shares no conversation and wakes
-      // nobody, hidden, and in the mode where bb refuses whatever would
-      // need the user's permission. It is told to use no tool, and its
-      // answer is thrown away if it used one.
+      // nobody, hidden, and in "accept-edits", the narrowest of bb's three
+      // permission modes: edits in its workspace go ahead without asking,
+      // and anything else (a command, a fetch, a path outside) is put to
+      // the person for approval rather than run. bb has no mode that
+      // refuses outright. It is told to use no tool, and its answer is
+      // thrown away if it used one.
       // It reads nothing but its prompt, so it starts in a personal
       // workspace: an empty directory of its own in bb's personal project,
       // removed with the thread, with nothing in it to read or change. Only

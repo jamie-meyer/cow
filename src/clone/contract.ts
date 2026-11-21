@@ -232,6 +232,18 @@ export const cloneHostContract = defineRpcContract({
     input: z.object({ id: z.string().max(220), approved: approvedSchema }),
     output: z.discriminatedUnion("status", [z.object({ status: z.literal("done"), removed: z.boolean(), reasons: z.array(z.string()), teardowns: z.array(teardownSummary) }), failed]),
   },
+  /**
+   * What a brief's thread changed: in its checkout at `path`, against the
+   * merge base with the first of `bases` that resolves. Reads only; runs git
+   * with hooks off. "none" when the folder is not a git checkout or git fails.
+   */
+  brief_diff: {
+    input: z.object({ path: absolute, bases: z.array(z.string().min(1).max(300)).max(10) }),
+    output: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("done"), diff: z.custom<import("../briefs/diff.ts").DiffCollected>((value) => typeof value === "object" && value !== null) }),
+      z.object({ status: z.literal("none"), why: z.string() }),
+    ]),
+  },
   /** Remove a held clone for good. Only for a signed call. */
   held_remove: {
     input: z.object({ id: z.string().max(220) }),

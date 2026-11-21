@@ -282,7 +282,8 @@ test("brief submit reads the file, stores the brief and starts the check; show p
   const shown = await run(["brief", "show", "child"], "main");
   assert.equal(shown.exitCode, 0, shown.stderr);
   const text = shown.stdout ?? "";
-  assert.match(text, /Disputes \(1\)\n {2}CONTRADICTED {2}c2 {2}“B holds” {2}\(the agent says: checked\)\n {6}the evidence shows: The log says B: no\.\n {6}checker: not supported/);
+  // The checker's verdict and what it saw come first; the agent's own label after.
+  assert.match(text, /Disputes \(1\)\n {2}CONTRADICTED {2}c2 {2}“B holds”\n {6}checker: not supported\n {6}the evidence shows: The log says B: no\.\n {6}the agent says: checked {2}\(its own word, not a check\)/);
   assert.ok(text.indexOf("Disputes (1)") < text.indexOf("Other claims (1)"));
 
   const body = JSON.parse((await run(["brief", "show", "child", "--json"])).stdout ?? "");

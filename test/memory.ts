@@ -1,6 +1,7 @@
 import type { Ask } from "../src/asks/ask.ts";
 import { type AskDeps, createAsks } from "../src/asks/service.ts";
 import { type BriefDeps, type CheckerPlace, type CheckerSight, type CheckerSettings, createBriefs } from "../src/briefs/service.ts";
+import type { DiffResult } from "../src/briefs/diff.ts";
 import type { Kv } from "../src/kv.ts";
 import { NOW } from "./fixtures.ts";
 
@@ -54,7 +55,11 @@ export function world(kv: Kv = memoryKv()) {
   /** The submitting thread's environment; null when it has none. */
   const env = { id: "env_1" as string | null };
   const discarded: string[] = [];
-  const settings: CheckerSettings = { model: null, provider: null, runs: 1, onSubmit: true };
+  const settings: CheckerSettings = { model: null, provider: null, runs: 1, onSubmit: true, diff: true };
+  /** The first message each thread was started with; none when it is not set. */
+  const tasks = new Map<string, string>();
+  /** What each thread's checkout changed; none when it is not set. */
+  const diffs = new Map<string, DiffResult | Error>();
   /** The provider and model the submitting thread ran on. */
   const own: { provider: string | null; model: string | null } = { provider: null, model: null };
   const briefDeps: BriefDeps = {
@@ -72,6 +77,12 @@ export function world(kv: Kv = memoryKv()) {
         () => false,
       ),
     settings: async () => ({ ...settings }),
+    task: async (threadId) => tasks.get(threadId) ?? null,
+    diff: async (threadId) => {
+      const found = diffs.get(threadId) ?? { ok: false, why: "the agent's thread has no environment" };
+      if (found instanceof Error) throw found;
+      return found;
+    },
     checker: {
       start: async (args) => {
         const refused = refuse.get(args.place.type);
@@ -88,5 +99,5 @@ export function world(kv: Kv = memoryKv()) {
   const briefs = createBriefs(briefDeps);
   /** Make a checker answer. */
   const reply = (id: string, text: string | null, tools: string[] = []) => checkers.set(id, { state: "idle", reply: text, tools });
-  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, own, reply, refuse, env };
+  return { kv, asks, briefs, sent, clock, failSend, files, checkers, started, discarded, settings, own, reply, refuse, env, tasks, diffs };
 }

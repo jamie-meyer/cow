@@ -332,6 +332,8 @@ function CapMark({ caps, now }: { caps: LineCaps; now: number }) {
 
 type BriefKind = "disputed" | "clean" | "failed" | "checking" | "unchecked";
 export function briefKind(mark: BriefMark): BriefKind {
+  // Found from the file list with no model: disputed whatever became of the check.
+  if ((mark.flagged ?? 0) > 0 && mark.state !== "running") return "disputed";
   if (mark.state === "running") return "checking";
   if (mark.state === "failed") return "failed";
   if (mark.state === "unchecked") return "unchecked";
@@ -344,7 +346,15 @@ function BriefMarks({ mark }: { mark: BriefMark }) {
   const disputed = disputeCount(mark);
   const calls = mark.judgementCalls;
   const words: Record<BriefKind, string> = {
-    disputed: `the checker disputes ${disputed} ${disputed === 1 ? "claim" : "claims"}${mark.contradicted > 0 ? `: ${mark.contradicted} contradicted` : ""}${mark.notEstablished > 0 ? `${mark.contradicted > 0 ? "," : ":"} ${mark.notEstablished} not established` : ""}`,
+    disputed: [
+      (mark.flagged ?? 0) > 0 ? "it changed what decides whether its checks pass" : "",
+      mark.contradicted + mark.notEstablished > 0
+        ? `the checker disputes ${mark.contradicted + mark.notEstablished} ${mark.contradicted + mark.notEstablished === 1 ? "claim" : "claims"}${mark.contradicted > 0 ? `: ${mark.contradicted} contradicted` : ""}${mark.notEstablished > 0 ? `${mark.contradicted > 0 ? "," : ":"} ${mark.notEstablished} not established` : ""}`
+        : "",
+      (mark.tasks ?? 0) > 0 ? `${mark.tasks} of the task's checks ${mark.tasks === 1 ? "is" : "are"} not shown` : "",
+    ]
+      .filter((part) => part !== "")
+      .join("; ") || `${disputed} disputed`,
     clean: "the checker disputed none of its claims; that is one audit of the evidence attached, not proof",
     failed: "the check failed: nothing in the brief is verified",
     checking: "a checker is auditing it now",
