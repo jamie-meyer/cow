@@ -30,6 +30,16 @@ What changed for someone who uses cow. Versions are tags in this repository:
   had no usage recorded. cow keeps what it has read of each thread's usage
   in its own storage and reads it as each turn ends, so opening the sheet
   asks bb only about threads that changed.
+- **The checker never runs where someone's work is.** When bb will not make
+  it an empty workspace on its primary machine (because that machine is not
+  connected), the checker gets one on the submitting thread's machine
+  instead of starting in that thread's checkout. With neither, the check
+  fails with a reason that says how to run it again.
+- **A checker that used a tool says which.** The failed check's reason
+  names the tools when bb's timeline gives them, and points to the
+  checker's thread.
+- The note about an earlier check that was run again unread counts claims
+  and task checks apart: "contradicted 1 claim and disputed 1 task check".
 
 ## 0.2.18
 
