@@ -92,7 +92,10 @@
 //                       asked: four fixtures, a stand-in Main, two workers
 //                       under it and a project under it. Then the usage
 //                       line and its notices, on the copy's own settings
-//                       (its notifications turned off), put back after
+//                       (its notifications turned off), put back after.
+//                       Then caps and stuck checks: three more fixtures, one
+//                       that runs the same command three times, and a worker
+//                       with a thread of its own
 //   --only-history      only bb's back and forward between chats, a reload
 //                       with a chat open, and an address naming an unknown
 //                       or archived thread: four fixtures. Back and forward
@@ -1968,7 +1971,7 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   const ledger = async () => rpc("ledger_read", { days: 14 });
   const rowOf = async (id) => (await ledger()).rows.find((row) => row.threadId === id) ?? null;
   const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
-  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy", "label", "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"].sort();
+  const ALLOWED = ["threadId", "projectId", "dispatchedBy", "model", "effort", "firstTurnAt", "firstReportAt", "toFirstReportMs", "steersByPerson", "steersByThreads", "turns", "outcome", "judgedBy", "judgedAt", "outcomeChanges", "archivedAt", "archivedBy", "label", "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "toolCalls", "workingMinutes"].sort();
 
   // -- a project is not asked --
   await page.waitFor(`!!${lineEl(lproj)} && !!${lineEl(lone)} && !!${lineEl(ltwo)}`, { label: "the three lines" });
@@ -2123,6 +2126,69 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   await page.waitFor(`${mode} === "normal"`, { label: "closed with Escape" });
   check("q and Escape close it", true);
   await usageChecks(page, shot);
+  await watchChecks(page, ids, shot);
+}
+
+/**
+ * Caps and stuck checks, shown and never enforced, on the copy's default
+ * settings (no caps; the stuck checks on): a fixture under the stand-in Main
+ * runs the same command three times while its turn runs, and gets the mark on
+ * its line and exactly one notice, which an unsigned call cannot acknowledge
+ * and a click (signed) does, after which it does not come back. Then a worker
+ * whose own thread is archived gets an outcome and a ledger row with its tool
+ * calls and working minutes, refused while that thread was live. Three more
+ * fixtures; nothing is stopped or sent to any of them.
+ */
+async function watchChecks(page, ids, shot) {
+  const { lmain, lproj } = ids;
+  const REPEAT = "You are a test fixture for a bb plugin. Run these shell commands one at a time, each as its own separate tool call, waiting for each to finish before the next: echo cow-repeat, then echo cow-repeat, then echo cow-repeat, then sleep 60. Run nothing else. Then reply with exactly: ok";
+  const lrep = (inUse.lrep = ids.lrep = await spawn({ prompt: REPEAT, parent: lmain, permissionMode: "full" }));
+  const lsub = (inUse.lsub = ids.lsub = await spawn({ prompt: QUIET, parent: lmain }));
+  const lkid = (inUse.lkid = ids.lkid = await spawn({ prompt: QUIET, parent: lsub }));
+  const rowOf = async (id) => (await rpc("ledger_read", { days: 14 })).rows.find((row) => row.threadId === id) ?? null;
+  const notices = (id, reason) => `document.querySelectorAll('[data-cow-watch-thread="${id}"]${reason ? `[data-cow-watch-reason="${reason}"]` : ""}')`;
+  await page.waitFor(`${notices(lrep, "repeat")}.length > 0`, { label: "the repeat notice", timeout: 180_000 });
+  await page.waitFor(`!!document.querySelector('.cow-main [data-cow-line="${lrep}"] [data-cow-watch]')`, { label: "the mark on its line", timeout: 20_000 });
+  const mark = await page.eval(`document.querySelector('.cow-main [data-cow-line="${lrep}"] [data-cow-watch]')?.textContent ?? ""`);
+  check("a worker that runs the same command three times while its turn runs gets the mark on its line", /the same command [34] times/.test(mark), mark);
+  await shot("watch-mark");
+  const statusText = (await cow("status", "--main", lmain)).stdout;
+  const statusLine = statusText.split("\n").find((l) => l.includes(`(${lrep})`)) ?? "";
+  const statusJson = JSON.parse((await cow("status", "--main", lmain, "--json")).stdout);
+  const line = [...statusJson.threads, ...statusJson.queue].find((l) => l.id === lrep);
+  check(
+    "bb cow status shows the same mark beside the line, and --json its facts",
+    /\[the same command [34] times/.test(statusLine) && line?.watch?.some((w) => w.reason === "repeat" && w.facts.times >= 3 && w.facts.call === "echo cow-repeat"),
+    `${statusLine.trim()} | ${JSON.stringify(line?.watch)}`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const raised = await page.eval(`[...${notices(lrep)}].map((el) => [el.dataset.cowWatchReason, el.dataset.cowWatchNotice, el.textContent])`);
+  check("exactly one notice for it, with the facts cow collected", raised.length === 1 && raised[0][2].startsWith(`“${TITLE}” ran the same command 3 times in a row: echo cow-repeat. `) && raised[0][2].includes("cow does not stop it."), JSON.stringify(raised));
+  check("Main and a project get no mark or notice", (await page.eval(`${notices(lmain)}.length + ${notices(lproj)}.length`)) === 0 && !(await page.eval(`!!document.querySelector('[data-cow-line="${lmain}"] [data-cow-watch], [data-cow-line="${lproj}"] [data-cow-watch]')`)));
+  const id = raised[0]?.[1];
+  const unsigned = await rpcSoft("signed", { action: "watch_ack", args: { noticeId: id } });
+  const forged = await rpcSoft("signed", { action: "watch_ack", args: { noticeId: id }, at: Date.now(), nonce: "x".repeat(20), key: "0000-0000-0000-0000", sig: "AAAA" });
+  check("an unsigned or forged acknowledgement is refused, and the notice stays", unsigned.ok === false && forged.ok === false && (await page.eval(`${notices(lrep)}.length`)) === 1, JSON.stringify([unsigned, forged]).slice(0, 200));
+  await page.eval(`document.querySelector('[data-cow-watch-notice="${id}"]').click(); true`);
+  await page.waitFor(`${notices(lrep)}.length === 0`, { label: "acknowledged", timeout: 20_000 });
+  // bb cow status checks every worker again; the same reason is not raised twice.
+  await cow("status", "--main", lmain);
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  check("acknowledged on the page (signed), it is gone and does not come back for that worker", (await page.eval(`${notices(lrep)}.length`)) === 0 && !(await rpc("watch_read", null)).notices.some((n) => n.threadId === lrep));
+
+  // -- a worker that had a thread of its own --
+  await waitForThread(lsub, (t) => t.status === "idle", "lsub idle");
+  await waitForThread(lkid, (t) => t.status === "idle", "lkid idle");
+  const live = await cowAs(lmain, "outcome", lsub, "done");
+  check("a worker with a live thread under it is refused an outcome, as a project", live.code !== 0 && /project/.test(live.stdout + live.stderr), (live.stdout + live.stderr).trim());
+  check("its thread is archived", (await cowAs(lmain, "archive", lkid, "--reason", "test thread done")).code === 0);
+  const after = await cowAs(lmain, "archive", lsub, "--reason", "merged", "--outcome", "done");
+  const subRow = await rowOf(lsub);
+  check("with every thread under it archived, it is a worker: an outcome, and a ledger row with tool calls and working minutes", after.code === 0 && subRow?.outcome === "done" && subRow?.toolCalls === 0 && typeof subRow?.workingMinutes === "number", `${(after.stdout + after.stderr).trim()} | ${JSON.stringify(subRow && { toolCalls: subRow.toolCalls, workingMinutes: subRow.workingMinutes })}`);
+  await waitForThread(lrep, (t) => t.status === "idle", "lrep idle", 180_000);
+  check("bb cow archive with an outcome archives the repeating worker", (await cowAs(lmain, "archive", lrep, "--reason", "checked", "--outcome", "done")).code === 0);
+  const repRow = await rowOf(lrep);
+  check("its row counts its four commands and its minutes", repRow?.toolCalls >= 4 && repRow?.workingMinutes > 0.5, JSON.stringify(repRow && { toolCalls: repRow.toolCalls, workingMinutes: repRow.workingMinutes }));
 }
 
 /**

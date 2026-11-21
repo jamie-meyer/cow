@@ -169,6 +169,19 @@ export function headIds(threads: readonly ThreadFacts[]): Set<string> {
 }
 
 /**
+ * Whether a thread counts as a worker for outcomes, labels, the ledger and
+ * the caps and stuck checks, where the page's drawing does not decide it: it
+ * has a parent, is not marked as a project, and every thread under it is
+ * archived. A worker that started and archived threads of its own is still a
+ * worker. Main and automations' runs are the caller's to rule out.
+ */
+export function workerShaped(threads: readonly ThreadFacts[], target: ThreadFacts, marked: Iterable<string>): boolean {
+  if (target.parentThreadId === null) return false;
+  for (const id of marked) if (id === target.id) return false;
+  return !threads.some((thread) => thread.parentThreadId === target.id && thread.archivedAt === null);
+}
+
+/**
  * The projects among `threads`: Main, every thread that has or has had
  * threads under it, and every thread marked as one. A project's replies are
  * the person's to read, and it is never done while it is not archived.

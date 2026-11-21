@@ -10,7 +10,7 @@ import { formatDay } from "./pickup.ts";
 import { MAX_NEXT, MAX_TODOS, MAX_WAIT_FOR, MAX_WAIT_ON, type TodoItem } from "./shared.ts";
 import { LIMITS } from "./state.ts";
 import { GROUPINGS, type Grouping, LABEL_RULE, OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, labelOf, ledgerText, whoText } from "./ledger.ts";
-import { statusText, withCapabilities } from "./status.ts";
+import { statusText, withCapabilities, withWatch } from "./status.ts";
 import { type Spend, spendText } from "./spend.ts";
 import { MONTH_PATTERN, USAGE_GAPS_NOTE } from "./usage.ts";
 import type { UsageReport } from "./limits-backend.ts";
@@ -23,6 +23,8 @@ export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resum
     spend?: (mainId: string | null, projectId: string | null, month: string | undefined) => Promise<Spend & { priceError: string | null; mainTitle: string | null }>;
     /** The usage line's figures and the usage notices waiting, read now. */
     usage?: () => Promise<UsageReport>;
+    /** Each worker's caps and stuck-check marks, as the page shows them. */
+    watchMarks?: () => Promise<Record<string, { reason: string; mark: string; facts: Record<string, string | number | null> }[]>>;
   };
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
@@ -395,6 +397,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           "One line per thread: state, time in state, what it is doing or waiting on. At most 80 open threads, " +
           "30 parked, 40 to settle, 30 kept, 20 archived, 40 outside Main and 20 queue entries are listed; the rest are counted. " +
           "Outside Main is every open thread with no parent that is not Main or above it; one a plugin started is only counted. " +
+          "A worker over a cap or caught by a stuck check has the mark beside its line (`watch` in --json); cow shows it and never stops it. " +
           "To move one under Main, use `bb thread update <thread> --parent-thread <main> --parent-notifications stuck`.",
         options: {
           main: {
@@ -410,7 +413,9 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           const attended = attention ? await attend(attention, plain, ctx.projectId ?? null) : null;
           const raisedOrPlain = attended ?? plain;
           const ids = [raisedOrPlain.main, ...raisedOrPlain.threads, ...raisedOrPlain.parked, ...raisedOrPlain.settle, ...raisedOrPlain.kept, ...raisedOrPlain.archived].map((line) => line.id);
-          const report = capabilityNames ? withCapabilities(raisedOrPlain, await capabilityNames(ids)) : raisedOrPlain;
+          const held = capabilityNames ? withCapabilities(raisedOrPlain, await capabilityNames(ids)) : raisedOrPlain;
+          // Caps and stuck checks: marks only, beside the line. cow never stops a worker.
+          const report = actions.watchMarks ? withWatch(held, await actions.watchMarks()) : held;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }
             : { exitCode: 0, stdout: statusText(report) + elsewhereText(attended?.asksElsewhere ?? 0) };

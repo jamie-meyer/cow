@@ -83,6 +83,8 @@ export const ROW_KEYS = [
   "cacheReadTokens",
   "cacheWriteTokens",
   "outputTokens",
+  "toolCalls",
+  "workingMinutes",
 ] as const;
 
 export const rowSchema = z.strictObject({
@@ -116,6 +118,10 @@ export const rowSchema = z.strictObject({
   cacheReadTokens: z.number().min(0).nullable().default(null),
   cacheWriteTokens: z.number().min(0).nullable().default(null),
   outputTokens: z.number().min(0).nullable().default(null),
+  /** Its tool calls: items that are not reasoning or messages (progress.ts). Null when not read; a row written before 0.2.21 reads as null. */
+  toolCalls: z.number().int().min(0).nullable().default(null),
+  /** Its working minutes: the lengths of its turns, summed, to a tenth. Null when not read; a row written before 0.2.21 reads as null. */
+  workingMinutes: z.number().min(0).nullable().default(null),
 });
 export type LedgerRow = z.infer<typeof rowSchema>;
 
@@ -214,6 +220,7 @@ export function buildRow(
   judgements: readonly Judgement[],
   label: string | null = null,
   tokens: Tokens | null = null,
+  work: WorkFacts | null = null,
 ): LedgerRow | null {
   if (facts.firstReportAt === null) return null;
   return {
@@ -233,7 +240,15 @@ export function buildRow(
     archivedBy: archived.by,
     label,
     ...tokenFields(tokens),
+    toolCalls: work?.toolCalls ?? null,
+    workingMinutes: work?.workingMinutes ?? null,
   };
+}
+
+/** A worker's tool calls and working minutes, from its progress record. */
+export interface WorkFacts {
+  toolCalls: number;
+  workingMinutes: number;
 }
 
 export type Judged = { ok: true; judgements: Judgement[] } | { ok: false; code: "person_judged" | "too_many_changes"; why: string };

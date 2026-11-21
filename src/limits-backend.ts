@@ -29,6 +29,7 @@ import {
   windowsOf,
 } from "./limits.ts";
 import type { SpendPart } from "./spend.ts";
+import type { Ticker } from "./ticker.ts";
 import { monthOf } from "./usage.ts";
 
 /** How often the server checks, with the page open or not. */
@@ -189,7 +190,7 @@ export const LIMIT_SETTINGS_HELP = {
   notify: "Send a notification, through bb's push-notifications plugin, with the same text when a usage notice is raised. The notice in cow's queue is there either way.",
 };
 
-export function registerLimits(bb: BbPluginApi, log: LogStore, month: (month: string) => Promise<SpendPart & { priceError: string | null }>): Limits {
+export function registerLimits(bb: BbPluginApi, log: LogStore, month: (month: string) => Promise<SpendPart & { priceError: string | null }>, ticker: Ticker): Limits {
   const settings = bb.settings.define({
     monthlyBudget: {
       type: "string",
@@ -236,13 +237,8 @@ export function registerLimits(bb: BbPluginApi, log: LogStore, month: (month: st
     warn: (text) => bb.log.warn(text),
   });
   const run = () => void limits.check().catch((cause: unknown) => bb.log.warn(`could not check usage: ${String(cause)}`));
-  // The first check waits for the rest of cow to load; then one every few minutes, page open or not.
-  const first = setTimeout(run, 20_000);
-  const every = setInterval(run, CHECK_EVERY_MS);
+  // On cow's one timer, shared with the caps and stuck checks: the first check waits for the rest of cow to load; then one every few minutes, page open or not.
+  ticker.every("usage", CHECK_EVERY_MS, () => limits.check());
   settings.onChange(run);
-  bb.onDispose(() => {
-    clearTimeout(first);
-    clearInterval(every);
-  });
   return limits;
 }

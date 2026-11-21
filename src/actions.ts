@@ -44,7 +44,7 @@ import { Refusal } from "./kv.ts";
 import { type Judgement, type LabelNote, type LedgerRow, type LedgerSummary, type Outcome, PERSON, type RowCost, inWindow, labelOf, summarize } from "./ledger.ts";
 import type { LedgerStore } from "./ledger-store.ts";
 import { type StatusReport, statusReport } from "./status.ts";
-import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds } from "./tree.ts";
+import { type Line, archivedOutsideIds, buildOverview, descendantIds, lineOf, projectIds, workerShaped } from "./tree.ts";
 import { NOT_UNDER_MAIN, insteadFromCli, verbBlocked } from "./verbs.ts";
 import { archivePlace } from "./outside.ts";
 import { type TraceAction, type TraceInput, parkWaitedOn } from "./traces.ts";
@@ -316,7 +316,9 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   const notWorker = async (threads: readonly ThreadFacts[], target: ThreadFacts): Promise<string | null> => {
     if (Object.values((await readMains()).mains).includes(target.id)) return "it is a Main, not a worker";
     const marked = Object.keys((await notes([target.id])).projects);
-    if (projectIds(threads, marked, null).has(target.id)) return "it is a project, not a worker";
+    // A thread under another whose own threads are all archived is a worker; one with a live thread under it, or marked, is a project.
+    const project = target.parentThreadId !== null ? !workerShaped(threads, target, marked) : projectIds(threads, marked, null).has(target.id);
+    if (project) return "it is a project, not a worker";
     const automations = (await raised?.automations?.().catch(() => NO_AUTOMATIONS)) ?? NO_AUTOMATIONS;
     if (target.originPluginId === AUTOMATIONS_PLUGIN || runThreadIds(automations).includes(target.id)) return "it is an automation's run, not a worker";
     return null;

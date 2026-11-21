@@ -82,6 +82,17 @@ export interface StatusLine {
   leftBehind?: string[];
   /** For an archived worker: what it came to, as last judged, and by whom ("person" or a thread's id). */
   outcome?: { outcome: string; by: string };
+  /** For a worker over a cap or caught by a stuck check: which, in the mark's words, with the facts. Shown, never enforced. Absent when none. */
+  watch?: { reason: string; mark: string; facts: Record<string, string | number | null> }[];
+}
+
+/** The same report with each worker's line carrying its caps and stuck-check marks. */
+export function withWatch<T extends StatusReport>(report: T, marks: Readonly<Record<string, readonly { reason: string; mark: string; facts: Record<string, string | number | null> }[]>>): T {
+  const marked = <L extends StatusLine>(line: L): L => {
+    const found = marks[line.id];
+    return found && found.length > 0 ? { ...line, watch: found.map(({ reason, mark, facts }) => ({ reason, mark, facts })) } : line;
+  };
+  return { ...report, main: marked(report.main), queue: report.queue.map(marked), threads: report.threads.map(marked), parked: report.parked.map(marked), settle: report.settle.map(marked), kept: report.kept.map(marked), archived: report.archived.map(marked) };
 }
 
 /** The same report with each line saying which capabilities its thread holds. */
@@ -232,6 +243,7 @@ export function statusReport(overview: Overview, now: number, truncated: boolean
 const nextOf = (line: StatusLine): string => (line.note !== null ? ` → next, in its words: ${line.note}` : line.next ? ` → ${line.next}` : "");
 
 /** The capabilities a line's thread holds, by name. */
+const watched = (line: StatusLine): string => (line.watch && line.watch.length > 0 ? `  [${line.watch.map((w) => w.mark).join("; ")}]` : "");
 const holds = (line: StatusLine): string => (line.capabilities && line.capabilities.length > 0 ? `  [holds: ${line.capabilities.join(", ")}]` : "");
 
 function row(line: StatusLine, indent: boolean): string[] {
@@ -244,7 +256,7 @@ function row(line: StatusLine, indent: boolean): string[] {
   const behind = line.leftBehind && line.leftBehind.length > 0 ? `  [archiving leaves: ${line.leftBehind.join(", ")}]` : "";
   const outcome = line.outcome ? `  [outcome: ${line.outcome.outcome}, judged by ${line.outcome.by === "person" ? "the person" : line.outcome.by}]` : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${outcome}${holds(line)}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${outcome}${watched(line)}${holds(line)}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }
