@@ -30,7 +30,8 @@ export const taskIdsOf = (material: Material): string[] => (material.task.state 
 export const changedPathsOf = (material: Material): string[] => (material.diff.state === "collected" ? material.diff.files.map((file) => file.path) : []);
 
 const fence = (kind: string, nonce: string, text: string): string[] => [`----- BEGIN ${kind} ${nonce} -----`, text, `----- END ${kind} ${nonce} -----`];
-const list = (paths: readonly string[]): string => paths.join(", ");
+/** Paths named outside a fence. The agent chose them, so each is quoted: one with a line break in its name cannot start a line of its own. */
+const list = (paths: readonly string[]): string => paths.map((path) => JSON.stringify(path)).join(", ");
 
 /**
  * The checker's whole prompt. `nonce` marks where untrusted text (the task,
