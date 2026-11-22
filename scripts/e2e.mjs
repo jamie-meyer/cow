@@ -2125,8 +2125,8 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   await page.key("Escape");
   await page.waitFor(`${mode} === "normal"`, { label: "closed with Escape" });
   check("q and Escape close it", true);
-  await usageChecks(page, shot);
   await watchChecks(page, ids, shot);
+  await usageChecks(page, shot);
 }
 
 /**
@@ -2247,7 +2247,8 @@ async function watchChecksIn(page, ids, shot) {
 
 /**
  * Tokens during a turn (0.2.23), on the copy's own settings (put back after):
- * with liveUsage on and a dollars cap of a tenth of a cent, a worker whose
+ * with liveUsage on and a dollars cap of a tenth of a cent for the label of
+ * one fixture (and no other worker), a worker whose
  * turn runs four slow commands has its tokens so far rise while the turn
  * runs, the mark (saying the figure is read from Claude Code's transcript)
  * and exactly one notice come while it still runs, and its line shows the
@@ -2260,10 +2261,13 @@ async function liveChecks(page, ids, shot, set) {
   const { lmain } = ids;
   const SLOW = "python3 -c 'import time; time.sleep(15)'";
   const LONG = `You are a test fixture for a bb plugin. Run this shell command four times, one at a time, each as its own separate tool call, waiting for each to finish before the next: ${SLOW}. Run nothing else, and nothing in the background. Then reply with exactly: ok`;
-  await set("caps", JSON.stringify({ "*": { dollars: 0.001 } }));
-  await set("liveUsage", true);
+  // The cap is for the fixture's own label only: no other worker on this bb is marked or told, in the copy's queue or anywhere.
+  const LABEL = "cow-live-check";
   try {
     const llive = (inUse.llive = ids.llive = await spawn({ prompt: LONG, parent: lmain, permissionMode: "full" }));
+    check("its dispatcher labels the fixture", (await cowAs(lmain, "label", llive, LABEL)).code === 0);
+    await set("caps", JSON.stringify({ [LABEL]: { dollars: 0.001 } }));
+    await set("liveUsage", true);
     const reading = async () => (await rpc("watch_read", null)).live?.[llive] ?? null;
     const statusOf = async () => JSON.parse(await plain("thread", "show", llive, "--json")).status;
     let first = null;

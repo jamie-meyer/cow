@@ -43,8 +43,8 @@ const sum = (read: TranscriptRead) => {
 const BB_TOTAL = { input: 14, cacheRead: 166924, cacheWrite: 40327, output: 1042 };
 
 test("the folder is the path with every character but letters and digits made a dash", () => {
-  assert.equal(folderNameOf("/private/var/folders/6_/xy/T/cowfix.Ab12"), "-private-var-folders-6--xy-T-cowfix-Ab12");
-  assert.equal(folderNameOf("/Users/me/0/cow"), "-Users-me-0-cow");
+  assert.equal(folderNameOf("/private/var/folders/ab/c_d/T/tmp.Ab12"), "-private-var-folders-ab-c-d-T-tmp-Ab12");
+  assert.equal(folderNameOf("/Users/me/work/app"), "-Users-me-work-app");
 });
 
 test("a fixture's transcript: each message id counted once, equal to bb's figure; sidechain entries are not counted", () => {
