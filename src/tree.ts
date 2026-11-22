@@ -50,6 +50,12 @@ export interface Line {
   note: string | null;
   /** It is a project: "marked" by the person or an agent, or a "head" with threads under it. Null for any other line. */
   project: "marked" | "head" | null;
+  /**
+   * It is a worker for outcomes and `e`'s question, as workerShaped says: it
+   * has a parent, is not marked, and every thread under it is archived. A
+   * "head" whose own threads are all archived is one. Absent: no project is one.
+   */
+  worker?: boolean;
   /** The person marked it seen on this page, and it stays in its place instead of moving to To settle. */
   stays?: true;
   /** A run of an automation, listed under it in the Automations section: the row id of that automation. */
@@ -175,6 +181,9 @@ export function headIds(threads: readonly ThreadFacts[]): Set<string> {
  * archived. A worker that started and archived threads of its own is still a
  * worker. Main and automations' runs are the caller's to rule out.
  */
+/** Whether a line on the page is a worker for outcomes: what workerShaped says, and never an automation's run. Main is the caller's to rule out. */
+export const lineIsWorker = (line: Line): boolean => line.run === undefined && (line.worker ?? line.project === null);
+
 export function workerShaped(threads: readonly ThreadFacts[], target: ThreadFacts, marked: Iterable<string>): boolean {
   if (target.parentThreadId === null) return false;
   for (const id of marked) if (id === target.id) return false;
@@ -289,6 +298,7 @@ export function buildOverview(
     unseenUnder: 0,
     note: node.thread.archivedAt === null ? plans.note(node.thread.id) : null,
     project: plans.marked?.(node.thread.id) ? "marked" : node.kids.length > 0 ? "head" : null,
+    worker: node.thread.parentThreadId !== null && !plans.marked?.(node.thread.id) && !node.kids.some((kid) => kid.thread.archivedAt === null),
     ...(node.stays ? { stays: true as const } : {}),
   });
   /** A finished member stays in its open group this long; an archived line is listed this long. */

@@ -10,7 +10,7 @@ import { PRICES_SETTING_HELP, type Prices, dollarsOf, priceOf, pricesWith } from
 import { descendantIds } from "./tree.ts";
 import { type Spend, type SpendFacts, type SpendPart, spendOf, spendThreads } from "./spend.ts";
 import { type UsageStore, createUsageStore, sdkUsageEvents } from "./usage-store.ts";
-import { MONTH_PATTERN, NO_USAGE, type Period, lastDays, monthPeriod, periodStart } from "./usage.ts";
+import { MONTH_PATTERN, NO_USAGE, type Period, type Tokens, lastDays, monthPeriod, periodStart } from "./usage.ts";
 
 const PAGE = 200;
 const MAX_THREADS = 5000;
@@ -28,6 +28,8 @@ export interface LedgerBackend {
   everything(): Promise<SpendPart & { period: Period; truncated: boolean; priceError: string | null }>;
   /** A thread's list-price dollars so far, from the usage read as each turn ended; null when none is known or no model it used has a price. */
   dollars(threadId: string): Promise<number | null>;
+  /** List-price dollars of tokens by model, at the thread's cache lifetime: for a running turn read from a transcript. Null when no model has a price. */
+  priced(threadId: string, tokens: Readonly<Record<string, Tokens>>): Promise<number | null>;
 }
 
 async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<void> {
@@ -170,5 +172,16 @@ export function registerLedger(
     return sum;
   };
 
-  return { ledger, usage, costing, spend, everything, dollars };
+  const priced: LedgerBackend["priced"] = async (threadId, tokens) => {
+    const ttl = (await usage.kept(threadId))?.ttlMs ?? null;
+    const set = await prices();
+    let sum: number | null = null;
+    for (const [model, t] of Object.entries(tokens)) {
+      const price = priceOf(set.prices, model);
+      if (price !== null) sum = (sum ?? 0) + dollarsOf(t, price, ttl);
+    }
+    return sum;
+  };
+
+  return { ledger, usage, costing, spend, everything, dollars, priced };
 }

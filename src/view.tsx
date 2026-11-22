@@ -34,7 +34,8 @@ import type { Use } from "./caps/service.ts";
 import type { Refusal } from "./refusal.ts";
 import { type Signer, useSigner } from "./signing/page.ts";
 import { UsageLine, UsageNotice, useLimits } from "./UsageLine.tsx";
-import { WatchMark, WatchNoticeItem, useWatch } from "./WatchMarks.tsx";
+import { LiveDollars, WatchMark, WatchNoticeItem, useWatch } from "./WatchMarks.tsx";
+import type { LiveFigure } from "./watch-backend.ts";
 import type { Finding } from "./progress.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
 import { Asides } from "./Asides.tsx";
@@ -97,6 +98,7 @@ import {
   leftBehind,
   listed,
   nextMove,
+  lineIsWorker,
   projectIds,
   sectionFolded,
   sectionOf,
@@ -441,10 +443,13 @@ function LineRow({
   sidebar,
   outcome,
   watch,
+  live,
 }: {
   line: Line;
   /** What the worker is over or caught by now (caps and stuck checks): shown, never enforced. */
   watch?: readonly Finding[];
+  /** Its running turn read from Claude Code's transcript (the liveUsage setting): dollars so far. */
+  live?: LiveFigure;
   /** What the worker came to, when someone said: shown under Archived and To settle. */
   outcome?: Judgement;
   /** bb's own copy of the thread, which other plugins' badges are drawn for; absent when bb's list does not hold it. */
@@ -617,6 +622,7 @@ function LineRow({
           </b>
         ) : null}
         {watch && watch.length > 0 ? <WatchMark found={watch} /> : null}
+        {live ? <LiveDollars live={live} /> : null}
         {derived.archivedWhy ? (
           <b className="cow-why" data-cow-archive-reason="">
             archived: {derived.archivedWhy}
@@ -2431,6 +2437,7 @@ function OverviewScreen({
         sidebar={sidebarIndex.get(line.thread.id)}
         outcome={judgedHere(line) ? ledger.outcomes.get(line.thread.id) : undefined}
         watch={line.thread.archivedAt === null ? watch.marks[line.thread.id] : undefined}
+        live={line.thread.archivedAt === null ? watch.live[line.thread.id] : undefined}
       />
       {card(line.thread.id)}
     </Fragment>
@@ -2983,7 +2990,7 @@ function OverviewScreen({
                 {selectedLine && !selectedTodo && selectedLine.run === undefined && selectedLine.thread.archivedAt === null && selectedLine.derived.state !== "parked" && selectedLine.derived.state !== "kept" ? (
                   <Verb keys="w" label={selectedLine.derived.wait ? "clear wait" : "waiting on…"} name="wait" onRun={() => verbs.startWait(selectedLine)} />
                 ) : null}
-                {selectedLine && judgedHere(selectedLine) && selectedLine.project === null && selectedLine.run === undefined ? (
+                {selectedLine && judgedHere(selectedLine) && lineIsWorker(selectedLine) ? (
                   <Verb keys="o" label={ledger.outcomes.has(selectedLine.thread.id) ? "change outcome" : "outcome"} name="outcome" why="what the worker came to, for the ledger: L shows it" onRun={() => run({ kind: "outcome" })} />
                 ) : null}
                 {lineRows.length > 0 ? (

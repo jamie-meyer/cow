@@ -209,8 +209,13 @@ and `dollars`; empty means none) and three stuck checks, on by default (the
 same call 3 times in a row, a running turn quiet for 15 minutes, one item in
 progress for 45; 0 turns each off), put a mark on the worker's line, such as
 `over cap: 41 of 40 tool calls` or `quiet 22m`, and one notice per worker per
-reason in your queue. **cow never stops, pauses or messages the worker.**
-Details are under [Caps and stuck checks](docs/reference.md#caps-and-stuck-checks).
+reason in your queue, sent as a notification too unless `watchNotify` is
+off. **cow never stops, pauses or messages the worker.** A `dollars` cap is
+known once a turn has ended; with `liveUsage` on (off by default), cow reads
+a running Claude Code worker's token counts from its transcript, so the cap
+applies during the turn and its line shows `$0.42 so far`; bb's own figure
+replaces the reading when the turn ends. Details are under
+[Caps and stuck checks](docs/reference.md#caps-and-stuck-checks).
 
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
@@ -608,6 +613,20 @@ it in cow's queue only:
 ```sh
 bb plugin config cow set usageNotify false
 ```
+
+A worker notice (a cap or a stuck check) goes the same way, one per worker
+per reason, unless `watchNotify` is off:
+
+```sh
+bb plugin config cow set watchNotify false
+```
+
+With `liveUsage` on (it is off unless you turn it on), cow's host entry
+reads, on a running worker's machine and only while its turn runs on Claude
+Code, the one transcript file Claude Code writes for that worker's session
+under `~/.claude/projects/`, and takes from it only token counts, model ids,
+times and message ids (kept as hashes): no text, tool input or file name.
+Details are under [Tokens during a turn](docs/reference.md#tokens-during-a-turn-liveusage).
 
 For the context card, cow's server asks bb's own git and pull-request
 plugins about the selected thread's environment, and asks each plugin that

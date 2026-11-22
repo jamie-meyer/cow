@@ -4,6 +4,61 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.23
+
+- **Tokens and dollars while a turn runs, if you turn it on.** A new setting,
+  `liveUsage`, off by default: with it on, for a worker whose turn is running
+  on Claude Code, cow's host entry reads the token counts Claude Code writes
+  to that session's transcript (`~/.claude/projects/<folder>/<session
+  id>.jsonl` on the worker's machine) as the turn goes. It takes only the
+  message id (kept as a hash), the model, the four token counts, the time and
+  whether a sub-agent wrote the line; no text, tool input or file name is read
+  out or kept. It refuses a session id that is not plain, follows no link,
+  opens nothing else, and reads at most 4 MiB a call. A `dollars` cap then
+  applies during the turn, its mark says the figure is read from Claude
+  Code's transcript, and the worker's line shows its dollars so far. When the
+  turn ends, bb's own figure replaces the reading: the ledger, the month's
+  spend and the usage line count bb's figure only, and nothing is counted
+  twice. With it off, or for any other provider, nothing changes, and a
+  dollars cap is known once a turn has ended.
+- **A sub-agent's tokens are not in bb's figure.** Checked on bb 0.50 with
+  Claude Code: a sub-agent writes to files of its own, and bb's end-of-turn
+  total equalled the session's own file alone. The reference said the
+  opposite; it is corrected. cow's dollars, from bb or from the transcript,
+  leave a sub-agent's out.
+- **Worker notices are sent as notifications**, through bb's
+  push-notifications plugin as the usage notices are, one per worker per
+  reason. A new setting, `watchNotify`, on by default, turns that off.
+- **On the page, a worker with threads of its own is a worker** once those
+  threads are all archived, as `bb cow` has said since 0.2.21: `e` asks what
+  it came to and `o` sets it. A thread with a live thread under it, a marked
+  project and Main are still not asked. Groups are drawn as before.
+- **The last 30 days, not the calendar month.** The usage line, `bb cow usage`,
+  `bb cow spend` and the `L` sheet's spend part now cover today and the 29
+  days before it. `bb cow spend --month YYYY-MM` still gives a calendar
+  month. The budget is a budget for 30 days: the setting is `budget30Days`,
+  and `monthlyBudget` is still read when that is empty. There is no pace any
+  more. You are told once when the 30-day total reaches 80% of the budget and
+  once when it reaches the budget; each comes back only after the total has
+  fallen below its mark and risen to it again.
+- **A file that vanishes during the copy is not fatal.** A file or directory
+  deleted from a source while it is cloned (git's `.git/index.lock` above
+  all) is left out, at any depth, and the clone goes on. A permission error,
+  a full disk or a missing source still fails it.
+- **A command cannot hold up every clone.** A sync, setup, back or teardown
+  is over when it exits. A process it left running no longer keeps it, and
+  every later clone or removal on the machine, waiting past its time limit.
+  A command that starts a background job with `&` now returns when its
+  shell exits and leaves that job running.
+- **A commit that is on the remote is saved.** When a clone is removed, a
+  commit that one of the clone's own remote-tracking refs contains counts
+  as saved: a pushed branch or a fetched newer `main` no longer holds the
+  clone. cow reads the clone's record of the remote and contacts none.
+- **`"branch": "keep"`.** On a `bring` entry it leaves that repository on
+  what it was copied on, with no thread branch. It is covered by approval
+  and shown by `W` and `bb cow workspace`. Bringing work back skips it and
+  says why.
+
 ## 0.2.22
 
 - **The checker's diff covers the repositories a workspace brings.** In a

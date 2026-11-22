@@ -1,0 +1,23 @@
+{"type": "user", "timestamp": "2026-11-21T23:48:48.864Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:48:50.237Z", "isSidechain": false, "message": {"id": "msg_sample01", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 13453, "cache_creation_input_tokens": 17159, "output_tokens": 141}}}
+{"type": "user", "timestamp": "2026-11-21T23:48:50.703Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:48:53.764Z", "isSidechain": false, "message": {"id": "msg_sample02", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 30612, "cache_creation_input_tokens": 3946, "output_tokens": 289}}}
+{"type": "assistant", "timestamp": "2026-11-21T23:48:53.766Z", "isSidechain": false, "message": {"id": "msg_sample02", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 30612, "cache_creation_input_tokens": 3946, "output_tokens": 289}}}
+{"type": "user", "timestamp": "2026-11-21T23:48:55.392Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:48:55.392Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:48:56.315Z", "isSidechain": false, "message": {"id": "msg_sample03", "model": "claude-haiku-5-5", "usage": {"input_tokens": 4, "cache_read_input_tokens": 34558, "cache_creation_input_tokens": 720, "output_tokens": 3}}}
+{"type": "user", "timestamp": "2026-11-21T23:48:56.334Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:48:56.334Z", "isSidechain": false}
+{"type": "system", "timestamp": "2026-11-21T23:50:11.376Z", "isSidechain": false, "subtype": "compact_boundary"}
+{"type": "user", "timestamp": "2026-11-21T23:50:11.375Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:50:06.474Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:50:06.474Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:50:11.483Z", "isSidechain": false}
+{"type": "user", "timestamp": "2026-11-21T23:50:33.355Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:50:36.273Z", "isSidechain": false, "message": {"id": "msg_sample04", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 17457, "cache_creation_input_tokens": 17698, "output_tokens": 380}}}
+{"type": "assistant", "timestamp": "2026-11-21T23:50:36.275Z", "isSidechain": false, "message": {"id": "msg_sample04", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 17457, "cache_creation_input_tokens": 17698, "output_tokens": 380}}}
+{"type": "user", "timestamp": "2026-11-21T23:50:36.702Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:50:38.608Z", "isSidechain": false, "message": {"id": "msg_sample05", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 35155, "cache_creation_input_tokens": 534, "output_tokens": 225}}}
+{"type": "assistant", "timestamp": "2026-11-21T23:50:38.610Z", "isSidechain": false, "message": {"id": "msg_sample05", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 35155, "cache_creation_input_tokens": 534, "output_tokens": 225}}}
+{"type": "user", "timestamp": "2026-11-21T23:50:40.177Z", "isSidechain": false}
+{"type": "assistant", "timestamp": "2026-11-21T23:50:40.867Z", "isSidechain": false, "message": {"id": "msg_sample06", "model": "claude-haiku-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 35689, "cache_creation_input_tokens": 270, "output_tokens": 4}}}

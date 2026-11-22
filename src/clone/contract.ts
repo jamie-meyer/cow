@@ -249,6 +249,42 @@ export const cloneHostContract = defineRpcContract({
       z.object({ status: z.literal("none"), why: z.string() }),
     ]),
   },
+  /**
+   * A running worker's token counts so far, from Claude Code's transcript for
+   * its session in its environment: see src/transcript/read.ts. Reads only;
+   * only numbers, a hashed message id and the model leave it. cow's server
+   * asks only with the liveUsage setting on.
+   */
+  transcript_usage: {
+    input: z.object({
+      path: absolute,
+      session: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      offset: z.number().int().min(0),
+      partial: z.boolean(),
+    }),
+    output: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("none"), why: z.string() }),
+      z.object({
+        status: z.literal("read"),
+        offset: z.number().int().min(0),
+        partial: z.boolean(),
+        reset: z.boolean(),
+        size: z.number().int().min(0),
+        messages: z.array(
+          z.object({
+            key: z.string().regex(/^[0-9a-f]{16}$/),
+            model: z.string().max(100),
+            at: z.number().nullable(),
+            input: z.number().min(0),
+            cacheRead: z.number().min(0),
+            cacheWrite: z.number().min(0),
+            output: z.number().min(0),
+          }),
+        ),
+        sidechain: z.number().int().min(0),
+      }),
+    ]),
+  },
   /** Remove a held clone for good. Only for a signed call. */
   held_remove: {
     input: z.object({ id: z.string().max(220) }),

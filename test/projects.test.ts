@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { cowCli } from "../src/cli.ts";
 import { type Attention, LIMITS, atRest, derive, isSettling } from "../src/state.ts";
 import { statusReport, statusText } from "../src/status.ts";
-import { buildOverview, lineOf, projectIds } from "../src/tree.ts";
+import { buildOverview, lineIsWorker, lineOf, projectIds, workerShaped } from "../src/tree.ts";
 import { undoShort, undoText } from "../src/undo.ts";
 import { verbBlocked } from "../src/verbs.ts";
 import { DAY, HOUR, MINUTE, NOW, activity, thread } from "./fixtures.ts";
@@ -234,4 +234,26 @@ test("status says unread on an idle project, and on Main, whose reply the person
   const text = statusText(report);
   assert.match(text, /^Main: main \(main\) \[unread\] · idle /);
   assert.match(text, /idle\s+1h  p \(p\) \[project\] \[unread\]  Noted\./);
+});
+
+test("on the page, a line is a worker for e and o as workerShaped says: a head whose own threads are all archived is one; a marked one, or one with a live thread under it, is not", () => {
+  const threads = [
+    thread({ id: "main" }),
+    thread({ id: "had", parentThreadId: "main" }),
+    thread({ id: "gone", parentThreadId: "had", archivedAt: NOW - HOUR }),
+    thread({ id: "head", parentThreadId: "main" }),
+    thread({ id: "kid", parentThreadId: "head", status: "active" }),
+    thread({ id: "marked", parentThreadId: "main" }),
+    thread({ id: "plain", parentThreadId: "main" }),
+  ];
+  const projects = projectIds(threads, ["marked"], "main");
+  const overview = buildOverview(threads, "main", (t) => derive(t, undefined, NOW, null, null, null, { project: projects.has(t.id), main: t.id === "main", seenSeq: null }), NOW, { note: () => null, todos: () => [], marked: (id) => id === "marked" });
+  const all = [...overview.lines, ...overview.settle, ...overview.archived];
+  const of = (id: string) => all.find((line) => line.thread.id === id)!;
+  assert.equal(of("had").project, "head", "drawn as a group head, as before");
+  assert.equal(lineIsWorker(of("had")), true);
+  assert.equal(lineIsWorker(of("plain")), true);
+  assert.equal(lineIsWorker(of("marked")), false);
+  assert.equal(lineIsWorker(of("head")), false);
+  for (const id of ["had", "plain", "marked", "head"]) assert.equal(lineIsWorker(of(id)), workerShaped(threads, threads.find((t) => t.id === id)!, ["marked"]), id);
 });

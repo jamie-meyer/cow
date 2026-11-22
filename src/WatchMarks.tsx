@@ -10,7 +10,9 @@ import type { rpcContract } from "../server.ts";
 import { type Finding, WATCH_CHANGED } from "./progress.ts";
 import type { Signer } from "./signing/page.ts";
 import { formatAge } from "./text.ts";
-import type { WatchNotice, WatchReport } from "./watch-backend.ts";
+import type { LiveFigure, WatchNotice, WatchReport } from "./watch-backend.ts";
+import { dollarText } from "./prices.ts";
+import { tokensText } from "./usage.ts";
 
 /** The page reads the marks again this often, besides whenever the server says they changed: the time-based ones move by the minute. */
 const READ_EVERY_MS = 60_000;
@@ -19,6 +21,8 @@ export interface WatchData {
   marks: Readonly<Record<string, readonly Finding[]>>;
   notices: readonly WatchNotice[];
   errors: readonly string[];
+  /** Running workers' turns read from Claude Code's transcript, with the liveUsage setting on. */
+  live: Readonly<Record<string, LiveFigure>>;
   acknowledge: (noticeId: string) => Promise<void>;
 }
 
@@ -44,6 +48,7 @@ export function useWatch(signer: Signer): WatchData {
       marks: report?.marks ?? {},
       notices: report?.notices ?? [],
       errors: report?.errors ?? [],
+      live: report?.live ?? {},
       acknowledge: async (noticeId) => {
         await signer.call("watch_ack", { noticeId });
         setReport((current) => (current ? { ...current, notices: current.notices.filter((notice) => notice.id !== noticeId) } : current));
@@ -75,5 +80,15 @@ export function WatchNoticeItem({ notice, now, onAck }: { notice: WatchNotice; n
         <small>worker · {formatAge(Math.max(0, now - notice.at))} · a click or its hint acknowledges it; it does not come back for this worker</small>
       </div>
     </li>
+  );
+}
+
+/** On a running worker's line, with liveUsage on: its list-price dollars so far, the running turn read from Claude Code's transcript. */
+export function LiveDollars({ live }: { live: LiveFigure }) {
+  return (
+    <small className="cow-live" data-cow-live-dollars={live.dollars === null ? "" : String(live.dollars)} data-cow-live-tokens={live.tokens} title="list price so far: the turns that ended from bb, the running one read from Claude Code's transcript; bb's own figure replaces it when the turn ends">
+      {live.dollars === null ? `${tokensText(live.tokens)} tokens this turn` : `${dollarText(live.dollars)} so far`}
+      {" · "}
+    </small>
   );
 }

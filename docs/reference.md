@@ -1578,8 +1578,9 @@ shows "came to: done" on a line under Archived or To settle.
 **Where the tokens come from.** bb records, at the end of a turn, an event
 `thread/tokenUsage/updated` with two sets of counts. On bb 0.50 with Claude
 Code, `total` is the running sum of every model call of the provider's
-process so far, across its turns, the calls of the turn's sub-agents
-included, and it carries on across a compaction (the compaction's own
+process so far, across its turns (a sub-agent's calls were not in it when
+checked in 0.2.23: see [Tokens during a turn](#tokens-during-a-turn-liveusage)),
+and it carries on across a compaction (the compaction's own
 summarizing call is not in it); `last` is the latest turn's. bb does not
 keep every such event: older ones are dropped after a few turns, and a
 compaction drops all but the latest. A new provider process starts its
@@ -1768,7 +1769,8 @@ command past those 60 characters.
 with `*` for workers of any other label or none. Each entry has any of
 `toolCalls` (a whole number), `minutes` (wall-clock since the worker's first
 turn started) and `dollars` (list price, from the usage cow reads as each
-turn ends: **so known only once a turn has ended**, never during one). Such
+turn ends: **so known only once a turn has ended**, unless `liveUsage` is on;
+see [Tokens during a turn](#tokens-during-a-turn-liveusage)). Such
 as:
 
     {"lookup": {"toolCalls": 40, "minutes": 20}, "code-change": {"dollars": 5}, "*": {"minutes": 90}}
@@ -1796,7 +1798,9 @@ background ends a turn, and a new one starts when it finishes.
 **The mark.** A worker over a cap or caught by a check has, on its line,
 which and by how much, for as long as it is true: `over cap: 512 of 400 tool
 calls`, `over cap: 95 of 60 minutes`, `over cap: $3.20 of $2.00 (list price,
-known only once a turn has ended)`, `the same command 4 times` (or "the same
+known only once a turn has ended)` (with `liveUsage` on and the turn running
+on Claude Code: `(list price, the running turn read from Claude Code's
+transcript)`), `the same command 4 times` (or "the same
 tool call"), `quiet 22m`, `one command in progress 52m`. `bb cow status`
 shows the same marks in brackets at the end of the line, and `--json` gives
 each as `watch: [{reason, mark, facts}]`, the facts being the numbers behind
@@ -1810,11 +1814,72 @@ collected and nothing else, such as: “Fix the parser” (lookup) is over cap:
 does not stop it. A click, or its hint (`f`), acknowledges it as a signed
 call (`watch_ack`) logged under your key; an unsigned call is refused. Once
 raised, that reason does not come back for that worker, acknowledged or not;
-the mark stays while it is true.
+the mark stays while it is true. With `watchNotify` on (the default), each
+notice is also sent as a notification through bb's push-notifications
+plugin, the same route as the usage notices: so at most one per worker per
+reason. The notice is in your queue either way.
 
 **When it is checked.** When a worker's events change, and once a minute on
 cow's one timer, which the usage notices share, page open or not, and when a
 setting changes. `bb cow status` checks every worker as it reads.
+
+### Tokens during a turn (`liveUsage`)
+
+bb reports a thread's tokens only when a turn ends, and a worker is often one
+long turn, so without more a `dollars` cap can say nothing until the worker
+has finished. With the setting `liveUsage` on (**off by default**), cow reads
+the token counts Claude Code writes as the turn goes.
+
+**What is read.** Only for a worker cow checks (see above) whose turn is
+running, on Claude Code, and only while it runs. cow's host entry, on the
+worker's machine, opens one file: `~/.claude/projects/<folder>/<session
+id>.jsonl`, where `<folder>` is the worker's environment path with every
+character but letters and digits made `-` (from the path as bb gives it, and
+from its real path), and the session id is bb's `providerThreadId` for the
+thread. It builds that path itself, refuses a session id that is not plain
+(letters, digits, `-`, `_`), follows no link (neither the folder nor the
+file may be one), opens nothing else, reads at most 4 MiB a call (four calls
+a check; a long transcript is caught up over a few checks, and a single line
+longer than a read is passed over), and leaves a half-written last line for
+the next read. A missing file is no usage known, not an error. From each
+line that holds usage it takes `message.id`, `message.model`, the four counts
+(`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`,
+`output_tokens`), `timestamp` and `isSidechain`; one message is written as
+several lines with the same usage, so each `message.id` counts once.
+
+**What is kept.** In the worker's progress record: the session id, where the
+next read starts, this turn's four counts by model, and a hash of each of the
+last 64 message ids with its counts (to count a message whose lines span two
+reads once). **No text, no tool input, no file name or path from the
+transcript is read out of the host entry or kept: only numbers**, model ids
+and hashes. Nothing is read or kept for a thread that is not a running
+worker, or with the setting off.
+
+**What it gives.** Model calls stamped from the turn's start (or from bb's
+latest usage event in it) on count; earlier ones are passed over. Their
+list-price dollars, added to bb's figure for the turns that ended, are what
+the `dollars` cap is held to while the turn runs, and the worker's line shows
+`$0.42 so far` (or the tokens, with no price for its model). The mark says
+the figure is read from Claude Code's transcript. **When the turn ends, bb's
+own figure replaces the reading**: the reading is dropped when bb writes the
+turn's usage or its end, and bb's figure is read before the events in each
+check, so a turn can be missing for a moment and is never counted twice. The
+usage cow keeps per thread (the ledger, the month's spend, the usage line)
+comes from bb's figure only, as before.
+
+**What was found, and what was not.** On bb 0.50 with Claude Code, the four
+counts summed this way over a turn equal bb's end-of-turn `total` exactly. A
+compaction appends to the same file under the same session id; its own
+summarizing call writes no usage line, and bb does not count it either. A
+sub-agent writes its lines (`isSidechain` true) to files of its own, beside
+the session's file under `<session id>/subagents/`, which cow does not read,
+and bb's `total` did not include them in that check: so neither figure counts
+a sub-agent's tokens. Not found: what happens to the file and the session id
+when the provider process starts again (cow starts the file again from the
+beginning when the session id changes, and when the file is shorter than
+where it had read to). A folder name over 200 characters, which Claude Code
+shortens with a hash, is not found: no usage is known for it. Any other
+provider: no reading, as before.
 
 ## Undo
 
