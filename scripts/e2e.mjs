@@ -2147,6 +2147,9 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   await watchChecks(page, ids, shot);
   await usageChecks(page, shot);
   await deletedChecks(lmain, ltwo);
+  // Gone from bb: nothing of it is left to clear or archive.
+  delete ids.ltwo;
+  delete inUse.ltwo;
 }
 
 /** A deleted worker's usage is still counted under its Main until it is forgotten on purpose. Deletes one of this run's own fixtures. */
