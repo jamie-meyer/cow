@@ -6,7 +6,7 @@ import { ROW_PREFIX, createLedgerStore } from "../src/ledger-store.ts";
 import { LIST_PRICES, LIST_PRICE_NOTE, cacheWritePrice, dollarsOf, priceOf, pricesWith } from "../src/prices.ts";
 import { type SpendFacts, spendOf, spendText, spendThreads } from "../src/spend.ts";
 import { USAGE_PREFIX, createUsageStore } from "../src/usage-store.ts";
-import { NO_USAGE, dayOf, foldUsage, monthStart, monthUsage, readUsage, tokensOf, usageTotal } from "../src/usage.ts";
+import { NO_USAGE, type UsageState, dayOf, foldUsage, lastDays, monthPeriod, monthStart, monthUsage, periodStart, periodUsage, readUsage, tokensOf, usageTotal } from "../src/usage.ts";
 import { HOUR, NOW } from "./fixtures.ts";
 import { memoryKv } from "./memory.ts";
 
@@ -347,7 +347,51 @@ const facts = (id: string, parentThreadId: string | null, extra: Partial<SpendFa
   ...extra,
 });
 
-test("the month: workers, project threads, Main and checker runs apart, archived ones too, and threads with no usage said", () => {
+/** Runs `body` with the process's local time zone set to `zone`, and puts it back. */
+function inZone(zone: string, body: () => void) {
+  const before = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    body();
+  } finally {
+    if (before === undefined) delete process.env.TZ;
+    else process.env.TZ = before;
+  }
+}
+
+test("the last 30 days are today and the 29 local days before it: day 29 counts, day 30 does not, across a month and a change of clocks", () => {
+  const one = { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const check = (zone: string, today: [number, number, number], first: string, last: string) =>
+    inZone(zone, () => {
+      const [y, m, d] = today;
+      // Late on day 0, early on day 29, late on day 30: the edges of the window.
+      const now = new Date(y, m, d, 23, 50).getTime();
+      const day0 = dayOf(new Date(y, m, d, 0, 5).getTime());
+      const day29 = dayOf(new Date(y, m, d - 29, 0, 1).getTime());
+      const day30 = dayOf(new Date(y, m, d - 30, 23, 59).getTime());
+      const state: UsageState = { ...NO_USAGE, events: 3, days: { [day0]: { a: one }, [day29]: { b: one }, [day30]: { c: one } } };
+      const period = lastDays(now);
+      assert.deepEqual(period, { kind: "last30Days", month: null, first, last }, zone);
+      assert.equal(day29, first);
+      assert.deepEqual(Object.keys(periodUsage(state, period)).sort(), ["a", "b"], `${zone}: day 0 and day 29, not day 30`);
+      assert.equal(periodStart(period), new Date(y, m, d - 29).getTime());
+      assert.equal(new Date(periodStart(period)).getHours(), 0, "the first day starts at local midnight");
+      // The same just after midnight: today is a new day and the window moves by one.
+      assert.equal(lastDays(new Date(y, m, d + 1, 0, 1).getTime()).first, dayOf(new Date(y, m, d - 28, 12).getTime()));
+    });
+  // Across the end of October, and the clocks going back on 1 November (New York) and 25 October (London).
+  check("America/New_York", [2026, 10, 21], "2026-10-23", "2026-11-21");
+  check("Europe/London", [2026, 10, 21], "2026-10-23", "2026-11-21");
+  // Across February, and the clocks going forward on 8 March.
+  check("America/New_York", [2026, 2, 20], "2026-02-19", "2026-03-20");
+  // On the day the clocks change, and the day after a month of 31 days.
+  check("America/New_York", [2026, 10, 1], "2026-10-03", "2026-11-01");
+  check("UTC", [2026, 2, 1], "2026-01-31", "2026-03-01");
+  assert.deepEqual(monthPeriod("2026-02"), { kind: "month", month: "2026-02", first: "2026-02-01", last: "2026-02-28" });
+  assert.deepEqual(monthPeriod("2026-12"), { kind: "month", month: "2026-12", first: "2026-12-01", last: "2026-12-31" });
+});
+
+test("the last 30 days: workers, project threads, Main and checker runs apart, archived ones too, and threads with no usage said", () => {
   const since = NOW - 10 * 24 * HOUR;
   const threads = [
     facts("main", null),
@@ -365,10 +409,9 @@ test("the month: workers, project threads, Main and checker runs apart, archived
     { main: "main", proj: "projects", w1: "workers", w2: "workers", w3: "workers", check: "checkers" },
   );
   seq = 0;
-  const month = dayOf(NOW).slice(0, 7);
   const used = readUsage([promptEvent(NOW - 2, "claude-opus-5-5"), usageEvent(NOW - 1, T1, L1)]);
   const spend = spendOf(
-    month,
+    lastDays(NOW),
     "main",
     wanted.map((t) => ({ kind: t.kind, state: t.id === "w3" ? NO_USAGE : used })),
     LIST_PRICES,
@@ -380,9 +423,16 @@ test("the month: workers, project threads, Main and checker runs apart, archived
   const text = spendText(spend, "Main");
   for (const line of ["Workers: 3 threads", "Project threads: 1 thread", "Main: 1 thread", "cow's checker runs: 1 thread", "Total: 6 threads", "1 thread with no usage recorded"]) assert.ok(text.includes(line), `${line} in:\n${text}`);
   assert.ok(text.includes(LIST_PRICE_NOTE));
+  const { first, last } = lastDays(NOW);
+  assert.ok(text.startsWith(`Spend in the last 30 days (${first} to ${last}) under Main “Main” (main)`), text);
+  assert.ok(text.includes("every check cow ran in those days"));
+  // A thread's usage 40 days ago is not in the last 30 days, and is in its month.
+  const old = { ...NO_USAGE, events: 1, days: { [dayOf(NOW - 40 * 24 * HOUR)]: { "claude-opus-5-5": tokensOf(T1)! } } };
+  assert.equal(spendOf(lastDays(NOW), "main", [{ kind: "workers", state: old }], LIST_PRICES).total.dollars, null);
+  assert.ok((spendOf(monthPeriod(dayOf(NOW - 40 * 24 * HOUR).slice(0, 7)), "main", [{ kind: "workers", state: old }], LIST_PRICES).total.dollars ?? 0) > 0);
 });
 
-test("bb cow spend prints the month or JSON, and refuses a bad month", async () => {
+test("bb cow spend prints the last 30 days by default, a month with --month, or JSON with the period; and refuses a bad month", async () => {
   const unused = async () => {
     throw new Error("not used");
   };
@@ -398,15 +448,18 @@ test("bb cow spend prints the month or JSON, and refuses a bad month", async () 
     waitChecked: unused,
     outcomeChecked: unused,
     ledger: unused,
-    spend: async (mainId, projectId, month) => (asked.push([mainId, projectId, month]), { ...spendOf(month ?? "2026-11", "thr_main", [], LIST_PRICES), priceError: null, mainTitle: "M" }),
+    spend: async (mainId, projectId, month) => (asked.push([mainId, projectId, month]), { ...spendOf(month ? monthPeriod(month) : lastDays(new Date(2026, 10, 21, 12).getTime()), "thr_main", [], LIST_PRICES), priceError: null, mainTitle: "M" }),
   };
   const command = cowCli(actions);
   const run = async (...argv: string[]) => command.run(argv, { projectId: "proj_1", threadId: undefined, signal: new AbortController().signal });
-  assert.match((await run("spend")).stdout ?? "", /Spend in 2026-11 under Main “M” \(thr_main\)/);
+  assert.match((await run("spend")).stdout ?? "", /^Spend in the last 30 days \(2026-10-23 to 2026-11-21\) under Main “M” \(thr_main\)/);
+  assert.match((await run("spend", "--month", "2026-10")).stdout ?? "", /^Spend in 2026-10 under Main “M” \(thr_main\)/);
   const json = JSON.parse((await run("spend", "--month", "2026-10", "--json")).stdout ?? "");
-  assert.equal(json.month, "2026-10");
+  assert.deepEqual(json.period, { kind: "month", month: "2026-10", first: "2026-10-01", last: "2026-10-31" });
+  const bare = JSON.parse((await run("spend", "--json")).stdout ?? "");
+  assert.deepEqual(bare.period, { kind: "last30Days", month: null, first: "2026-10-23", last: "2026-11-21" });
   assert.equal(json.listPrice, true);
   assert.equal(json.estimate, true);
-  assert.deepEqual(asked, [[null, "proj_1", undefined], [null, "proj_1", "2026-10"]]);
+  assert.deepEqual(asked, [[null, "proj_1", undefined], [null, "proj_1", "2026-10"], [null, "proj_1", "2026-10"], [null, "proj_1", undefined]]);
   assert.notEqual((await run("spend", "--month", "Nov")).exitCode, 0);
 });

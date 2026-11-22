@@ -115,6 +115,39 @@ export const monthOf = (at: number): string => dayOf(at).slice(0, 7);
 export const monthStart = (month: string): number => new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1).getTime();
 export const MONTH_PATTERN = /^[0-9]{4}-(0[1-9]|1[0-2])$/;
 
+/** The running total's length: today and the days before it, this many in all. */
+export const LAST_DAYS = 30;
+
+/** The days a total is summed over: the last 30 days, or a calendar month. Days are local, YYYY-MM-DD, both ends in. */
+export interface Period {
+  kind: "last30Days" | "month";
+  /** The month (YYYY-MM) when kind is "month"; null otherwise. */
+  month: string | null;
+  first: string;
+  last: string;
+}
+
+/** The last 30 days: today and the 29 local days before it. The one place that decides it. */
+export function lastDays(now: number): Period {
+  const d = new Date(now);
+  // Local calendar arithmetic: a daylight-saving change in between moves no day.
+  const first = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (LAST_DAYS - 1)).getTime();
+  return { kind: "last30Days", month: null, first: dayOf(first), last: dayOf(now) };
+}
+
+/** A calendar month (YYYY-MM) as a period. */
+export function monthPeriod(month: string): Period {
+  const end = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0);
+  return { kind: "month", month, first: `${month}-01`, last: dayOf(end.getTime()) };
+}
+
+/** When a period's first day starts, local time. */
+export const periodStart = (period: Period): number =>
+  new Date(Number(period.first.slice(0, 4)), Number(period.first.slice(5, 7)) - 1, Number(period.first.slice(8, 10))).getTime();
+
+/** A period in words: "the last 30 days (2026-10-23 to 2026-11-21)" or "2026-10". */
+export const periodText = (period: Period): string => (period.kind === "month" ? (period.month ?? period.first.slice(0, 7)) : `the last ${LAST_DAYS} days (${period.first} to ${period.last})`);
+
 const behind = (now: Tokens, before: Tokens): boolean => TOKEN_KEYS.some((key) => now[key] < before[key]);
 const minus = (a: Tokens, b: Tokens): Tokens => ({ input: a.input - b.input, cacheRead: a.cacheRead - b.cacheRead, cacheWrite: a.cacheWrite - b.cacheWrite, output: a.output - b.output });
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() !== "" ? value.trim().slice(0, 200) : null);
@@ -189,17 +222,20 @@ export function usageTotal(state: UsageState): Tokens | null {
   return Object.values(state.total).reduce(addTokens, NO_TOKENS);
 }
 
-/** A month's (YYYY-MM) tokens by model. */
-export function monthUsage(state: UsageState, month: string): Record<string, Tokens> {
+/** A period's tokens by model, from the per-day tally. */
+export function periodUsage(state: UsageState, period: Period): Record<string, Tokens> {
   const out: Record<string, Tokens> = {};
   for (const [d, models] of Object.entries(state.days)) {
-    if (!d.startsWith(`${month}-`)) continue;
+    if (d < period.first || d > period.last) continue;
     for (const [model, t] of Object.entries(models)) addTo(out, model, t);
   }
   return out;
 }
 
-/** What cannot be known, said wherever the month's usage is shown. */
+/** A month's (YYYY-MM) tokens by model. */
+export const monthUsage = (state: UsageState, month: string): Record<string, Tokens> => periodUsage(state, monthPeriod(month));
+
+/** What cannot be known, said wherever a period's usage is shown. */
 export const USAGE_GAPS_NOTE =
   "bb keeps only a thread's latest usage events, so what a thread used before cow first read it (cow reads each thread as each of its turns ends, from 0.2.19 on) is not known: a thread older than that shows less than it used. Before 0.2.20, a turn that started a new provider process could be counted short.";
 

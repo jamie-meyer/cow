@@ -114,15 +114,15 @@ export const rpcContract = defineRpcContract({
       priceError: z.string().nullable(),
     }),
   },
-  /** A month's (YYYY-MM; default this one) tokens and list-price dollars under a Main, archived threads included. Only reads. */
+  /** The last 30 days' (or a calendar month's, YYYY-MM) tokens and list-price dollars under a Main, archived threads included. Only reads. */
   spend_read: {
     input: z.object({ mainId: id, month: z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/).optional() }),
     output: z.custom<Spend & { priceError: string | null }>(),
   },
   /**
    * The usage line: every usage window bb reports for each signed-in provider,
-   * the month's list-price dollars of every thread on this bb with the budget
-   * and pace when one is set, and the usage notices waiting. Only reads; a
+   * the last 30 days' list-price dollars of every thread on this bb with the
+   * budget for 30 days when one is set, and the usage notices waiting. Only reads; a
    * notice is acknowledged by a signed call.
    */
   usage_read: {
@@ -182,7 +182,7 @@ export default async function plugin(bb: BbPluginApi) {
   const ticker = createTicker(Date.now, (text) => bb.log.warn(`a timed check failed: ${text}`));
   bb.onDispose(() => ticker.stop());
   // The usage line and the notices before a limit. It only tells.
-  const limits = registerLimits(bb, log, (month) => ledgers.everything(month), ticker);
+  const limits = registerLimits(bb, log, () => ledgers.everything(), ticker);
   // Caps and stuck checks on workers: a mark on the line and one notice per reason. It only tells: no thread is ever stopped, paused or sent anything.
   const watch = registerWatch(bb, log, ticker, {
     mains: async () => Object.values((await readState()).mains),

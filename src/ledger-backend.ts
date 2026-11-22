@@ -1,5 +1,5 @@
 // The ledger on cow's server: its store, the usage read from bb's events,
-// the list-price setting, and the month's spend under a Main. Registered
+// the list-price setting, and the spend under a Main (the last 30 days, or a month). Registered
 // from server.ts.
 
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -10,7 +10,7 @@ import { PRICES_SETTING_HELP, type Prices, dollarsOf, priceOf, pricesWith } from
 import { descendantIds } from "./tree.ts";
 import { type Spend, type SpendFacts, type SpendPart, spendOf, spendThreads } from "./spend.ts";
 import { type UsageStore, createUsageStore, sdkUsageEvents } from "./usage-store.ts";
-import { MONTH_PATTERN, NO_USAGE, monthOf, monthStart } from "./usage.ts";
+import { MONTH_PATTERN, NO_USAGE, type Period, lastDays, monthPeriod, periodStart } from "./usage.ts";
 
 const PAGE = 200;
 const MAX_THREADS = 5000;
@@ -22,10 +22,10 @@ export interface LedgerBackend {
   usage: UsageStore;
   /** What each row cost at list price, with the prices as set now. */
   costing(rows: readonly LedgerRow[]): Promise<{ cost: RowCost; error: string | null }>;
-  /** The month's (YYYY-MM; default this one) spend under a Main. */
+  /** The spend under a Main in a calendar month (YYYY-MM), or by default the last 30 days. */
   spend(mainId: string, month?: string): Promise<Spend & { priceError: string | null }>;
-  /** The month's (YYYY-MM; default this one) tokens and list-price dollars of every thread bb has, under any Main or none, hidden ones too. */
-  everything(month?: string): Promise<SpendPart & { month: string; truncated: boolean; priceError: string | null }>;
+  /** The last 30 days' tokens and list-price dollars of every thread bb has, under any Main or none, hidden ones too. */
+  everything(): Promise<SpendPart & { period: Period; truncated: boolean; priceError: string | null }>;
   /** A thread's list-price dollars so far, from the usage read as each turn ended; null when none is known or no model it used has a price. */
   dollars(threadId: string): Promise<number | null>;
 }
@@ -118,11 +118,18 @@ export function registerLedger(
     return found;
   };
 
-  const spend: LedgerBackend["spend"] = async (mainId, month = monthOf(Date.now())) => {
+  /** The days asked for: a calendar month, or by default the last 30 days. */
+  const periodFor = (month: string | undefined): Period => {
+    if (month === undefined) return lastDays(Date.now());
     if (!MONTH_PATTERN.test(month)) throw new Error(`"${month}" is not a month: YYYY-MM`);
-    const since = monthStart(month);
+    return monthPeriod(month);
+  };
+
+  const spend: LedgerBackend["spend"] = async (mainId, month) => {
+    const period = periodFor(month);
+    const since = periodStart(period);
     const { threads, truncated } = await allThreads();
-    // Only the threads under this Main are asked for their project marks, and only the month's hidden ones for a checker's.
+    // Only the threads under this Main are asked for their project marks, and only the period's hidden ones for a checker's.
     const marked = await projectMarks(descendantIds(threads, mainId, since));
     const recent = threads.filter((thread) => thread.updatedAt === null || thread.updatedAt >= since);
     const wanted = spendThreads(threads, mainId, marked, await checkers(recent), since);
@@ -134,12 +141,12 @@ export function registerLedger(
       if (got.fresh && kind === "workers") await ledger.syncUsage(id).catch(() => null);
     });
     const set = await prices();
-    return { ...spendOf(month, mainId, read, set.prices, truncated), priceError: set.error };
+    return { ...spendOf(period, mainId, read, set.prices, truncated), priceError: set.error };
   };
 
-  const everything: LedgerBackend["everything"] = async (month = monthOf(Date.now())) => {
-    if (!MONTH_PATTERN.test(month)) throw new Error(`"${month}" is not a month: YYYY-MM`);
-    const since = monthStart(month);
+  const everything: LedgerBackend["everything"] = async () => {
+    const period = lastDays(Date.now());
+    const since = periodStart(period);
     const { threads, truncated } = await allThreads();
     const recent = threads.filter((thread) => thread.updatedAt === null || thread.updatedAt >= since);
     const read: { kind: "workers"; state: typeof NO_USAGE }[] = [];
@@ -148,7 +155,7 @@ export function registerLedger(
       read.push({ kind: "workers", state: got.state });
     });
     const set = await prices();
-    return { ...spendOf(month, "", read, set.prices, truncated).total, month, truncated, priceError: set.error };
+    return { ...spendOf(period, "", read, set.prices, truncated).total, period, truncated, priceError: set.error };
   };
 
   const dollars: LedgerBackend["dollars"] = async (threadId) => {
