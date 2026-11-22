@@ -189,6 +189,7 @@ export default async function plugin(bb: BbPluginApi) {
     marked: async (ids) => Object.keys((await actions.notes(ids)).projects),
     label: async (threadId) => (await ledger.label(threadId))?.label ?? null,
     dollars: (threadId) => ledgers.dollars(threadId),
+    priced: (threadId, tokens) => ledgers.priced(threadId, tokens),
   });
   const actions = createActions(bb, readState, {
     outside: async () => {

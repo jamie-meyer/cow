@@ -2140,6 +2140,19 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
  * fixtures; nothing is stopped or sent to any of them.
  */
 async function watchChecks(page, ids, shot) {
+  // The copy's worker notifications are turned off first: the checks send the person none. Put back after.
+  const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
+  const set = async (key, value) => plain("plugin", "config", PLUGIN, ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)]));
+  await set("watchNotify", false);
+  try {
+    await watchChecksIn(page, ids, shot);
+    await liveChecks(page, ids, shot, set);
+  } finally {
+    for (const key of ["watchNotify", "liveUsage", "caps"]) await set(key, before[key]).catch(() => undefined);
+  }
+}
+
+async function watchChecksIn(page, ids, shot) {
   const { lmain, lproj } = ids;
   // The repeated command is the long one: the mark holds from its third start until the turn ends, while bb cow status is read.
   const SLOW = "python3 -c 'import time; time.sleep(30)'";
@@ -2178,19 +2191,124 @@ async function watchChecks(page, ids, shot) {
   await new Promise((resolve) => setTimeout(resolve, 3000));
   check("acknowledged on the page (signed), it is gone and does not come back for that worker", (await page.eval(`${notices(lrep)}.length`)) === 0 && !(await rpc("watch_read", null)).notices.some((n) => n.threadId === lrep));
 
-  // -- a worker that had a thread of its own --
+  // -- a worker that had a thread of its own, on the page: e and o as for any worker once its threads are archived --
   await waitForThread(lsub, (t) => t.status === "idle", "lsub idle");
   await waitForThread(lkid, (t) => t.status === "idle", "lkid idle");
   const live = await cowAs(lmain, "outcome", lsub, "done");
   check("a worker with a live thread under it is refused an outcome, as a project", live.code !== 0 && /project/.test(live.stdout + live.stderr), (live.stdout + live.stderr).trim());
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const select = async (id) => {
+    await page.eval(`${lineEl(id)}.click(); true`);
+    await sleep(200);
+  };
+  const message = () => page.eval(`document.querySelector("[data-cow-message]")?.textContent ?? ""`);
+  await page.waitFor(`!!${lineEl(lsub)}`, { label: "the worker with a thread of its own" });
+  await select(lsub);
+  await page.key("e");
+  await page.waitFor(`${mode} === "archive"`, { label: "the archive prompt" });
+  check("e on a thread with a live thread under it goes straight to the reason: no outcome is asked", !(await page.eval(`!!document.querySelector("[data-cow-outcome-prompt]")`)));
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal"`, { label: "cancelled" });
+  await select(lproj);
+  await page.key("e");
+  await page.waitFor(`${mode} === "archive"`, { label: "the archive prompt" });
+  check("e on a marked project still asks no outcome", !(await page.eval(`!!document.querySelector("[data-cow-outcome-prompt]")`)));
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal"`, { label: "cancelled" });
   check("its thread is archived", (await cowAs(lmain, "archive", lkid, "--reason", "test thread done")).code === 0);
-  const after = await cowAs(lmain, "archive", lsub, "--reason", "merged", "--outcome", "done");
+  await sleep(2000);
+  await select(lsub);
+  await page.key("e");
+  await page.waitFor(`!!document.querySelector('[data-cow-outcome-prompt="archive"]')`, { label: "the outcome prompt for a worker whose own thread is archived", timeout: 20_000 });
+  check("with every thread under it archived, e on the page asks what it came to, as for any worker", true);
+  await page.key("1");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "archive-reason"`, { label: "then the reason" });
+  await page.type("merged");
+  await page.key("Enter");
+  await page.waitFor(`!!${lineEl(lsub)}?.querySelector('[data-cow-outcome="done"]')`, { label: "came to: done", timeout: 30_000 });
   const subRow = await rowOf(lsub);
-  check("with every thread under it archived, it is a worker: an outcome, and a ledger row with tool calls and working minutes", after.code === 0 && subRow?.outcome === "done" && subRow?.toolCalls === 0 && typeof subRow?.workingMinutes === "number", `${(after.stdout + after.stderr).trim()} | ${JSON.stringify(subRow && { toolCalls: subRow.toolCalls, workingMinutes: subRow.workingMinutes })}`);
+  check("it is a worker: its outcome from the page, and a ledger row with tool calls and working minutes", subRow?.outcome === "done" && subRow?.judgedBy === "person" && subRow?.toolCalls === 0 && typeof subRow?.workingMinutes === "number", JSON.stringify(subRow && { outcome: subRow.outcome, judgedBy: subRow.judgedBy, toolCalls: subRow.toolCalls, workingMinutes: subRow.workingMinutes }));
+  await select(lsub);
+  await page.key("o");
+  await page.waitFor(`!!document.querySelector('[data-cow-outcome-prompt="change"]')`, { label: "o's prompt on it", timeout: 20_000 });
+  check("o on it, under Archived, asks too", true);
+  await page.key("Escape");
+  await page.waitFor(`${mode} === "normal"`, { label: "cancelled" });
+  await select(lproj);
+  await page.key("o");
+  await sleep(300);
+  check("o on a marked project is refused", !(await page.eval(`!!document.querySelector("[data-cow-outcome-prompt]")`)) && (await message()).length > 0, await message());
+  await page.key("Escape");
   await waitForThread(lrep, (t) => t.status === "idle", "lrep idle", 240_000);
   check("bb cow archive with an outcome archives the repeating worker", (await cowAs(lmain, "archive", lrep, "--reason", "checked", "--outcome", "done")).code === 0);
   const repRow = await rowOf(lrep);
   check("its row counts its three commands and its minutes", repRow?.toolCalls >= 3 && repRow?.workingMinutes > 0, JSON.stringify(repRow && { toolCalls: repRow.toolCalls, workingMinutes: repRow.workingMinutes }));
+}
+
+/**
+ * Tokens during a turn (0.2.23), on the copy's own settings (put back after):
+ * with liveUsage on and a dollars cap of a tenth of a cent, a worker whose
+ * turn runs four slow commands has its tokens so far rise while the turn
+ * runs, the mark (saying the figure is read from Claude Code's transcript)
+ * and exactly one notice come while it still runs, and its line shows the
+ * running dollars. Once the turn ends, the reading is gone, and the tokens
+ * cow keeps for it are bb's figure, not that plus the reading. The copy reads
+ * only transcripts of environments in the checks' own folder
+ * (copy-for-checks.mjs --live-only-under). One more fixture.
+ */
+async function liveChecks(page, ids, shot, set) {
+  const { lmain } = ids;
+  const SLOW = "python3 -c 'import time; time.sleep(15)'";
+  const LONG = `You are a test fixture for a bb plugin. Run this shell command four times, one at a time, each as its own separate tool call, waiting for each to finish before the next: ${SLOW}. Run nothing else, and nothing in the background. Then reply with exactly: ok`;
+  await set("caps", JSON.stringify({ "*": { dollars: 0.001 } }));
+  await set("liveUsage", true);
+  try {
+    const llive = (inUse.llive = ids.llive = await spawn({ prompt: LONG, parent: lmain, permissionMode: "full" }));
+    const reading = async () => (await rpc("watch_read", null)).live?.[llive] ?? null;
+    const statusOf = async () => JSON.parse(await plain("thread", "show", llive, "--json")).status;
+    let first = null;
+    for (let n = 0; n < 120 && !first?.tokens; n += 1) {
+      first = await reading();
+      if (!first?.tokens) await sleep(1500);
+    }
+    check("with liveUsage on, a running worker on Claude Code has tokens so far, read during its turn", first?.tokens > 0 && (await statusOf()) !== "idle", JSON.stringify(first));
+    let later = first;
+    for (let n = 0; n < 80 && !(later?.tokens > first?.tokens); n += 1) {
+      await sleep(1500);
+      later = await reading();
+    }
+    const stillRunning = (await statusOf()) !== "idle";
+    check("its tokens so far rise while the turn still runs", later?.tokens > first?.tokens && stillRunning, `${first?.tokens} then ${later?.tokens}, running: ${stillRunning}`);
+    await page.waitFor(`!!document.querySelector('.cow-main [data-cow-line="${llive}"] [data-cow-watch~="cap-dollars"]')`, { label: "the dollars mark", timeout: 60_000 });
+    const mark = await page.eval(`document.querySelector('.cow-main [data-cow-line="${llive}"] [data-cow-watch]')?.textContent ?? ""`);
+    const shown = await page.eval(`document.querySelector('.cow-main [data-cow-line="${llive}"] [data-cow-live-dollars]')?.textContent ?? ""`);
+    const notes = await page.eval(`[...document.querySelectorAll('[data-cow-watch-thread="${llive}"][data-cow-watch-reason="cap-dollars"]')].map((el) => el.querySelector("p")?.textContent ?? "")`);
+    const runningNow = (await statusOf()) !== "idle";
+    check(
+      "a dollars cap of $0.001 raises the mark, saying it is read from the transcript, and one notice while the turn still runs; the line shows the running dollars",
+      /over cap: \$[0-9.]+ of \$0\.001 \(list price, the running turn read from Claude Code's transcript\)/.test(mark) && notes.length === 1 && /so far/.test(shown) && runningNow,
+      `${mark} | ${shown} | ${JSON.stringify(notes)} | running: ${runningNow}`,
+    );
+    await shot("live-dollars");
+    await waitForThread(llive, (t) => t.status === "idle", "llive idle", 300_000);
+    await sleep(4000);
+    await rpc("watch_read", null);
+    const events = JSON.parse(await plain("thread", "log", llive, "--json", "--all"));
+    const usage = events.filter((e) => e.type === "thread/tokenUsage/updated").at(-1)?.data?.tokenUsage?.total;
+    const bbTotal = usage ? usage.inputTokens + usage.cacheReadInputTokens + usage.cacheWriteInputTokens + usage.outputTokens : null;
+    const after = await rpc("watch_read", null);
+    const finding = after.marks[llive]?.find((f) => f.reason === "cap-dollars");
+    check("once the turn has ended there is no reading, and the dollars are bb's", after.live?.[llive] === undefined && finding?.facts?.source === "bb", JSON.stringify({ live: after.live?.[llive], facts: finding?.facts }));
+    await set("liveUsage", false);
+    check("bb cow archive with an outcome archives it", (await cowAs(lmain, "archive", llive, "--reason", "checked", "--outcome", "done")).code === 0);
+    const row = (await rpc("ledger_read", { days: 14 })).rows.find((r) => r.threadId === llive);
+    const kept = row ? row.inputTokens + row.cacheReadTokens + row.cacheWriteTokens + row.outputTokens : null;
+    check("the tokens cow keeps for it equal bb's figure, not bb's figure plus the reading", bbTotal !== null && kept === bbTotal, `kept ${kept}, bb ${bbTotal}, last reading ${later?.tokens}`);
+    console.log(`note: live reading ${first?.tokens} then ${later?.tokens} tokens; bb's figure for the turn ${bbTotal}`);
+  } finally {
+    await set("liveUsage", false).catch(() => undefined);
+    await set("caps", "").catch(() => undefined);
+  }
 }
 
 /**

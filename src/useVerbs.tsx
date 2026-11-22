@@ -39,7 +39,7 @@ import { type OutsideLine, moveRecord, outsideArchiveBlocked, moveRefusal, moveT
 import { type KeepNote, MAX_KEEP_WORDS, type ParkRecord, type Seen, type WaitNote } from "./shared.ts";
 import { type AutomationGroup, deleteConfirmText } from "./automations.ts";
 import { isBusy } from "./state.ts";
-import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, listed } from "./tree.ts";
+import { type Line, OUTSIDE_SECTION, type Overview, type Section, type TodoRow, afterLeaving as leaving, lineIsWorker, listed } from "./tree.ts";
 import { type UndoEntry, undoText } from "./undo.ts";
 import { RUN_REFUSAL, type Verb, insteadOnPage, verbBlocked } from "./verbs.ts";
 import { waitNote } from "./waiting.ts";
@@ -325,7 +325,10 @@ export function useVerbs(host: VerbHost): Verbs {
 
   /** Whether e asks what the line came to first: a worker that finished a turn, not a project, Main or an automation's run. */
   const asksOutcome = (line: Line): boolean =>
-    line.thread.id !== main.thread.id && line.project === null && line.run === undefined && (line.derived.state === "done" || line.derived.state === "waiting" || line.derived.state === "kept");
+    line.thread.id !== main.thread.id &&
+    lineIsWorker(line) &&
+    // A worker whose own threads are all archived reads idle, as a head does, where another reads done.
+    (line.derived.state === "done" || line.derived.state === "waiting" || line.derived.state === "kept" || (line.project === "head" && line.derived.state === "idle"));
 
   const judge = async (line: Line, outcome: Outcome) => {
     try {
@@ -338,8 +341,8 @@ export function useVerbs(host: VerbHost): Verbs {
 
   const startOutcome = (line: Line) => {
     if (line.thread.id === main.thread.id) return say("Main is no worker: it has no outcome");
-    if (line.project !== null) return say("a project is no worker: it has no outcome");
     if (line.run !== undefined) return say("an automation's run is no worker: it has no outcome");
+    if (!lineIsWorker(line)) return say(line.project === "marked" ? "a project is no worker: it has no outcome" : "a project is no worker: it has no outcome (a thread under it is not archived)");
     setModal({ kind: "outcome", threadId: line.thread.id, archiving: false });
   };
 

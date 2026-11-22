@@ -7,11 +7,15 @@
 // page, settings and `bb <id>` command; removing it takes all of that out of
 // use (bb 0.49 leaves its stored rows in its database, under the copy's id).
 //
-//   node scripts/copy-for-checks.mjs <empty folder> [--id cow-check]
+//   node scripts/copy-for-checks.mjs <empty folder> [--id cow-check] [--live-only-under <folder>]
 //   bb plugin install <that folder> --yes
 //   npm run e2e -- --project … --environment …
 //   npm run e2e:asks -- --project … --environment …
 //   bb plugin remove cow-check
+//
+// With --live-only-under, the copy's liveUsage setting reads the transcripts
+// only of threads whose environment's path starts with that folder: the
+// checks' own fixtures, when they run in an environment made there.
 //
 // The checks run against cow-check unless told otherwise, so with the default
 // id nothing more is needed. With another id, pass --plugin <id> to both.
@@ -24,7 +28,13 @@ import { fileURLToPath } from "node:url";
 const args = process.argv.slice(2);
 const at = args.indexOf("--id");
 const id = at >= 0 ? args[at + 1] : "cow-check";
-const target = args.find((arg, index) => !arg.startsWith("--") && (at < 0 || index !== at + 1));
+const liveAt = args.indexOf("--live-only-under");
+const liveOnly = liveAt >= 0 ? args[liveAt + 1] : null;
+if (liveAt >= 0 && !(liveOnly ?? "").startsWith("/")) {
+  console.error("--live-only-under takes an absolute folder");
+  process.exit(1);
+}
+const target = args.find((arg, index) => !arg.startsWith("--") && (at < 0 || index !== at + 1) && (liveAt < 0 || index !== liveAt + 1));
 if (!target || !/^[a-z][a-z0-9-]{1,30}$/.test(id ?? "") || id === "cow") {
   console.error("usage: node scripts/copy-for-checks.mjs <empty folder> [--id cow-check]   (the id must not be cow)");
   process.exit(1);
@@ -68,4 +78,14 @@ if ([...copied.matchAll(/defaultShortcut: \{[^}]*\}/g)].some(([found]) => !found
   process.exit(1);
 }
 writeFileSync(app, copied);
+if (liveOnly !== null) {
+  const watch = join(to, "src", "watch-backend.ts");
+  const text = readFileSync(watch, "utf8");
+  const set = text.replace("export const LIVE_ONLY_UNDER: string | null = null;", `export const LIVE_ONLY_UNDER: string | null = ${JSON.stringify(liveOnly)};`);
+  if (set === text) {
+    console.error("src/watch-backend.ts has no LIVE_ONLY_UNDER to set: update scripts/copy-for-checks.mjs");
+    process.exit(1);
+  }
+  writeFileSync(watch, set);
+}
 console.log(`${id} is in ${to}\n  bb plugin install ${to} --yes\n  npm run e2e -- ${id === "cow-check" ? "" : `--plugin ${id} `}--project … --environment …\n  bb plugin remove ${id}`);

@@ -3,7 +3,10 @@
 // ids replaced and its times moved), with a clock of the test's own.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { folderNameOf, readTranscriptUsage, usageOfLines } from "../src/transcript/read.ts";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createActions } from "../src/actions.ts";
@@ -171,7 +174,17 @@ const facts = (id: string, over: Partial<ThreadFacts> = {}): ThreadFacts => ({
   ...over,
 });
 
-function world(opts: { caps?: string; stuck?: typeof DEFAULT_STUCK } = {}) {
+function world(
+  opts: {
+    caps?: string;
+    stuck?: typeof DEFAULT_STUCK;
+    liveUsage?: boolean;
+    notify?: boolean;
+    dollars?: (id: string) => number | null;
+    readTranscript?: WatchDeps["readTranscript"];
+    provider?: string;
+  } = {},
+) {
   const kv = memoryKv();
   const clock = { now: T0 };
   const events = new Map<string, unknown[]>();
@@ -180,7 +193,9 @@ function world(opts: { caps?: string; stuck?: typeof DEFAULT_STUCK } = {}) {
   const log = createLogStore({ kv, now: () => clock.now, hash: sha256Hex });
   let ids = 0;
   let changes = 0;
-  const settings = { caps: opts.caps ?? "", stuck: opts.stuck ?? DEFAULT_STUCK };
+  const settings = { caps: opts.caps ?? "", stuck: opts.stuck ?? DEFAULT_STUCK, liveUsage: opts.liveUsage ?? false, notify: opts.notify ?? false };
+  const sent: { title: string; body: string }[] = [];
+  const transcriptReads: { hostId: string; session: string; offset: number }[] = [];
   const deps: WatchDeps = {
     kv,
     now: () => clock.now,
@@ -190,7 +205,15 @@ function world(opts: { caps?: string; stuck?: typeof DEFAULT_STUCK } = {}) {
     mains: async () => ["main"],
     marked: async () => [],
     label: async (id) => labels.get(id) ?? null,
-    dollars: async () => null,
+    dollars: async (id) => opts.dollars?.(id) ?? null,
+    // $1 per thousand tokens, whatever the model: easy to check.
+    priced: async (_id, tokens) => Object.values(tokens).reduce((sum, t) => sum + (t.input + t.cacheRead + t.cacheWrite + t.output) / 1000, 0),
+    place: async () => ({ provider: opts.provider ?? "claude-code", path: "/work/env", hostId: "host_1" }),
+    readTranscript: async (hostId, ask) => {
+      transcriptReads.push({ hostId, session: ask.session, offset: ask.offset });
+      return opts.readTranscript ? opts.readTranscript(hostId, ask) : { status: "none", why: "no transcript in this test" };
+    },
+    notify: async (title, body) => void sent.push({ title, body }),
     progress: createProgressStore(kv, async (id, after) => (events.get(id) ?? []).filter((event) => after === null || (event as { seq: number }).seq > after)),
     settings: async () => settings,
     log,
@@ -199,7 +222,7 @@ function world(opts: { caps?: string; stuck?: typeof DEFAULT_STUCK } = {}) {
   const watch = createWatch(deps);
   // Every thread runs the same three commands: Main and the project too.
   for (const t of threads) events.set(t.id, [turnStarted(T0), ...command(`${t.id}a`, "ls", T0), ...command(`${t.id}b`, "ls", T0), ...command(`${t.id}c`, "ls", T0)]);
-  return { kv, clock, events, labels, threads, log, watch, settings, changes: () => changes };
+  return { kv, clock, events, labels, threads, log, watch, settings, sent, transcriptReads, changes: () => changes };
 }
 
 test("each check raises one notice per worker per reason, none for Main or a project, and none again once acknowledged", async () => {
@@ -348,4 +371,149 @@ test("a worker whose own threads are all archived gets an outcome and a ledger r
     await assert.rejects(actions.outcomeChecked({ callerId: null, threadId: id, outcome: "done" }), (cause: Error) => /not a worker|project|Main/.test(cause.message), id);
   }
   assert.deepEqual(touched, [], "no thread was stopped or sent anything");
+});
+
+// ---- 0.2.23: tokens during a turn, from Claude Code's transcript -----------------
+
+const SESSION = "0a1b2c3d-1111-2222-3333-444455556666";
+const TRANSCRIPT = readFileSync(new URL("./transcript-sample.jsonl", import.meta.url), "utf8");
+/** The fixture's turn started a moment before its first transcript line. */
+const TURN_AT = Date.parse("2026-11-21T23:48:48.000Z");
+const sessionEvent = (type: string, at: number, data: Record<string, unknown> = {}) => ({ seq: ++seq, createdAt: at, type, data: { providerThreadId: SESSION, ...data } });
+
+function liveWorld(opts: { liveUsage: boolean; notify?: boolean; provider?: string; tally?: () => number | null }) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "cow-live-")));
+  const folder = join(dir, ".claude", "projects", folderNameOf("/work/env"));
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, `${SESSION}.jsonl`);
+  const w = world({
+    caps: JSON.stringify({ "*": { dollars: 0.001 } }),
+    stuck: { repeats: 0, quietMinutes: 0, longItemMinutes: 0 },
+    liveUsage: opts.liveUsage,
+    notify: opts.notify ?? false,
+    provider: opts.provider,
+    dollars: (id) => (id === "w1" ? (opts.tally?.() ?? null) : null),
+    // The real reader, on a home folder of the test's own.
+    readTranscript: async (_host, ask) => readTranscriptUsage(ask, dir),
+  });
+  for (const t of w.threads) if (t.id !== "w1") t.status = "idle";
+  w.events.set("w1", [sessionEvent("turn/started", TURN_AT)]);
+  w.clock.now = TURN_AT + 5000;
+  return { ...w, file, done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+const lines = TRANSCRIPT.split("\n").filter((line) => line !== "");
+const firstTurnEnd = lines.findIndex((line) => line.includes("compact_boundary"));
+
+test("with liveUsage off (the default), no transcript is asked for, and the dollars mark says they are known once a turn has ended", async () => {
+  const w = liveWorld({ liveUsage: false, tally: () => 0.5 });
+  writeFileSync(w.file, `${lines.join("\n")}\n`);
+  const got = await w.watch.check();
+  assert.deepEqual(w.transcriptReads, [], "the host is never asked to read");
+  assert.equal(got.liveUsage, false);
+  assert.deepEqual(got.live, {});
+  assert.equal(got.marks.w1?.[0]?.mark, "over cap: $0.50 of $0.001 (list price, known only once a turn has ended)");
+  assert.equal((await w.kv.get<{ progress: Progress }>(PROGRESS_PREFIX + "w1"))?.progress.live, undefined);
+  w.done();
+});
+
+test("with liveUsage on, a running worker's tokens rise during its turn, a tiny dollars cap is marked and told once, and at the end bb's figure replaces the reading", async () => {
+  let ended = false;
+  const w = liveWorld({ liveUsage: true, notify: true, tally: () => (ended ? 100.889 : null) });
+  // The first two model calls of the turn are written.
+  const cut = lines.findIndex((line) => line.includes("msg_sample03"));
+  writeFileSync(w.file, `${lines.slice(0, cut).join("\n")}\n`);
+  const one = await w.watch.check();
+  assert.equal(one.liveUsage, true);
+  const early = one.live.w1!;
+  assert.ok(early.tokens > 0, "tokens so far");
+  // msg_sample01 and msg_sample02, each once.
+  assert.equal(early.tokens, usageOfLines(lines.slice(0, cut).join("\n")).messages.reduce((n, m) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0));
+  assert.match(one.marks.w1?.[0]?.mark ?? "", /^over cap: \$[0-9.]+ of \$0\.001 \(list price, the running turn read from Claude Code's transcript\)$/);
+  assert.equal(one.marks.w1?.[0]?.facts.source, "transcript");
+  assert.deepEqual(one.notices.map((n) => [n.threadId, n.reason]), [["w1", "cap-dollars"]]);
+  assert.equal(w.sent.length, 1, "one push for the one notice");
+  assert.equal(w.sent[0]!.title, "🐄 cow: worker");
+  assert.equal(w.sent[0]!.body, one.notices[0]!.text);
+  // The rest of the turn is written: more tokens, and no second notice or push.
+  appendFileSync(w.file, `${lines.slice(cut, firstTurnEnd).join("\n")}\n`);
+  w.clock.now += 5000;
+  const two = await w.watch.check();
+  assert.ok(two.live.w1!.tokens > early.tokens, "rising");
+  assert.equal(two.live.w1!.tokens, 100889, "the turn, read so far: bb's figure for it, to the token");
+  assert.equal(two.notices.length, 1);
+  assert.equal(w.sent.length, 1);
+  // The turn ends: bb writes its usage and the turn's end, and its figure is the only one.
+  w.events.set("w1", [...(w.events.get("w1") ?? []), sessionEvent("thread/tokenUsage/updated", w.clock.now + 1000, { tokenUsage: {} }), sessionEvent("turn/completed", w.clock.now + 1000)]);
+  ended = true;
+  w.threads.find((t) => t.id === "w1")!.status = "idle";
+  w.clock.now += 2000;
+  const three = await w.watch.check();
+  assert.deepEqual(three.live, {}, "no reading once the turn is over");
+  assert.equal(three.marks.w1?.[0]?.facts.dollars, 100.889, "bb's figure, not bb's figure plus the reading");
+  assert.equal(three.marks.w1?.[0]?.facts.source, "bb");
+  const kept = (await w.kv.get<{ progress: Progress }>(PROGRESS_PREFIX + "w1"))!.progress.live!;
+  assert.deepEqual(kept.tokens, {}, "the reading's tokens are dropped");
+  assert.equal(kept.countFrom, null);
+  // The next turn counts from its own start: the earlier lines are not counted again.
+  const next = Date.parse("2026-11-21T23:50:00.000Z");
+  w.events.set("w1", [...(w.events.get("w1") ?? []), sessionEvent("turn/started", next)]);
+  w.threads.find((t) => t.id === "w1")!.status = "active";
+  appendFileSync(w.file, `${lines.slice(firstTurnEnd).join("\n")}\n`);
+  w.clock.now = next + 60_000;
+  const four = await w.watch.check();
+  assert.equal(four.live.w1!.tokens, 208307 - 100889, "only the second turn's");
+  assert.equal(four.marks.w1?.[0]?.facts.dollars, Math.round((100.889 + (208307 - 100889) / 1000) * 10000) / 10000);
+  w.done();
+});
+
+test("what cow keeps from the transcript holds no message text, tool input, path or message id", async () => {
+  const w = liveWorld({ liveUsage: true });
+  const marker = (field: string) => `MARKER_${field}_77`;
+  const entry = {
+    type: "assistant",
+    timestamp: "2026-11-21T23:48:50.000Z",
+    cwd: `/x/${marker("cwd")}`,
+    isSidechain: false,
+    message: {
+      id: "msg_visible_id",
+      model: "claude-haiku-5-5",
+      content: [{ type: "text", text: marker("text") }, { type: "tool_use", name: marker("tool"), input: { command: marker("command"), path: `/p/${marker("path")}` } }],
+      usage: { input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3, output_tokens: 4 },
+    },
+    toolUseResult: { stdout: marker("stdout") },
+  };
+  writeFileSync(w.file, `${JSON.stringify({ type: "user", message: { content: marker("prompt") } })}\n${JSON.stringify(entry)}\n`);
+  const got = await w.watch.check();
+  assert.equal(got.live.w1?.tokens, 10);
+  const stored = JSON.stringify([...w.kv.data.entries()]);
+  const shown = JSON.stringify(got);
+  for (const text of [stored, shown]) {
+    assert.ok(!text.includes("MARKER"), "no text, tool input or path");
+    assert.ok(!text.includes("msg_visible_id"), "no message id: a hash of it");
+    assert.ok(!text.includes(".claude"), "no transcript path");
+  }
+  w.done();
+});
+
+test("another provider's worker, or one with no session yet, is never read", async () => {
+  const w = liveWorld({ liveUsage: true, provider: "codex", tally: () => 0.5 });
+  writeFileSync(w.file, `${lines.join("\n")}\n`);
+  const got = await w.watch.check();
+  assert.deepEqual(w.transcriptReads, []);
+  assert.deepEqual(got.live, {});
+  assert.equal(got.marks.w1?.[0]?.mark, "over cap: $0.50 of $0.001 (list price, known only once a turn has ended)");
+  w.done();
+});
+
+test("a watch notice sends one push through the shared route when the setting is on, none when it is off", async () => {
+  const on = world({ notify: true });
+  const first = await on.watch.check();
+  assert.equal(on.sent.length, first.notices.length);
+  assert.ok(on.sent.length > 0);
+  assert.deepEqual(on.sent.map((s) => s.body), first.notices.map((n) => n.text));
+  await on.watch.check();
+  assert.equal(on.sent.length, first.notices.length, "not again for the same reason");
+  const off = world({ notify: false });
+  assert.ok((await off.watch.check()).notices.length > 0);
+  assert.deepEqual(off.sent, []);
 });

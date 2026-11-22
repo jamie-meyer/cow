@@ -14,6 +14,16 @@ const EVENT_PAGE = 100;
 /** A single read goes this far at most; the next read carries on from where it stopped. */
 const MAX_EVENT_PAGES = 100;
 
+const tokensSchema = z.object({ input: z.number().min(0), cacheRead: z.number().min(0), cacheWrite: z.number().min(0), output: z.number().min(0) });
+const liveSchema = z.object({
+  session: z.string().max(128),
+  offset: z.number().int().min(0),
+  partial: z.boolean(),
+  countFrom: z.number().nullable(),
+  tokens: z.record(z.string().max(100), tokensSchema),
+  keys: z.array(z.object({ key: z.string().max(32), model: z.string().max(100), tokens: tokensSchema })).max(64),
+  readAt: z.number().nullable(),
+});
 const callSchema = z.object({ id: z.string(), kind: z.string(), label: z.string(), hash: z.string() });
 const progressSchema = z.object({
   lastSeq: z.number().nullable(),
@@ -28,6 +38,9 @@ const progressSchema = z.object({
   recent: z.array(callSchema),
   repeat: z.number().int().min(0),
   counted: z.array(z.string()),
+  session: z.string().nullable().optional(),
+  usageAt: z.number().nullable().optional(),
+  live: liveSchema.nullable().optional(),
 });
 const recordSchema = z.object({ progress: progressSchema, seenUpdatedAt: z.number().nullable() });
 
@@ -43,6 +56,8 @@ export interface ProgressStore {
   /** A thread's progress, brought up to date. With `updatedAt` (bb's) no later than the last read, bb is not asked. */
   read(threadId: string, updatedAt?: number | null): Promise<Progress>;
   kept(threadId: string): Promise<Progress | null>;
+  /** Change what is kept, in turn with reads: the transcript reading. */
+  update(threadId: string, change: (p: Progress) => Progress): Promise<Progress>;
   forget(threadId: string): Promise<void>;
 }
 
@@ -69,6 +84,13 @@ export function createProgressStore(kv: Kv, read: ReadProgressEvents): ProgressS
         return progress;
       }),
     kept: async (threadId) => (await keptRecord(threadId))?.progress ?? null,
+    update: (threadId, change) =>
+      one(threadId, async () => {
+        const before = await keptRecord(threadId);
+        const progress = change(before?.progress ?? NO_PROGRESS);
+        await kv.set(PROGRESS_PREFIX + threadId, { progress, seenUpdatedAt: before?.seenUpdatedAt ?? null });
+        return progress;
+      }),
     forget: (threadId) => kv.delete(PROGRESS_PREFIX + threadId),
   };
 }

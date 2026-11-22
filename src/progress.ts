@@ -14,6 +14,7 @@
 
 import { LABEL_PATTERN } from "./ledger.ts";
 import { dollarText } from "./prices.ts";
+import { type LiveReading, settled } from "./live-usage.ts";
 
 /** Realtime channel: published whenever a mark or a watch notice changes. */
 export const WATCH_CHANGED = "cow-watch";
@@ -76,6 +77,12 @@ export interface Progress {
   repeat: number;
   /** Ids of the last calls counted. */
   counted: string[];
+  /** Claude Code's session id, from the latest event that gave one. */
+  session?: string | null;
+  /** When bb's latest usage event came: what it counted ends there. */
+  usageAt?: number | null;
+  /** Tokens so far in the running turn, read from the provider's transcript (the liveUsage setting); absent with it off. */
+  live?: LiveReading | null;
 }
 
 export const NO_PROGRESS: Progress = {
@@ -171,16 +178,24 @@ export function foldProgress(before: Progress, events: readonly unknown[]): Prog
   };
   for (const event of log) {
     p.lastSeq = event.seq;
+    const session = str(event.data.providerThreadId);
+    if (session !== null && session !== "") p.session = session;
     if (event.at > 0) p.lastEventAt = Math.max(p.lastEventAt ?? 0, event.at);
     if (event.type === "turn/started") {
       p.turns += 1;
       p.turnStartedAt = event.at;
       if (p.firstTurnAt === null) p.firstTurnAt = event.at;
       p.open = [];
+      if (p.live) p.live = settled(p.live, event.at);
     } else if (event.type === "turn/completed") {
       if (p.turnStartedAt !== null) p.workingMs += Math.max(0, event.at - p.turnStartedAt);
       p.turnStartedAt = null;
       p.open = [];
+      // bb's figure has the turn now: the reading is dropped.
+      if (p.live) p.live = settled(p.live, null);
+    } else if (event.type === "thread/tokenUsage/updated") {
+      p.usageAt = event.at;
+      if (p.live) p.live = settled(p.live, p.turnStartedAt === null ? null : event.at);
     } else if (event.type === "item/started" || event.type === "item/completed") {
       const item = record(event.data.item);
       const id = str(item?.id);
@@ -277,6 +292,8 @@ export interface Finding {
 }
 
 export const DOLLARS_NOTE = "list price, known only once a turn has ended";
+/** With the liveUsage setting on, for a worker whose turn runs on Claude Code. */
+export const LIVE_DOLLARS_NOTE = "list price, the running turn read from Claude Code's transcript";
 
 const KIND_NOUN: Record<string, string> = { commandExecution: "command", fileChange: "file change", toolCall: "tool call", mcpToolCall: "tool call", fileRead: "file read", search: "search", webSearch: "web search", webFetch: "web fetch" };
 const nounOf = (kind: string) => KIND_NOUN[kind] ?? `${kind} call`;
@@ -296,6 +313,8 @@ export interface WorkerNow {
   dollars: number | null;
   /** bb says its turn is running. */
   running: boolean;
+  /** `dollars` includes the running turn, read from the provider's transcript. */
+  live?: boolean;
 }
 
 /**
@@ -316,7 +335,11 @@ export function findings(w: WorkerNow, caps: Caps, stuck: StuckSettings, now: nu
     out.push({ reason: "cap-minutes", mark: `over cap: ${elapsed} of ${cap.minutes} minutes`, facts: { ...base, cap: cap.minutes } });
   }
   if (cap?.dollars !== undefined && w.dollars !== null && w.dollars > cap.dollars) {
-    out.push({ reason: "cap-dollars", mark: `over cap: ${dollarText(w.dollars)} of ${dollarText(cap.dollars)} (${DOLLARS_NOTE})`, facts: { ...base, dollars: Math.round(w.dollars * 100) / 100, cap: cap.dollars } });
+    out.push({
+      reason: "cap-dollars",
+      mark: `over cap: ${dollarText(w.dollars)} of ${dollarText(cap.dollars)} (${w.live ? LIVE_DOLLARS_NOTE : DOLLARS_NOTE})`,
+      facts: { ...base, dollars: Math.round(w.dollars * 10000) / 10000, cap: cap.dollars, source: w.live ? "transcript" : "bb" },
+    });
   }
   if (!w.running) return out;
   const last = p.recent[p.recent.length - 1];

@@ -11,6 +11,7 @@ import { createClone } from "./workspace.ts";
 import { parseWorkspaceFile } from "../workspace/file.ts";
 import { type CommandDeps, backCandidates, backFromClone, approvedFile, lastRun, readFolder, repoStatuses, syncWorkspace } from "../workspace/ops.ts";
 import { RepoLocks, RunStore } from "../workspace/run.ts";
+import { readTranscriptUsage } from "../transcript/read.ts";
 
 const locks = new RepoLocks();
 const commandDeps = (dataDir: string): CommandDeps => ({ store: new RunStore(dataDir), locks });
@@ -157,6 +158,14 @@ export default experimental_defineHostEntry({
         return found.ok ? { status: "done" as const, diff: found.diff } : { status: "none" as const, why: found.why };
       } catch (error) {
         return { status: "none" as const, why: `cow could not collect it (${message(error)})` };
+      }
+    },
+    transcript_usage: async (input) => {
+      try {
+        return readTranscriptUsage(input);
+      } catch {
+        // The error is not passed on: it could name a file.
+        return { status: "none" as const, why: "cow could not read it" };
       }
     },
     held_list: async (_input, context) => {

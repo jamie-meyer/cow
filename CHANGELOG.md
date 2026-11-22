@@ -4,6 +4,36 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.23
+
+- **Tokens and dollars while a turn runs, if you turn it on.** A new setting,
+  `liveUsage`, off by default: with it on, for a worker whose turn is running
+  on Claude Code, cow's host entry reads the token counts Claude Code writes
+  to that session's transcript (`~/.claude/projects/<folder>/<session
+  id>.jsonl` on the worker's machine) as the turn goes. It takes only the
+  message id (kept as a hash), the model, the four token counts, the time and
+  whether a sub-agent wrote the line; no text, tool input or file name is read
+  out or kept. It refuses a session id that is not plain, follows no link,
+  opens nothing else, and reads at most 4 MiB a call. A `dollars` cap then
+  applies during the turn, its mark says the figure is read from Claude
+  Code's transcript, and the worker's line shows its dollars so far. When the
+  turn ends, bb's own figure replaces the reading: the ledger, the month's
+  spend and the usage line count bb's figure only, and nothing is counted
+  twice. With it off, or for any other provider, nothing changes, and a
+  dollars cap is known once a turn has ended.
+- **A sub-agent's tokens are not in bb's figure.** Checked on bb 0.50 with
+  Claude Code: a sub-agent writes to files of its own, and bb's end-of-turn
+  total equalled the session's own file alone. The reference said the
+  opposite; it is corrected. cow's dollars, from bb or from the transcript,
+  leave a sub-agent's out.
+- **Worker notices are sent as notifications**, through bb's
+  push-notifications plugin as the usage notices are, one per worker per
+  reason. A new setting, `watchNotify`, on by default, turns that off.
+- **On the page, a worker with threads of its own is a worker** once those
+  threads are all archived, as `bb cow` has said since 0.2.21: `e` asks what
+  it came to and `o` sets it. A thread with a live thread under it, a marked
+  project and Main are still not asked. Groups are drawn as before.
+
 ## 0.2.21
 
 - **Caps and stuck checks, shown and never enforced.** cow keeps a small

@@ -31,6 +31,7 @@ import {
 import type { SpendPart } from "./spend.ts";
 import type { Ticker } from "./ticker.ts";
 import { monthOf } from "./usage.ts";
+import { pushNotify } from "./push.ts";
 
 /** How often the server checks, with the page open or not. */
 export const CHECK_EVERY_MS = 5 * 60_000;
@@ -38,7 +39,6 @@ export const CHECK_EVERY_MS = 5 * 60_000;
 const FRESH_MS = 60_000;
 const NOTICE = "limit-notice:";
 const RAISED = "limits-raised";
-const PUSH_PLUGIN = "push-notifications";
 
 export const limitNoticeSchema = z.object({
   id: z.string(),
@@ -222,16 +222,7 @@ export function registerLimits(bb: BbPluginApi, log: LogStore, month: (month: st
       const got = await settings.get();
       return { monthlyBudget: got.monthlyBudget, windowPercent: got.usageWindowPercent, notify: got.usageNotify };
     },
-    notify: async (title, body) => {
-      const sent = await bb.sdk.plugins.callRpc({
-        pluginId: PUSH_PLUGIN,
-        method: "notifications.send",
-        input: { title, body },
-        outputSchema: z.object({ ok: z.literal(true), channels: z.array(z.string()) }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (sent.channels.length === 0) bb.log.info("a usage notification was sent, and no channel delivered it");
-    },
+    notify: pushNotify(bb, "usage"),
     log,
     changed: () => bb.realtime.publish(LIMITS_CHANGED, {}),
     warn: (text) => bb.log.warn(text),
