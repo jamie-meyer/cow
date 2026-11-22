@@ -12,8 +12,9 @@ import { LIMITS } from "./state.ts";
 import { GROUPINGS, type Grouping, LABEL_RULE, OUTCOMES, OUTCOME_TEXT, type Outcome, isOutcome, labelOf, ledgerText, whoText } from "./ledger.ts";
 import { statusText, withCapabilities, withWatch } from "./status.ts";
 import { type Spend, spendText } from "./spend.ts";
-import { MONTH_PATTERN, USAGE_GAPS_NOTE } from "./usage.ts";
+import { MONTH_PATTERN, USAGE_GAPS_NOTE, tokensText } from "./usage.ts";
 import type { UsageReport } from "./limits-backend.ts";
+import type { ForgetDeleted } from "./ledger-backend.ts";
 import { usageReportText } from "./limits.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
@@ -21,6 +22,8 @@ export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resum
   Partial<Pick<Actions, "outcomeChecked" | "ledger" | "labelChecked">> & {
     /** The spend under a Main (the last 30 days, or the month given): the one given, or this project's. */
     spend?: (mainId: string | null, projectId: string | null, month: string | undefined) => Promise<Spend & { priceError: string | null; mainTitle: string | null }>;
+    /** The kept usage of threads bb deleted, listed; with true, removed. */
+    forgetDeleted?: (remove: boolean) => Promise<ForgetDeleted>;
     /** The usage line's figures and the usage notices waiting, read now. */
     usage?: () => Promise<UsageReport>;
     /** Each worker's caps and stuck-check marks, as the page shows them. */
@@ -105,9 +108,40 @@ function usageCommand(usage: () => Promise<UsageReport>) {
 
 /** The ledger commands: what a finished worker came to, and the rows and summary. */
 function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof cliCommand>> {
-  const { outcomeChecked, ledger, labelChecked, spend } = actions;
+  const { outcomeChecked, ledger, labelChecked, spend, forgetDeleted } = actions;
   if (!outcomeChecked || !ledger) return {};
   return {
+    ...(forgetDeleted
+      ? {
+          "spend forget": cliCommand({
+            summary: "Remove the kept usage of threads bb has deleted: without --yes, only says what it would remove",
+            description:
+              "cow keeps a deleted thread's token counts, so the spend under its Main and the usage line still count what it used. " +
+              "This removes them, for every thread bb no longer has: they then drop out of every total. Without --yes it lists them and removes nothing. " +
+              "It is the only way they go, apart from the oldest days dropping out of a thread's record after 400 days.",
+            options: {
+              deleted: { type: "boolean", description: "Every deleted thread's kept usage (required: the only kind there is)" },
+              yes: { type: "boolean", description: "Remove them; without it, only list them" },
+              json,
+            },
+            async run(input) {
+              if (!input.options.deleted) throw new PluginCliError("say which: --deleted", { code: "bad_forget", hint: "bb cow spend forget --deleted, then again with --yes to remove them" });
+              const remove = input.options.yes === true;
+              const got = await acting(() => forgetDeleted(remove));
+              if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...got })}\n` };
+              const n = got.threads.length;
+              const all = tokensText(got.threads.reduce((sum, t) => sum + t.tokens, 0));
+              const recent = tokensText(got.threads.reduce((sum, t) => sum + t.last30Days, 0));
+              if (n === 0) return { exitCode: 0, stdout: "No deleted thread's usage is kept: nothing to remove.\n" };
+              const head = remove
+                ? `Removed the kept usage of ${n} deleted ${n === 1 ? "thread" : "threads"}: ${all} tokens in all, ${recent} of them in the last 30 days. The totals no longer count ${n === 1 ? "it" : "them"}.`
+                : `Would remove the kept usage of ${n} deleted ${n === 1 ? "thread" : "threads"}: ${all} tokens in all, ${recent} of them in the last 30 days. Nothing is removed without --yes.`;
+              const lines = got.threads.map((t) => `  ${t.threadId} · ${tokensText(t.tokens)} tokens · ${tokensText(t.last30Days)} in the last 30 days${t.fromLedger ? " · from its ledger row" : ""}`);
+              return { exitCode: 0, stdout: `${[head, ...lines].join("\n")}\n` };
+            },
+          }),
+        }
+      : {}),
     ...(spend
       ? {
           spend: cliCommand({
@@ -116,7 +150,9 @@ function ledgerCommands(actions: CliActions): Record<string, ReturnType<typeof c
               "The last 30 days, today and the 29 days before it (or a calendar month with --month YYYY-MM), for every thread under Main, archived or not, split into workers, project threads, Main itself and cow's checker runs " +
               "(every check cow ran in those days, whichever Main's brief it checked), with the total. With --json, `period` says which days: its kind (last30Days or month), first and last day. Tokens are bb's own record of them, by the day it recorded them. " +
               "Dollars are an estimate at the providers' list prices, not a bill: on a subscription you are not billed this. A model with no list price shows tokens and no dollars. " +
-              "Threads with no usage recorded are counted and said, never shown as zero.",
+              "Threads with no usage recorded are counted and said, never shown as zero. " +
+              "A thread bb has deleted is still counted (its tokens were spent) when its saved parent chain reaches Main, and said (`deleted` in --json); `bb cow spend forget --deleted` removes those. " +
+              "A kept usage record that could not be read is left as it is, not counted, and said (`unreadable`).",
             options: {
               month: { type: "string", description: "A calendar month, YYYY-MM. Default: the last 30 days" },
               main: { type: "string", description: "The Main thread's id. Default: the Main last chosen for this project on cow's page" },

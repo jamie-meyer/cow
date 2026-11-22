@@ -308,7 +308,7 @@ export default async function plugin(bb: BbPluginApi) {
     cowCli({ ...actions, spend: async (mainId, projectId, month) => {
       const main = await actions.mainFor(mainId, projectId);
       return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
-    }, usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
+    }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
@@ -320,4 +320,12 @@ export default async function plugin(bb: BbPluginApi) {
     void actions.sweep().catch((cause: unknown) => bb.log.warn(`could not clear records of deleted threads: ${String(cause)}`));
   }, 5000);
   bb.onDispose(() => clearTimeout(sweep));
+  // Threads deleted before cow kept a deleted thread's usage get it back from their ledger rows, once: a thread with any usage record is left alone.
+  const rebuild = setTimeout(() => {
+    void ledgers
+      .rebuild()
+      .then((made) => (made > 0 ? bb.log.info(`made the usage of ${made} deleted ${made === 1 ? "thread" : "threads"} from the ledger`) : undefined))
+      .catch((cause: unknown) => bb.log.warn(`could not make deleted threads' usage from the ledger: ${String(cause)}`));
+  }, 3000);
+  bb.onDispose(() => clearTimeout(rebuild));
 }

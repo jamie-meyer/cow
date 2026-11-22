@@ -1674,6 +1674,42 @@ spend's read lists bb's threads once and asks bb about a thread's events
 only when bb has changed the thread since cow last read it: opening the
 sheet again asks about nothing that has not changed.
 
+**A deleted thread's usage is kept.** The tokens were spent, so deleting a
+thread (or a project, and every thread in it) does not take them out of any
+total. Each thread's usage record also keeps its parent thread's id, its
+project's id, and whether it is one of cow's checker runs or a project
+thread, saved as cow reads it; when bb deletes the thread (bb's
+`thread.deleted`, or the thread simply gone from bb's list when spend
+reads it) the record is marked deleted, with when. No title and no text.
+Spend still counts a deleted thread with usage in the period: under a Main
+when its saved parent chain reaches that Main (through threads bb still has
+or through other kept records), in the group it belonged to; a checker run
+under every Main, as before; and every one in the usage line's all-threads
+total, even one whose chain cannot be followed. `bb cow spend` says how
+many, `N deleted threads are still counted`, and `--json` carries
+`deleted` on each part and on the total.
+
+Workers deleted before 0.2.24 lost their record with them. When cow's
+server starts, every ledger row whose thread is gone from bb's list and has
+no usage record at all gets one made from the row: its four token counts,
+its model, all on the day it was archived, with its dispatching thread as
+its parent (`fromLedger` in `--json`, and a note in `bb cow spend`). A
+thread with any record, readable or not, is left alone, so running it again
+changes nothing; with bb's list cut short it does nothing.
+
+**A record is never replaced by less.** A stored record that does not parse
+is left exactly as it is: not counted, never written over, named in cow's
+log, and counted in a note (`1 usage record could not be read`, and
+`unreadable` in `--json`). A read never writes a record that holds fewer
+tokens of a model, or fewer usage events, than the one stored; a new
+provider session adds to it, as before.
+
+**Forgetting them.** `bb cow spend forget --deleted` lists every kept
+record of a thread bb no longer has, with its tokens in all and in the last
+30 days, and removes nothing; with `--yes` it removes them, and every total
+drops by exactly those tokens. Apart from that, only the 400-day limit on a
+record's days takes anything away.
+
 ## Usage and a budget
 
 **The usage line.** One quiet line, always just above the status line, and

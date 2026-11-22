@@ -196,7 +196,7 @@ function world(opts: { budget?: string; monthlyBudget?: string; notify?: boolean
     now: () => clock.now,
     newId: () => `n${(ids += 1)}`,
     usageLimits: async () => bb.response,
-    total: async () => ({ period: { kind: "last30Days", month: null, first: "2026-10-23", last: "2026-11-21" }, threads: 3, noUsage: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, dollars: bb.dollars, unpricedTokens: 0, unpricedModels: [], priceError: null }),
+    total: async () => ({ period: { kind: "last30Days", month: null, first: "2026-10-23", last: "2026-11-21" }, threads: 3, noUsage: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, dollars: bb.dollars, unpricedTokens: 0, unpricedModels: [], deleted: 0, fromLedger: 0, priceError: null }),
     settings: async () => ({ budget30Days: opts.budget ?? "", monthlyBudget: opts.monthlyBudget ?? "", windowPercent: 80, notify: opts.notify ?? true }),
     notify: async (title, body) => {
       if (opts.failNotify) throw new Error("no plugin push-notifications");

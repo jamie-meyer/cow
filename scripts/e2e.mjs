@@ -95,7 +95,10 @@
 //                       (its notifications turned off), put back after.
 //                       Then caps and stuck checks: three more fixtures, one
 //                       that runs the same command three times, and a worker
-//                       with a thread of its own
+//                       with a thread of its own. Last, it deletes one of
+//                       its own two workers, to check that its usage is
+//                       still counted and that forgetting it on purpose
+//                       takes it out
 //   --only-history      only bb's back and forward between chats, a reload
 //                       with a chat open, and an address naming an unknown
 //                       or archived thread: four fixtures. Back and forward
@@ -2143,6 +2146,36 @@ async function ledgerChecks(page, ids, shot, chooseMain) {
   check("q and Escape close it", true);
   await watchChecks(page, ids, shot);
   await usageChecks(page, shot);
+  await deletedChecks(lmain, ltwo);
+}
+
+/** A deleted worker's usage is still counted under its Main until it is forgotten on purpose. Deletes one of this run's own fixtures. */
+async function deletedChecks(lmain, gone) {
+  const sum = (t) => t.input + t.cacheRead + t.cacheWrite + t.output;
+  const spendJson = async () => JSON.parse((await cow("spend", "--main", lmain, "--json")).stdout);
+  const before = await spendJson();
+  await run("bb", ["thread", "delete", gone, "--yes", "--json"]);
+  await sleep(1500);
+  const after = await spendJson();
+  const text = (await cow("spend", "--main", lmain)).stdout;
+  console.log(`note: bb ${PLUGIN} spend --main ${lmain}, after deleting ${gone}:\n${text}`);
+  check(
+    "a deleted worker's tokens stay in the spend under its Main, and the spend says a deleted thread is counted",
+    sum(after.total.tokens) === sum(before.total.tokens) && after.total.deleted >= 1 && after.parts.workers.deleted >= 1 && /\d+ deleted threads? (is|are) still counted/.test(text),
+    JSON.stringify({ before: sum(before.total.tokens), after: sum(after.total.tokens), deleted: after.total.deleted }),
+  );
+  const listed = await cow("spend", "forget", "--deleted");
+  console.log(`note: bb ${PLUGIN} spend forget --deleted:\n${listed.stdout}`);
+  const kept = JSON.parse((await cow("spend", "forget", "--deleted", "--json")).stdout);
+  const mine = kept.threads?.find((t) => t.threadId === gone);
+  check("bb cow spend forget --deleted lists it and removes nothing without --yes", listed.code === 0 && /^Would remove/.test(listed.stdout) && listed.stdout.includes(gone) && kept.removed === false && mine !== undefined && sum((await spendJson()).total.tokens) === sum(before.total.tokens), listed.stdout.split("\n")[0]);
+  const removed = await cow("spend", "forget", "--deleted", "--yes");
+  const dropped = await spendJson();
+  check(
+    "with --yes it removes them, and the spend drops by exactly that thread's tokens",
+    removed.code === 0 && /^Removed/.test(removed.stdout) && sum(before.total.tokens) - sum(dropped.total.tokens) === (mine?.last30Days ?? -1) && dropped.total.deleted === 0,
+    JSON.stringify({ before: sum(before.total.tokens), after: sum(dropped.total.tokens), its: mine?.last30Days }),
+  );
 }
 
 /**

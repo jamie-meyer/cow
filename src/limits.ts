@@ -7,6 +7,7 @@
 // (and, when they allow it, a notification), never a stop.
 
 import { dollarText } from "./prices.ts";
+import { keptNotes } from "./spend.ts";
 import { LAST_DAYS, USAGE_GAPS_NOTE, monthOf } from "./usage.ts";
 
 /** Realtime channel: published whenever the line's figures or the notices change. */
@@ -76,6 +77,11 @@ export interface TotalLine {
   unpricedTokens: number;
   /** The budget for 30 days; null when none is set. */
   budget: number | null;
+  /** Threads bb deleted whose kept usage is counted, and of those the ones made from a ledger row. */
+  deleted?: number;
+  fromLedger?: number;
+  /** Kept usage records that could not be read: not counted. */
+  unreadable?: number;
 }
 
 /** A budget setting: a number of dollars, or empty for none. Anything else is an error, said. */
@@ -260,6 +266,7 @@ export function usageReportText(
   if (t) {
     out.push(`  ${totalText(t)}`);
     out.push(`    ${t.first} to ${t.last}: today and the ${LAST_DAYS - 1} days before it, local time. Every thread on this bb, under any Main or none. An estimate at the providers' list prices, not a bill.${t.noUsage > 0 ? ` ${t.noUsage} ${t.noUsage === 1 ? "thread" : "threads"} with no usage recorded: not counted.` : ""}${t.unpricedTokens > 0 ? " Tokens of models with no list price are not in the dollars." : ""}`);
+    for (const note of keptNotes({ deleted: t.deleted ?? 0, fromLedger: t.fromLedger ?? 0 }, t.unreadable ?? 0)) out.push(`    ${note}`);
     if (t.budget === null) out.push(`    No budget is set (the budget30Days setting).`);
     out.push(`    ${USAGE_GAPS_NOTE}`);
   }

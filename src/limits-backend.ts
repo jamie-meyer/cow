@@ -72,7 +72,7 @@ export interface LimitsDeps {
   /** bb's usage windows response, every provider. */
   usageLimits: () => Promise<unknown>;
   /** The last 30 days' figures, every thread bb has. */
-  total: () => Promise<SpendPart & { period: Period; priceError: string | null }>;
+  total: () => Promise<SpendPart & { period: Period; unreadable?: number; priceError: string | null }>;
   settings: () => Promise<{ budget30Days: string; monthlyBudget: string; windowPercent: number; notify: boolean }>;
   /** Send the person a notification; rejects when it cannot. */
   notify: (title: string, body: string) => Promise<void>;
@@ -120,7 +120,7 @@ export function createLimits(deps: LimitsDeps): Limits {
     const total = await deps.total().then(
       (part): TotalLine => {
         if (part.priceError) errors.push(part.priceError);
-        return { first: part.period.first, last: part.period.last, dollars: part.dollars, noUsage: part.noUsage, unpricedTokens: part.unpricedTokens, budget };
+        return { first: part.period.first, last: part.period.last, dollars: part.dollars, noUsage: part.noUsage, unpricedTokens: part.unpricedTokens, budget, deleted: part.deleted, fromLedger: part.fromLedger, unreadable: part.unreadable ?? 0 };
       },
       (cause: unknown) => {
         errors.push(`the last 30 days: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -189,7 +189,7 @@ export const LIMIT_SETTINGS_HELP = {
   notify: "Send a notification, through bb's push-notifications plugin, with the same text when a usage notice is raised. The notice in cow's queue is there either way.",
 };
 
-export function registerLimits(bb: BbPluginApi, log: LogStore, total: () => Promise<SpendPart & { period: Period; priceError: string | null }>, ticker: Ticker): Limits {
+export function registerLimits(bb: BbPluginApi, log: LogStore, total: () => Promise<SpendPart & { period: Period; unreadable?: number; priceError: string | null }>, ticker: Ticker): Limits {
   const settings = bb.settings.define({
     budget30Days: {
       type: "string",
