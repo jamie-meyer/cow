@@ -43,7 +43,8 @@
 // uncommitted file in web (no teardown) is held, listed by `bb <id>
 // workspace`, with its files intact at the held path; a third's, whose
 // teardown fails, is held; unsigned removal is refused; the signed
-// `workspace_held_remove` deletes both.
+// `workspace_held_remove` deletes both. Before the teardown part it also
+// checks the checker's diff in a clone (see briefDiffInClone).
 // The thread is archived at the end, also after a failure. The bb CLI is run
 // without BB_THREAD_ID for the "outside any thread" calls, as a terminal would.
 //
@@ -463,6 +464,9 @@ async function workspaceE2e() {
     check("the signed workspace_back runs api's back command, and web has nothing new", backResults.find((r) => r.as === "api")?.status === "ran" && backResults.find((r) => r.as === "api")?.code === 0 && backResults.find((r) => r.as === "web")?.status === "nothing-new", JSON.stringify(done));
     check("the commit reached the source", (await git(api, "log", "-1", "--format=%s", branch)) === "work from the thread");
 
+    // What a brief's checker is shown in such a clone: the workspace folder's own repository, which ignores app, and the brought repositories.
+    await briefDiffInClone({ plugin, project, model, rpc, signer, base, extraThreads });
+
     // A harmful-looking change runs nothing until approved.
     const harmful = { ...file, bring: [{ ...file.bring[0], sync: `touch "${marker}"` }, file.bring[1]] };
     writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(harmful, null, 2)}\n`);
@@ -541,6 +545,94 @@ async function workspaceE2e() {
     }
     if (!flag("keep")) rmSync(base, { recursive: true, force: true });
     else console.log(`kept: thread ${threadId}, folders ${base}`);
+  }
+}
+
+/**
+ * The checker's diff in a copy-on-write workspace: a folder that is a small
+ * repository of its own, ignoring app, and two brought repositories. The
+ * thread commits a new file in app, changes an existing test in lib, and
+ * drops lib from the workspace file in its clone; it submits a brief about
+ * the new file. The record lists both repositories' files under their
+ * folders, each with its base; the existing test is flagged; and the
+ * checker's prompt holds app's diff.
+ */
+async function briefDiffInClone({ plugin, project, model, rpc, signer, base, extraThreads }) {
+  const ex = join(base, "ex");
+  const app = join(base, "ex-app");
+  const lib = join(base, "ex-lib");
+  mkdirSync(ex);
+  writeFileSync(join(ex, ".gitignore"), "/app/\n");
+  await git(ex, "init", "-q", "-b", "main");
+  await git(ex, "add", ".");
+  await git(ex, "commit", "-q", "-m", "folder");
+  mkdirSync(app);
+  await git(app, "init", "-q", "-b", "main");
+  await git(app, "commit", "-q", "--allow-empty", "-m", "one");
+  mkdirSync(join(lib, "test"), { recursive: true });
+  writeFileSync(join(lib, "test", "a.test.js"), "test('one', () => {});\n");
+  await git(lib, "init", "-q", "-b", "main");
+  await git(lib, "add", ".");
+  await git(lib, "commit", "-q", "-m", "lib");
+  const heads = { ex: await git(ex, "rev-parse", "HEAD"), app: await git(app, "rev-parse", "HEAD"), lib: await git(lib, "rev-parse", "HEAD") };
+  writeFileSync(join(ex, "cow.workspace.json"), `${JSON.stringify({ bring: [{ path: "../ex-app", as: "app" }, { path: "../ex-lib", as: "lib" }] })}\n`);
+  const added = await bbOutside(plugin, "workspace", "add", ex, "--json");
+  check("the example's workspace file is proposed", added.code === 0, added.stdout + added.stderr);
+  const state = (await rpc("workspace_state", null)).result?.workspaces?.find((view) => view.folder === ex);
+  await signer.must("workspace_approve", { folder: ex, hash: state.currentHash });
+
+  const config = JSON.parse((await run(BB, ["plugin", "config", plugin, "--json"])).stdout || "{}").values ?? {};
+  const set = (key, value) => run(BB, ["plugin", "config", plugin, ...(value === "" || value === undefined ? ["unset", key] : ["set", key, String(value)])]);
+  await set("checkerModel", model);
+  await set("checkerProvider", "claude-code");
+  try {
+    const command =
+      'echo change > app/file.txt && git -C app add file.txt && git -C app -c user.name=t -c user.email=t@example.com commit -qm "a change" && ' +
+      "echo \"test('two', () => {});\" >> lib/test/a.test.js && printf '{ \"bring\": [{ \"path\": \"../ex-app\", \"as\": \"app\" }] }\\n' > cow.workspace.json";
+    const id = (
+      await bb("thread", "spawn", "--project", project, "--environment-provider", `${plugin}-clone`, "--environment-inputs", JSON.stringify({ workspace: ex }), "--provider", "claude-code", "--model", model, "--title", "cow test: the checker's diff in a clone", "--parent-notifications", "off", "--prompt", PROMPT(command))
+    ).id;
+    extraThreads.push(id);
+    const t = await waitIdle(id);
+    const env = (await bb("environment", "show", t.environmentId)).environment ?? (await bb("environment", "show", t.environmentId));
+    check("the example's thread committed in app and dropped lib from the file in its clone", (await git(join(env.path, "app"), "log", "-1", "--format=%s")) === "a change" && !readFileSync(join(env.path, "cow.workspace.json"), "utf8").includes("lib"), env.path);
+
+    const brief = {
+      summary: "Added app/file.txt.",
+      claims: [{ id: "file", text: "A new file app/file.txt was committed in the app repository, holding the single line \"change\".", label: "checked", evidence: [] }],
+    };
+    const briefFile = join(base, "brief.json");
+    writeFileSync(briefFile, JSON.stringify(brief));
+    const submitted = await run(BB, [plugin, "brief", "submit", briefFile, "--wait", "--json"], { env: { ...process.env, BB_THREAD_ID: id } });
+    check("the example's brief is submitted and checked", submitted.code === 0, submitted.stdout + submitted.stderr);
+    const record = (await rpc("brief_get", { threadId: id })).result?.record;
+    const diff = record?.shown?.diff;
+    console.log(`the example's record: ${JSON.stringify(record?.shown)}`);
+    const files = diff?.state === "collected" ? Object.fromEntries(diff.files.map((f) => [f.path, `${f.status}${f.untracked ? " untracked" : ""}`])) : {};
+    check("the record lists app/file.txt as added and lib's changed test under lib/", files["app/file.txt"] === "added" && files["lib/test/a.test.js"] === "modified", JSON.stringify(files));
+    check(
+      "the record names each repository with its base: the commit it was on when the clone was made",
+      JSON.stringify(diff?.repos?.map((r) => [r.as, r.base])) === JSON.stringify([[null, heads.ex], ["app", heads.app], ["lib", heads.lib]]) && diff.repos.every((r) => r.baseText === "the commit it was on when cow made the clone"),
+      JSON.stringify(diff?.repos),
+    );
+    check("the changed existing test in a brought repository is flagged with its folder", JSON.stringify(record?.shown?.flagged) === '["lib/test/a.test.js"]', JSON.stringify(record?.shown?.flagged));
+    const checkerThread = record?.check?.runs?.[0]?.threadId;
+    const history = checkerThread ? await run(BB, ["thread", "history", checkerThread, "--json"]) : { stdout: "" };
+    const strings = [];
+    const walk = (value) => (typeof value === "string" ? strings.push(value) : value && typeof value === "object" ? Object.values(value).forEach(walk) : undefined);
+    try {
+      walk(JSON.parse(history.stdout));
+    } catch {
+      strings.push(history.stdout);
+    }
+    const what = /WHAT CHANGED[\s\S]*?THE CLAIMS/.exec(strings.find((text) => text.includes("WHAT CHANGED")) ?? "")?.[0] ?? "";
+    console.log(`the example's WHAT CHANGED:\n${what}`);
+    check("the checker's prompt holds app/file.txt's diff and names each repository's base", what.includes("+++ b/app/file.txt") && what.includes("+change") && what.includes(`"app" (its files under app/): against ${heads.app.slice(0, 12)}`), what.slice(0, 400));
+    const done = record?.check?.runs?.find((r) => r.status === "done");
+    check("the checker found the claim about app/file.txt supported", done?.verdicts?.find((v) => v.id === "file")?.verdict === "supported", JSON.stringify(record?.check?.runs));
+  } finally {
+    await set("checkerModel", config.checkerModel);
+    await set("checkerProvider", config.checkerProvider);
   }
 }
 

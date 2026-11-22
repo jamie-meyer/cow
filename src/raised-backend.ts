@@ -15,6 +15,7 @@ import { failureOf } from "./briefs/provider.ts";
 import type { DiffResult } from "./briefs/diff.ts";
 import { firstMessageText } from "./briefs/task.ts";
 import { cloneHostContract } from "./clone/contract.ts";
+import { cloneProviderId } from "./clone/provider.ts";
 import { RAISED_CHANGED } from "./raised.ts";
 import { readActivity } from "./activity.ts";
 import type { TraceInput } from "./traces.ts";
@@ -251,7 +252,8 @@ export function registerAttention(bb: BbPluginApi, traces: TraceSink = { record:
       if (!found?.environmentId) return { ok: false, why: "the agent's thread has no environment" };
       const environment = await bb.sdk.environments.get({ environmentId: found.environmentId }).catch(() => null);
       if (environment === null || environment.path === null || environment.status === "destroyed") return { ok: false, why: "the agent's thread has no checkout to read" };
-      if (!environment.isGitRepo) return { ok: false, why: "the agent's thread's folder is not a git checkout" };
+      // A clone's workspace folder may be no git checkout and still bring repositories: the host entry reads those.
+      if (!environment.isGitRepo && environment.environmentProviderId !== cloneProviderId(bb.pluginId)) return { ok: false, why: "the agent's thread's folder is not a git checkout" };
       const bases = [environment.mergeBaseBranch, environment.baseBranch, environment.defaultBranch].filter((name): name is string => typeof name === "string" && name.trim() !== "");
       const result = await host.call("brief_diff", { path: environment.path, bases }, { hostId: environment.hostId, timeoutMs: DIFF_MS });
       return result.status === "done" ? { ok: true, diff: result.diff } : { ok: false, why: result.why };

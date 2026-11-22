@@ -103,6 +103,7 @@ const shownSchema = z.object({
       clipped: z.array(z.string()),
       omitted: z.array(z.string()),
       namesOnly: z.array(z.object({ path: z.string(), why: z.enum(["lock file", "binary", "secret"]) })),
+      repos: z.array(z.object({ as: z.string().nullable(), base: z.string().nullable(), baseText: z.string().nullable(), filesTotal: z.number(), why: z.string().nullable() })).optional(),
     }),
   ]),
   flagged: z.array(z.string()),
@@ -273,7 +274,7 @@ export function createBriefs(deps: BriefDeps): Briefs {
       task: task.state === "none" ? task : { state: "read", chars: task.chars, clipped: task.clipped, hasSection: task.hasSection, checks: task.checks, checksDropped: task.checksDropped },
       diff:
         diff.state !== "collected" ? diff : (
-          { state: "collected", base: diff.base, baseText: diff.baseText, files: diff.files.slice(0, SHOWN_FILES), filesTotal: diff.filesTotal, chars: diff.chars, clipped: diff.clipped, omitted: diff.omitted, namesOnly: diff.namesOnly }
+          { state: "collected", base: diff.base, baseText: diff.baseText, files: diff.files.slice(0, SHOWN_FILES), filesTotal: diff.filesTotal, chars: diff.chars, clipped: diff.clipped, omitted: diff.omitted, namesOnly: diff.namesOnly, ...(diff.repos === undefined ? {} : { repos: diff.repos }) }
         ),
       flagged: diff.state === "collected" ? gateChanges(diff.files).slice(0, MAX_FLAGGED) : [],
       at: deps.now(),

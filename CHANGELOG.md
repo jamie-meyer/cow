@@ -4,6 +4,29 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.22
+
+- **The checker's diff covers the repositories a workspace brings.** In a
+  copy-on-write workspace, the folder is often a small repository of its own
+  that ignores the brought ones, and the work happens inside them; the
+  checker was then shown no changes. Now cow reads the workspace folder
+  (when it is a git checkout) and every repository the clone brought, each
+  against the commit it was on when cow made the clone, and shows one list
+  and one diff, a brought repository's files under its folder
+  (`app/file.txt`). Which repositories come from cow's record of the clone,
+  never from the workspace file in it, which the agent can edit.
+- The prompt and the brief's record name each repository with its base, and
+  any that could not be read with why; the others are still shown. The
+  limits (60,000 characters, 12,000 a file, 5,000 files listed) are shared
+  fairly between the repositories, so a large diff in one cannot leave out
+  another's small change. The dispute for a changed test or CI, lint,
+  format, type-check or test-runner configuration sees the combined list,
+  with the folder in each path.
+- A workspace folder that is not a git checkout gets its brought
+  repositories' changes, instead of "not a git checkout". A thread outside
+  cow's clones is collected exactly as before, and briefs stored by earlier
+  versions read and show as they did.
+
 ## 0.2.21
 
 - **Caps and stuck checks, shown and never enforced.** cow keeps a small

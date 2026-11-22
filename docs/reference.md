@@ -1174,9 +1174,30 @@ fence is an instruction.
   to 200,000 bytes. The prompt names every file cut short, left out, or
   shown by name only, and the checker is told that when what was left out
   could decide a verdict, it cannot tell.
+- **In a copy-on-write workspace.** When the thread runs in one of cow's
+  clones, cow reads the workspace folder (when it is a git checkout) and
+  every repository the clone brought, each on its own. Which repositories
+  those are comes from cow's own record of the clone, written when it was
+  made, never from the `cow.workspace.json` in the clone, which the agent
+  can edit. Each is compared against the commit it was on when cow made the
+  clone; when that commit is gone from it, against the merge base found as
+  above, and the prompt says so; one that had no commits then, against the
+  empty tree. The folder's own list leaves out the brought folders, and a
+  brought repository's files are listed and diffed under its folder
+  (`app/file.txt`). One list and one diff go to the checker, with each
+  repository named with its base, and any that could not be read (gone
+  from the clone, no longer a folder, not a git repository) named with why;
+  the others are still shown. The limits above apply to the whole, shared
+  fairly: each repository gets an even share of the 5,000 files listed and
+  of the 60,000 characters before any gets more, so a large diff in one
+  cannot leave out another's small change. The rule about tests and
+  configuration reads the combined list, with the folder in each path.
+  The brief's record names each repository and its base. A folder that is
+  not a git checkout still gets its brought repositories' changes.
 - **No diff.** With no environment, an environment that is not a git
-  checkout, git failing, or the `checkerDiff` setting off, the check still
-  runs, and the checker is told there is no diff and why.
+  checkout (nor one of cow's clones with a repository to read), git
+  failing, or the `checkerDiff` setting off, the check still runs, and the
+  checker is told there is no diff and why.
 - **The claims**: each claim's id and text, its evidence, and the list of
   what was not done. Not the summary, not the labels, not the judgement
   calls.
