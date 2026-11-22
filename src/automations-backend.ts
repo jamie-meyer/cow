@@ -9,7 +9,8 @@
 
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { AUTOMATIONS_PLUGIN, type AutomationsRead, NO_AUTOMATIONS, parseOverview, parseRuns } from "./automations.ts";
+import { AUTOMATIONS_PLUGIN, type AutomationRecord, type AutomationsRead, NO_AUTOMATIONS, parseOverview, parseRuns } from "./automations.ts";
+import { type StartedRecord, withRecorded } from "./automation-runs.ts";
 
 /** How long the list of automations may take, and each automation's runs. */
 const OVERVIEW_MS = 4000;
@@ -111,20 +112,44 @@ export const automationsRpcContract = defineRpcContract({
   automations_read: { input: z.null(), output: automationsReadSchema },
 });
 
-/** Registers the page's method, and returns the read the CLI uses. */
-export function registerAutomations(bb: BbPluginApi): () => Promise<AutomationsRead> {
+/** What the server uses of the automations: the read with cow's records in it, the plugin's own, and one automation's latest run ids. */
+export interface AutomationsSource {
+  read(): Promise<AutomationsRead>;
+  plain(): Promise<AutomationsRead>;
+  runIds(automation: AutomationRecord): Promise<readonly string[] | null>;
+}
+
+/**
+ * Registers the page's method, and returns the reads the server uses.
+ * `recorded`: the threads scripts said they started, put under their runs
+ * after the plugin's answer (which is shared for a moment between callers).
+ */
+export function registerAutomations(bb: BbPluginApi, recorded: () => Promise<ReadonlyMap<string, StartedRecord>> = async () => new Map()): AutomationsSource {
   const caller: AutomationsCaller = {
     call: (method, input, signal) =>
       bb.sdk.plugins.callRpc({ pluginId: AUTOMATIONS_PLUGIN, method, input: input as never, outputSchema: z.unknown(), signal }),
   };
   let last: { at: number; read: Promise<AutomationsRead> } | null = null;
-  const read = (): Promise<AutomationsRead> => {
+  const plain = (): Promise<AutomationsRead> => {
     const now = Date.now();
     if (last && now - last.at < FRESH_MS) return last.read;
     const next = readAutomations(caller);
     last = { at: now, read: next };
     return next;
   };
+  const read = async (): Promise<AutomationsRead> => {
+    const got = await plain();
+    const records = await recorded().catch(() => new Map<string, StartedRecord>());
+    return withRecorded(got, records);
+  };
+  const runIds = async (automation: AutomationRecord): Promise<readonly string[] | null> => {
+    try {
+      const got = parseRuns(await bounded(RUNS_MS, (signal) => caller.call("automations_runs", { projectId: automation.projectId, automationId: automation.id, limit: RUNS_READ }, signal)));
+      return got.runs.map((run) => run.id);
+    } catch {
+      return null;
+    }
+  };
   bb.rpc.register(automationsRpcContract, { automations_read: () => read() });
-  return read;
+  return { read, plain, runIds };
 }

@@ -1,11 +1,12 @@
 // The page's copy of bb's automations, read through cow's server. The page
 // cannot hear the automations plugin's own signals, so it reads again when a
 // thread an automation started appears or changes, when the section is
-// unfolded, and once a minute while it is open.
+// unfolded, when cow records which thread a script's run started, and once a
+// minute while it is open.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRpc } from "@get-bb/plugin-sdk/app";
-import { AUTOMATIONS_PLUGIN, type AutomationsRead, NO_AUTOMATIONS } from "./automations.ts";
+import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { AUTOMATIONS_PLUGIN, AUTOMATION_RUNS_CHANGED, type AutomationsRead, NO_AUTOMATIONS } from "./automations.ts";
 import type { automationsRpcContract } from "./automations-backend.ts";
 import type { ThreadFacts } from "./state.ts";
 
@@ -57,6 +58,9 @@ export function useAutomations(threads: readonly ThreadFacts[], open: boolean): 
     }, OPEN_EVERY_MS);
     return () => clearInterval(timer);
   }, [reload, open]);
+
+  // A script said which thread its run started, or that record was cleared.
+  useRealtime(AUTOMATION_RUNS_CHANGED, reload);
 
   return { read, reload };
 }

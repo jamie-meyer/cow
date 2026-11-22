@@ -4,6 +4,23 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.25
+
+- **A script automation's run can say which thread it started.** A script
+  that starts a thread itself (`bb thread spawn … --json`) runs
+  `bb cow automation started "$id" --automation "$BB_AUTOMATION_ID" --run "$BB_AUTOMATION_RUN_ID"`,
+  and cow lists that thread under the automation, as an agent run's thread,
+  on the page and in `bb cow status`, and no longer under Outside Main. The
+  automation's row shows what the thread came to. Without `--run` the thread
+  is a run of its own, in time order with the others. A thread or automation
+  that does not exist, an agent automation, a run that is not the
+  automation's, and a thread already recorded for another automation are
+  refused with what to do; the same record twice changes nothing; `--clear`
+  takes it back. It is cow's own record: nothing in bb changes, no thread is
+  re-parented, and a thread under Main stays in the tree. Any thread or
+  script on the machine can call it; each record made or cleared is in
+  cow's log.
+
 ## 0.2.24
 
 - **Scrolling by key is smooth.** One scroller now moves everything a key

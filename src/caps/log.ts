@@ -54,6 +54,21 @@ const eventSchema = z.union([
   z.object({ kind: z.literal("main-chosen"), projectId: z.string(), threadId: z.string().nullable() }),
   /** One of bb's automations was deleted from cow's page, through the automations plugin. `name` is what the confirmation named. */
   z.object({ kind: z.literal("automation-deleted"), projectId: z.string(), automationId: z.string(), name: z.string() }),
+  /**
+   * A thread was recorded as started by a run of a script automation, or the
+   * record was cleared (`bb cow automation started`). It changes only where
+   * the thread is listed; anyone may make it. `actorThreadId`: the thread
+   * that ran the command, null for a script or a terminal.
+   */
+  z.object({
+    kind: z.literal("automation-run"),
+    action: z.enum(["recorded", "cleared"]),
+    automationId: z.string(),
+    name: z.string(),
+    threadId: z.string(),
+    runId: z.string().nullable(),
+    actorThreadId: z.string().nullable(),
+  }),
   /** What a finished worker came to was judged on cow's page, for the ledger. */
   z.object({ kind: z.literal("outcome-set"), threadId: z.string(), outcome: z.string() }),
   /** A page's key was enrolled: the first one by itself, any later one by a page already enrolled. */
@@ -216,6 +231,8 @@ export function eventText(event: LogEvent, titleOf: (threadId: string) => string
       return event.threadId === null ? "forgot which thread is Main for a project: a new window asks" : `chose ${on(event.threadId)} as Main: a new window starts there`;
     case "automation-deleted":
       return `deleted the automation “${event.name}” (${event.automationId}); its past run threads stay`;
+    case "automation-run":
+      return `${event.actorThreadId ? `${on(event.actorThreadId)} ` : ""}${event.action === "recorded" ? "recorded" : "cleared the record of"} ${on(event.threadId)} as started by the automation “${event.name}” (${event.automationId})${event.runId ? `, run ${event.runId}` : ""}${event.action === "recorded" ? ": it is listed under it" : ": it is listed where it was before"}`;
     case "outcome-set":
       return `judged what ${on(event.threadId)} came to: ${event.outcome}`;
     case "key-enrolled":

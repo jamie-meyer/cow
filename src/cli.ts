@@ -16,6 +16,8 @@ import { MONTH_PATTERN, USAGE_GAPS_NOTE, tokensText } from "./usage.ts";
 import type { UsageReport } from "./limits-backend.ts";
 import type { ForgetDeleted } from "./ledger-backend.ts";
 import { usageReportText } from "./limits.ts";
+import type { StartedStore } from "./automation-runs.ts";
+import { Refusal } from "./kv.ts";
 
 /** The part of the actions the CLI uses; tests stand in for it. */
 export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resumeChecked" | "status" | "nextChecked" | "todoChecked" | "projectChecked" | "waitChecked"> &
@@ -258,6 +260,7 @@ async function acting<T>(run: () => Promise<T>): Promise<T> {
     return await run();
   } catch (cause) {
     if (cause instanceof CowError) throw new PluginCliError(cause.message, { code: cause.code, hint: cause.hint });
+    if (cause instanceof Refusal) throw new PluginCliError(cause.message, { code: cause.code, ...(cause.hint === undefined ? {} : { hint: cause.hint }) });
     throw cause;
   }
 }
@@ -408,6 +411,53 @@ function planCommands(actions: CliActions) {
         const id = threadId(input.positionals.thread);
         const done = await acting(() => actions.todoChecked({ callerId: ctx.threadId ?? null, threadId: id, op: null }));
         return print(input.options.json, { threadId: id, title: done.title, todo: done.list }, `Not started for “${done.title}” (${id})\n${todoLines(done.list)}`);
+      },
+    }),
+  };
+}
+
+/**
+ * `bb cow automation started`: a script automation says which thread it
+ * started, so cow lists that thread under it. Not one of the person's: a
+ * script has no key, and it changes only where a thread is listed.
+ */
+export function automationRunCommands(store: Pick<StartedStore, "record" | "clear">) {
+  return {
+    "automation started": cliCommand({
+      summary: "Say which thread a script automation's run started, so cow lists it under the automation",
+      description:
+        "A script automation that starts a thread itself (`bb thread spawn … --json`) calls this with the new thread's id. " +
+        "cow then lists that thread under the automation on its page and in `bb cow status`, as an agent run's thread, and no longer under Outside Main. " +
+        "With --run, it is that run's thread; without, a run of its own at the time it was recorded. A script's process has its automation's id in " +
+        "$BB_AUTOMATION_ID and its run's in $BB_AUTOMATION_RUN_ID; cow cannot read them itself, so pass them. " +
+        "The record is cow's alone: nothing in bb changes, no thread is re-parented, and a thread under Main stays in the tree. " +
+        "Any thread or script on this machine can call it; each record made or cleared is written to cow's log. --clear takes the record away.",
+      positionals: [thread],
+      options: {
+        automation: { type: "string", description: "The automation's id, or its name when only one has it: \"$BB_AUTOMATION_ID\" in its script. Required, except with --clear" },
+        run: { type: "string", description: "The run that started the thread: \"$BB_AUTOMATION_RUN_ID\" in its script. Optional" },
+        clear: { type: "boolean", description: "Take the record away, for a wrong id: the thread is listed where it was before" },
+        json,
+      },
+      async run(input, ctx) {
+        const id = threadId(input.positionals.thread);
+        const { automation, clear } = input.options;
+        const runId = input.options.run?.trim() || null;
+        const usage = 'bb cow automation started <thread> --automation "$BB_AUTOMATION_ID" [--run "$BB_AUTOMATION_RUN_ID"]';
+        if (clear && runId !== null) throw new PluginCliError("--clear takes no --run", { code: "bad_started", hint: `bb cow automation started ${id} --clear` });
+        if (!clear && !automation?.trim()) throw new PluginCliError("say which automation started it: --automation", { code: "automation_required", hint: usage });
+        if (runId !== null && !/^[A-Za-z0-9_-]{1,200}$/.test(runId)) throw new PluginCliError(`"${runId}" is not a run id`, { code: "bad_run", hint: usage });
+        const callerId = ctx.threadId ?? null;
+        const done = await acting(() =>
+          clear ? store.clear({ threadId: id, automation: automation?.trim() || null, callerId }) : store.record({ threadId: id, automation: automation!.trim(), runId, callerId }),
+        );
+        const named = `“${done.automation.name}” (${done.automation.id})`;
+        const text = clear
+          ? done.changed
+            ? `cleared: “${done.title}” (${id}) is no longer listed under the automation ${named}`
+            : `“${done.title}” (${id}) was not recorded as started by an automation: nothing to clear`
+          : `${done.changed ? "recorded" : "already recorded"}: “${done.title}” (${id}) was started by ${done.runId ? `run ${done.runId} of ` : ""}the automation ${named} · cow lists it under the automation`;
+        return print(input.options.json, { threadId: id, title: done.title, automationId: done.automation.id, automationName: done.automation.name, runId: done.runId, recorded: !clear, changed: done.changed }, text);
       },
     }),
   };

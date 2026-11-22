@@ -21,7 +21,8 @@ import { registerWorkspaces, workspaceCommands } from "./src/workspace/backend.t
 import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
-import { cowCli } from "./src/cli.ts";
+import { automationRunCommands, cowCli } from "./src/cli.ts";
+import { AUTOMATION_RUNS_CHANGED, type StartedStore, createStartedStore } from "./src/automation-runs.ts";
 import {
   archiveNoteSchema,
   dismissalSchema,
@@ -161,11 +162,29 @@ export default async function plugin(bb: BbPluginApi) {
   const traces: TraceSink = { record: null };
   const attention = registerAttention(bb, traces);
   // A read-through of the automations plugin's own methods: never more than a few seconds, never an error.
-  const automations = registerAutomations(bb);
+  // With the threads scripts said they started (`bb cow automation started`), put under their runs.
+  let started: StartedStore | null = null;
+  const automations = registerAutomations(bb, async () => (started ? started.all() : new Map()));
   // The context card: bb's own git and pull-request plugins, and every plugin that offers `cow_card`. Only reads.
   registerCard(bb);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
+  // Which script automation started a thread: cow's record alone, in the log. It changes only where a thread is listed.
+  started = createStartedStore({
+    kv: bb.storage.kv,
+    now: Date.now,
+    thread: async (threadId) => {
+      const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
+      return found && found.id === threadId ? { title: (typeof found.title === "string" && found.title.trim()) || threadId } : null;
+    },
+    automations: () => automations.plain(),
+    runIds: (automation) => automations.runIds(automation),
+    log: async ({ action, threadId, automationId, name, runId, by }) => {
+      await log.append({ kind: "automation-run", action, threadId, automationId, name: name.slice(0, 200), runId, actorThreadId: by }, null);
+    },
+    changed: () => bb.realtime.publish(AUTOMATION_RUNS_CHANGED, {}),
+  });
+  const startedStore = started;
   // Workspace files: approved on the page, their commands run by the host entry from the approved content only.
   const workspaces = registerWorkspaces(bb, log);
   // A copy-on-write workspace a thread can be started in (macOS): `bb thread spawn --environment-provider <plugin id>-clone`.
@@ -200,7 +219,7 @@ export default async function plugin(bb: BbPluginApi) {
       return found;
     },
     openAsks: () => attention.asks.list(),
-    automations,
+    automations: automations.read,
     trace: async (input) => {
       await caps.trace(input);
     },
@@ -308,12 +327,13 @@ export default async function plugin(bb: BbPluginApi) {
     cowCli({ ...actions, spend: async (mainId, projectId, month) => {
       const main = await actions.mainFor(mainId, projectId);
       return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
-    }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
+    }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.
   bb.events.on("thread.deleted", ({ thread }) => {
+    void startedStore.forget(thread.id).catch(() => undefined);
     void actions.forget(thread.id).catch((cause: unknown) => bb.log.warn(`could not forget the deleted thread ${thread.id}: ${String(cause)}`));
   });
   const sweep = setTimeout(() => {

@@ -11,6 +11,9 @@ import type { ThreadFacts } from "./state.ts";
 import { firstLine } from "./text.ts";
 import type { Line } from "./tree.ts";
 
+/** Realtime channel: published whenever cow records, or clears, which thread a script automation's run started. */
+export const AUTOMATION_RUNS_CHANGED = "automation-runs-changed";
+
 /** The bundled plugin that runs automations. */
 export const AUTOMATIONS_PLUGIN = "automations";
 
@@ -215,7 +218,8 @@ export interface LastResult {
 /**
  * The last run's result. For an agent run, the plugin's "succeeded" only
  * means the turn ended: what the run came to is its thread's state, as cow
- * reads it, when that thread is known.
+ * reads it, when that thread is known. So it is for a script run that
+ * recorded the thread it started (`automation-runs.ts`).
  */
 export function lastResult(automation: AutomationRecord, latest: RunRecord | null, thread: Line | null): LastResult {
   const statusOf = latest?.status ?? automation.lastRunStatus;
@@ -224,7 +228,8 @@ export function lastResult(automation: AutomationRecord, latest: RunRecord | nul
   if (statusOf === "running") return { kind: "running", at, why: null };
   if (statusOf === "failed") return { kind: "failed", at, why: firstLine(latest?.error ?? automation.lastError) || null };
   if (statusOf === "skipped") return { kind: "skipped", at, why: firstLine(latest?.skipReason) || null };
-  if (automation.mode === "script") return { kind: "succeeded", at, why: null };
+  // A script run's thread, when the script said which it started, is read as an agent run's.
+  if (automation.mode === "script" && thread === null) return { kind: "succeeded", at, why: null };
   if (thread === null) return { kind: "done", at, why: null };
   const { derived } = thread;
   if (derived.state === "failed") return { kind: "failed", at: derived.since, why: firstLine(derived.doing) || null };

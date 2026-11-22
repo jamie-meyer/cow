@@ -114,8 +114,12 @@
 //                       model, one that asks a question. Each is run once,
 //                       and deleted when the run finishes or fails; their two
 //                       run threads are archived with the fixtures. A fourth,
-//                       never run, is deleted through the page with e. It
-//                       never changes, runs or deletes any other automation
+//                       never run, is deleted through the page with e. Then
+//                       a fifth, a script that starts a fixture thread and
+//                       records it with bb cow automation started: it is
+//                       listed under that automation until the record is
+//                       cleared. It never changes, runs or deletes any
+//                       other automation
 //   --only-traces       only what an agent takes out of the queue (parking
 //                       what waits on the person, withdrawing an ask,
 //                       closing one as answered) and asks under a parked
@@ -3041,6 +3045,89 @@ async function automationChecks(page, ids, shot, chooseMain) {
   check("there is no unsigned method for it", unsigned.ok === false && (await exists(quiet)));
   const forged = await fetch(`${BB}/api/v1/plugins/${PLUGIN}/rpc/signed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "automation_delete", args: { projectId: PROJECT, automationId: quiet, name: "x" }, at: Date.now(), nonce: "x".repeat(20), key: "0000-0000-0000-0000", sig: "AAAA" }) }).then((r) => r.json());
   check("an unsigned call to delete one is refused, and nothing is deleted", forged.ok === false && (await exists(quiet)));
+
+  await startedChecks(page, ids, shot, make, runOf, row, runLine);
+}
+
+/**
+ * A script automation that starts a thread itself, and says so with
+ * `bb cow automation started`: the thread is listed under it, not under
+ * Outside Main, until the record is cleared.
+ */
+async function startedChecks(page, ids, shot, make, runOf, row, runLine) {
+  const { umain } = ids;
+  const sq = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
+  const body = [
+    `out=$(bb thread spawn --project ${sq(PROJECT)} --environment ${sq(ENVIRONMENT)} --provider claude-code --model ${sq(MODEL)} --title ${sq(TITLE)} --parent-notifications off --prompt ${sq(QUIET)} --json) || exit 2`,
+    `id=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{process.stdout.write(JSON.parse(s).id)})') || exit 3`,
+    `echo "spawned: $id"`,
+    `bb ${PLUGIN} automation started "$id" --automation "$BB_AUTOMATION_ID" --run "$BB_AUTOMATION_RUN_ID"`,
+  ].join("\n");
+  let spawner;
+  try {
+    spawner = await make("spawns", ["--script", body, "--interpreter", "bash", "--timeout", "120000"]);
+  } catch (cause) {
+    check("bb lets the check make a script automation that starts a thread", false, String(cause).slice(0, 300));
+    return;
+  }
+  await bb("automation", "run", spawner, "--project", PROJECT);
+  const done = await runOf(spawner, (r) => r.status === "failed" || r.status === "succeeded", "the spawning script finished");
+  const started = /spawned: (\S+)/.exec(done.output ?? "")?.[1];
+  if (started) ids.ustarted = inUse.ustarted = started;
+  check(
+    "a script automation starts a thread and records it with bb cow automation started",
+    done.status === "succeeded" && typeof started === "string" && /recorded: .* was started by run /.test(done.output ?? ""),
+    (done.output ?? done.error ?? "").slice(-400),
+  );
+  if (!started) return;
+  const facts = (await api(`/threads?threadIds=${started}&limit=1`))[0];
+  check("the thread it started has no parent and no plugin that started it, as bb sees it", facts?.parentThreadId === null && !facts?.originPluginId);
+
+  const statusOf = async () => JSON.parse((await cow("status", "--main", umain, "--json")).stdout);
+  const listedUnder = (status) => (status.automations ?? []).find((entry) => entry.id === spawner)?.runs?.some((line) => line.id === started) === true;
+  const outside = (status) => (status.outside ?? []).some((line) => line.id === started);
+  let status = await statusOf();
+  check("bb cow status lists the recorded thread under its automation, and not under Outside Main", listedUnder(status) && !outside(status), JSON.stringify((status.automations ?? []).find((entry) => entry.id === spawner) ?? null).slice(0, 300));
+  const text = (await cow("status", "--main", umain)).stdout;
+  const automationsPart = text.slice(text.indexOf("Automations:"), text.indexOf("Outside Main"));
+  check("bb cow status's text lists it in the Automations part", automationsPart.includes(started), automationsPart.slice(0, 400));
+
+  // -- the page: under the automation's row, as an agent run's thread --
+  const filtered = async () => {
+    await page.key("/");
+    await page.waitFor(`document.activeElement?.dataset.cowFilter === ""`, { label: "the filter" });
+    await page.type(TITLE);
+  };
+  const outLine = `document.querySelector('[data-cow-outside-line="${started}"]')`;
+  await page.send("Page.bringToFront");
+  await filtered();
+  await page.waitFor(`!!${runLine(started)}`, { label: "the recorded thread under its automation", timeout: 30_000 });
+  check(
+    "on the page the recorded thread is a run line under its automation, and not in Outside Main",
+    (await page.eval(`${runLine(started)}.dataset.cowRun`)) === `automation:${spawner}` && !(await page.eval(`!!${outLine}`)) && (await page.eval(`!!${row(spawner)}`)),
+  );
+  await shot("automation-started");
+  await page.key("Escape");
+
+  // -- the same record again, and refusals --
+  const again = await cow("automation", "started", started, "--automation", spawner, "--run", done.id);
+  check("recording the same thread for the same automation again changes nothing", again.code === 0 && again.stdout.startsWith("already recorded"), again.stdout + again.stderr);
+  const noThread = await cow("automation", "started", "thr_cowtestnosuchthread", "--automation", spawner);
+  check("a thread that does not exist is refused, saying what to do", noThread.code !== 0 && /there is no thread/.test(noThread.stdout + noThread.stderr), noThread.stdout + noThread.stderr);
+  const noAutomation = await cow("automation", "started", started, "--automation", "auto_cowtestnosuch");
+  check("an automation that does not exist is refused", noAutomation.code !== 0 && /there is no automation/.test(noAutomation.stdout + noAutomation.stderr), noAutomation.stdout + noAutomation.stderr);
+  const logged = JSON.stringify(await rpc("caps_log", { limit: 20 }));
+  check("the record is in cow's log", logged.includes("automation-run") && logged.includes(started));
+
+  // -- cleared: back where it was --
+  const cleared = await cow("automation", "started", started, "--clear");
+  check("--clear takes the record away", cleared.code === 0 && cleared.stdout.startsWith("cleared"), cleared.stdout + cleared.stderr);
+  status = await statusOf();
+  check("after the clear, bb cow status has it under Outside Main again, and not under the automation", outside(status) && !listedUnder(status));
+  await filtered();
+  await page.waitFor(`!!${outLine}`, { label: "the thread back in Outside Main", timeout: 30_000 });
+  check("after the clear, the page lists it in Outside Main, not under the automation", !(await page.eval(`!!${runLine(started)}`)));
+  await page.key("Escape");
 }
 
 async function outsideChecks(page, ids, shot, chooseMain) {

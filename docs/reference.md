@@ -277,7 +277,8 @@ runs.
   same answer. Each call has a few seconds; a slow, failing, absent or
   disabled plugin means no section, with no error, and nothing else on the
   page waits for it. The page reads it when it opens, when a thread an
-  automation started appears or changes, when the section is unfolded, and
+  automation started appears or changes, when a script's thread is recorded
+  or cleared (below), when the section is unfolded, and
   once a minute while it is unfolded: it cannot hear the plugin's own
   signals.
 - **Where.** The **Automations** section, after Kept and before Outside
@@ -315,6 +316,48 @@ runs.
   it and it leaves the section. A run is not parked, kept, marked as a
   project or waited on. There are no keys to pause, resume or run an
   automation, and cow never moves a run under Main.
+- **A thread a script started.** A script automation's run has no thread
+  of its own, so a thread the script starts (`bb thread spawn`) would land
+  under Outside Main, apart from its automation. The script says which
+  thread it started, and cow lists it under the automation exactly as an
+  agent run's thread: folded with the runs, with the same states, keys and
+  verbs, in the queue when it needs you, and no longer under Outside Main.
+  The automation's row then shows what that thread came to, as for an agent
+  run. A script's process is given its automation's id and its run's id in
+  `$BB_AUTOMATION_ID` and `$BB_AUTOMATION_RUN_ID` (with `$BB_PROJECT_ID`);
+  cow's command cannot read the caller's environment, so the script passes
+  them:
+
+  ```sh
+  bb automation create --project <project> --name "Nightly check" --in 1m --interpreter bash \
+    --script 'id=$(bb thread spawn --project <project> --environment-provider cow-clone \
+      --environment-inputs "{\"workspace\": \"$HOME/src/ws\"}" --prompt "Say hi." --json | jq -r .id) &&
+      bb cow automation started "$id" --automation "$BB_AUTOMATION_ID" --run "$BB_AUTOMATION_RUN_ID"'
+  ```
+
+  `bb cow automation started <thread> --automation <id or name> [--run <run>]`
+  records it; with `--run` the thread is that run's (when the run is among
+  the 20 latest read), without it a run of its own at the time it was
+  recorded, in time order with the others. `--automation` takes the id or a
+  name only one automation has. Refused, saying what to do: a thread bb does
+  not have, an automation that does not exist, a name two automations have,
+  an agent automation (bb records its runs' threads itself), a run that is
+  not one of the automation's recent runs, a thread bb names as another
+  automation's run, and a thread already recorded for another automation
+  (or another run of this one): clear it first. Recording the same thread
+  for the same automation again changes nothing.
+  `bb cow automation started <thread> --clear [--automation <id or name>]`
+  takes the record away, for a wrong id; the thread is then listed where it
+  was before. The record is cow's alone, in its own storage, one per
+  thread: the automation's id, the run's id when given, when it was made,
+  and the thread that ran the command (none for a script). Nothing in bb
+  changes: no thread is re-parented, and a thread under Main stays in the
+  tree. It changes only where a thread is listed, so it is not one of your
+  actions: **any thread or script on this machine can call it**, with no
+  key. Each record made or cleared is written to cow's log (`bb cow caps
+  log`). A record whose automation is deleted is set aside, as an agent
+  automation's threads are when it is deleted: the thread is listed where
+  it would be without it. A thread bb deletes takes its record with it.
 - **Deleting one.** `e` on an automation's row deletes the automation, for
   one that was only ever a reminder, say. It asks first, naming it, saying
   whether it is enabled and when it would next run, that its past run
@@ -2501,6 +2544,7 @@ bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
 bb cow todo rm <thread> <n>
 bb cow todo list <thread>
+bb cow automation started <thread> --automation <id or name> [--run <run>] | --clear
 bb cow workspace [<folder>] [--json]
 bb cow workspace add <folder>
 bb cow workspace sync [<folder>] [--only <as>] [--json]

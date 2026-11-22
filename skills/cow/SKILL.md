@@ -175,6 +175,7 @@ bb cow todo add <thread> "<title>"
 bb cow todo done <thread> <n>
 bb cow todo rm <thread> <n>
 bb cow todo list <thread>
+bb cow automation started <thread> --automation <id or name> [--run <run>] | --clear
 bb cow ask --question <text> [--option <label>[::<detail>]]... [--options-only] [--risk low|medium|high] [--proof <path>]... [--context <text>] [--thread <id>]
 bb cow ask close <id> --answered <the user's answer>
 bb cow ask withdraw <id>
@@ -206,7 +207,11 @@ are the user's choice, made on the page: leave them be, and do not archive
 or park one unless the user asks. Do not move a thread from Outside Main
 under Main unless the user asks; the user does it on the page with `A`.
 cow only shows automations: manage them with `bb automation`, and only
-when the user asks.
+when the user asks. A script automation that starts a thread itself says
+which with `bb cow automation started "$id" --automation "$BB_AUTOMATION_ID"
+--run "$BB_AUTOMATION_RUN_ID"`, and cow lists that thread under the
+automation instead of Outside Main; it changes only where the thread is
+listed, any thread or script may call it, and `--clear` undoes a wrong one.
 
 - Main defaults to the one last chosen on cow's page for the project you are
   in. Pass `--main <thread>` (your own id is in `$BB_THREAD_ID`) when that is

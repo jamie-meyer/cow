@@ -247,6 +247,15 @@ row, `e` deletes the automation, once you confirm it with `y`; its past run
 threads stay, and nothing undoes it. cow does not pause, run or change
 automations. Without bb's automations plugin there is no section.
 
+A script automation's run has no thread. When the script starts one itself
+(`bb thread spawn … --json`), it can say so with
+`bb cow automation started "$id" --automation "$BB_AUTOMATION_ID" --run "$BB_AUTOMATION_RUN_ID"`,
+and cow lists that thread under the automation like an agent run's, no
+longer under Outside Main; `--clear` takes the record back. It is cow's own
+record: nothing in bb changes and nothing is re-parented. Any thread or
+script on this machine can call it, and each record made or cleared goes in
+cow's log. See [Automations](docs/reference.md#automations).
+
 **Waiting on someone else.** A thread whose next move is a reviewer's, CI's
 or anyone's but yours says so with `bb cow wait`, or you do with `w`. Its
 line keeps its place and reads "waiting on the reviewer · 3d", out of the
