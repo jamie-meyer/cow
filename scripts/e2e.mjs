@@ -4362,7 +4362,7 @@ async function capsChecks(page, ids, shot, chooseMain) {
   );
   await page.waitFor(`!!document.querySelector("[data-cow-notice]")`, { label: "the notice in the queue" });
   const noticeText = await page.eval(`document.querySelector("[data-cow-notice] p")?.textContent ?? ""`);
-  check("a new capability raises a notice in the queue, even one you just made, and it counts as waiting on you", noticeText === `capability added: cow test scratch: ${scratch} for “${TITLE}” and every thread under it, now and later` && (await page.eval(`document.querySelector(".cow-sum")?.textContent.includes((document.querySelectorAll("[data-cow-queue]").length + 1) + " waiting")`)), noticeText);
+  check("a new capability raises a notice in the queue, even one you just made, and it counts as waiting on you", noticeText === `capability added: cow test scratch: ${scratch} for “${TITLE}” and every thread under it, now and later` && (await page.eval(`document.querySelector(".cow-sum")?.textContent.includes((document.querySelectorAll("[data-cow-queue]").length + document.querySelectorAll(".cow-q-notice").length) + " waiting")`)), noticeText);
   await settle(chead);
   const headMark = await mark(chead);
   const kidMark = await mark(ckid);
