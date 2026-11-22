@@ -69,8 +69,8 @@ const KEY = "automation-run:";
 export interface StartedDeps {
   kv: Kv;
   now(): number;
-  /** The thread's title, or null when bb has no such thread. */
-  thread(threadId: string): Promise<{ title: string } | null>;
+  /** The thread's title, the thread that started it if one did, and whether it is a Main; null when bb has no such thread. */
+  thread(threadId: string): Promise<{ title: string; parentThreadId?: string | null; main?: boolean } | null>;
   /** bb's automations as read now, without the records. */
   automations(): Promise<AutomationsRead>;
   /** The ids of an automation's latest runs, newest first; null when they could not be read. */
@@ -145,7 +145,12 @@ export function createStartedStore(deps: StartedDeps): StartedStore {
     all,
     record: ({ threadId, automation: given, runId, callerId }) =>
       locked(threadId, async () => {
-        const { title } = await thread(threadId);
+        const { title, parentThreadId, main } = await thread(threadId);
+        // Only a thread nothing else accounts for: one a thread started is that thread's worker, and a Main is a Main.
+        if (main) throw new Refusal("thread_is_main", `${threadId} is a Main`, "Pass the id of the thread the script started (`bb thread spawn --json` prints it as .id).");
+        if (parentThreadId) {
+          throw new Refusal("thread_has_parent", `${threadId} was started by the thread ${parentThreadId}, not by a script`, "Only a thread a script started itself, with no thread above it, can be listed under an automation.");
+        }
         const read_ = await deps.automations();
         const automation = findAutomation(read_, given);
         if (automation.mode !== "script") {

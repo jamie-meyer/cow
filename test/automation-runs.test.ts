@@ -65,7 +65,8 @@ function world(read: AutomationsRead = READ) {
   const store = createStartedStore({
     kv,
     now: () => NOW,
-    thread: async (id) => (threads.has(id) ? { title: `Thread ${id}` } : null),
+    thread: async (id) =>
+      id === "worker" ? { title: "A worker", parentThreadId: "main", main: false } : id === "main" ? { title: "Main", parentThreadId: null, main: true } : threads.has(id) ? { title: `Thread ${id}` } : null,
     automations: async () => read,
     runIds: async (a) => read.automations.find((entry) => entry.automation.id === a.id)?.runs.map((r) => r.id) ?? null,
     log: async (event) => void logged.push(event),
@@ -210,4 +211,12 @@ test("the command: --automation is needed to record, not to clear; --clear takes
   assert.match((await call({ thread: "spawned2" }, { automation: "auto_nightly", run: "arun_2" })).stdout, /^already recorded/);
   const json = JSON.parse((await call({ thread: "spawned2" }, { clear: true, json: true })).stdout);
   assert.deepEqual([json.ok, json.recorded, json.changed, json.automationId], [true, false, true, "auto_nightly"]);
+});
+
+test("refused: a thread another thread started, and a Main; nothing is written", async () => {
+  const w = world();
+  await refused(w.store.record({ threadId: "worker", automation: "auto_nightly", runId: null, callerId: "worker" }), "thread_has_parent");
+  await refused(w.store.record({ threadId: "main", automation: "auto_nightly", runId: null, callerId: null }), "thread_is_main");
+  assert.equal(w.map.size, 0);
+  assert.equal(w.logged.length, 0);
 });

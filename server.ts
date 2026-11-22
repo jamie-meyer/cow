@@ -175,7 +175,12 @@ export default async function plugin(bb: BbPluginApi) {
     now: Date.now,
     thread: async (threadId) => {
       const [found] = await bb.sdk.threads.list({ threadIds: [threadId], limit: 1, includeHidden: true });
-      return found && found.id === threadId ? { title: (typeof found.title === "string" && found.title.trim()) || threadId } : null;
+      if (!found || found.id !== threadId) return null;
+      return {
+        title: (typeof found.title === "string" && found.title.trim()) || threadId,
+        parentThreadId: found.parentThreadId ?? null,
+        main: Object.values((await readState()).mains).includes(threadId),
+      };
     },
     automations: () => automations.plain(),
     runIds: (automation) => automations.runIds(automation),

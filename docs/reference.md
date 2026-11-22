@@ -340,7 +340,8 @@ runs.
   the 20 latest read), without it a run of its own at the time it was
   recorded, in time order with the others. `--automation` takes the id or a
   name only one automation has. Refused, saying what to do: a thread bb does
-  not have, an automation that does not exist, a name two automations have,
+  not have, a thread another thread started (it is that thread's worker), a
+  Main, an automation that does not exist, a name two automations have,
   an agent automation (bb records its runs' threads itself), a run that is
   not one of the automation's recent runs, a thread bb names as another
   automation's run, and a thread already recorded for another automation
