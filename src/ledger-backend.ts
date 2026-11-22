@@ -5,7 +5,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { toFacts } from "./activity.ts";
 import { LEDGER_CHANGED, type LedgerStore, createLedgerStore, sdkEvents } from "./ledger-store.ts";
-import { type LedgerRow, type RowCost, rowTokens } from "./ledger.ts";
+import { type LedgerRow, type RowCost, type WorkFacts, rowTokens } from "./ledger.ts";
 import { PRICES_SETTING_HELP, type Prices, dollarsOf, priceOf, pricesWith } from "./prices.ts";
 import { descendantIds } from "./tree.ts";
 import { type Spend, type SpendFacts, type SpendPart, spendOf, spendThreads } from "./spend.ts";
@@ -26,6 +26,8 @@ export interface LedgerBackend {
   spend(mainId: string, month?: string): Promise<Spend & { priceError: string | null }>;
   /** The month's (YYYY-MM; default this one) tokens and list-price dollars of every thread bb has, under any Main or none, hidden ones too. */
   everything(month?: string): Promise<SpendPart & { month: string; truncated: boolean; priceError: string | null }>;
+  /** A thread's list-price dollars so far, from the usage read as each turn ended; null when none is known or no model it used has a price. */
+  dollars(threadId: string): Promise<number | null>;
 }
 
 async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<void> {
@@ -40,7 +42,12 @@ async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<voi
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
 }
 
-export function registerLedger(bb: BbPluginApi, projectMarks: (threadIds: readonly string[]) => Promise<string[]>): LedgerBackend {
+export function registerLedger(
+  bb: BbPluginApi,
+  projectMarks: (threadIds: readonly string[]) => Promise<string[]>,
+  /** A worker's tool calls and working minutes, for its row. */
+  work?: (threadId: string) => Promise<WorkFacts | null>,
+): LedgerBackend {
   const settings = bb.settings.define({
     listPrices: {
       type: "string",
@@ -53,7 +60,7 @@ export function registerLedger(bb: BbPluginApi, projectMarks: (threadIds: readon
 
   const usage = createUsageStore(bb.storage.kv, sdkUsageEvents(bb.sdk.threads.events as never));
   // The ledger lives in cow's own storage, and reads each worker's prompts, turns and usage when it is archived.
-  const ledger = createLedgerStore(bb.storage.kv, sdkEvents(bb.sdk.threads.events as never), () => bb.realtime.publish(LEDGER_CHANGED, {}), usage);
+  const ledger = createLedgerStore(bb.storage.kv, sdkEvents(bb.sdk.threads.events as never), () => bb.realtime.publish(LEDGER_CHANGED, {}), usage, work);
 
   // bb keeps only some of a thread's usage events (older ones go, a compaction
   // takes them all but the latest), and each one's `total` is the sum so far.
@@ -144,5 +151,17 @@ export function registerLedger(bb: BbPluginApi, projectMarks: (threadIds: readon
     return { ...spendOf(month, "", read, set.prices, truncated).total, month, truncated, priceError: set.error };
   };
 
-  return { ledger, usage, costing, spend, everything };
+  const dollars: LedgerBackend["dollars"] = async (threadId) => {
+    const state = await usage.kept(threadId);
+    if (!state || state.events === 0) return null;
+    const set = await prices();
+    let sum: number | null = null;
+    for (const [model, tokens] of Object.entries(state.total)) {
+      const price = priceOf(set.prices, model);
+      if (price !== null) sum = (sum ?? 0) + dollarsOf(tokens, price, state.ttlMs);
+    }
+    return sum;
+  };
+
+  return { ledger, usage, costing, spend, everything, dollars };
 }

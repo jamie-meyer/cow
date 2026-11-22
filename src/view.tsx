@@ -34,6 +34,8 @@ import type { Use } from "./caps/service.ts";
 import type { Refusal } from "./refusal.ts";
 import { type Signer, useSigner } from "./signing/page.ts";
 import { UsageLine, UsageNotice, useLimits } from "./UsageLine.tsx";
+import { WatchMark, WatchNoticeItem, useWatch } from "./WatchMarks.tsx";
+import type { Finding } from "./progress.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
 import { Asides } from "./Asides.tsx";
 import { useNow } from "./clock.ts";
@@ -438,8 +440,11 @@ function LineRow({
   settle = false,
   sidebar,
   outcome,
+  watch,
 }: {
   line: Line;
+  /** What the worker is over or caught by now (caps and stuck checks): shown, never enforced. */
+  watch?: readonly Finding[];
   /** What the worker came to, when someone said: shown under Archived and To settle. */
   outcome?: Judgement;
   /** bb's own copy of the thread, which other plugins' badges are drawn for; absent when bb's list does not hold it. */
@@ -611,6 +616,7 @@ function LineRow({
             {" · "}
           </b>
         ) : null}
+        {watch && watch.length > 0 ? <WatchMark found={watch} /> : null}
         {derived.archivedWhy ? (
           <b className="cow-why" data-cow-archive-reason="">
             archived: {derived.archivedWhy}
@@ -1657,6 +1663,13 @@ function OverviewScreen({
   const [message, setMessage] = useState("");
   // The usage line and the usage notices: read from cow's server, which checks on a timer.
   const limits = useLimits(signer);
+  // Caps and stuck checks on workers: marks and notices, read from cow's server. Shown only.
+  const watch = useWatch(signer);
+  const ackWatch = (noticeId: string) =>
+    void watch.acknowledge(noticeId).then(
+      () => setMessage("worker notice acknowledged"),
+      (cause: unknown) => setMessage(`not acknowledged: ${cause instanceof Error ? cause.message : String(cause)}`),
+    );
   const ackLimit = (noticeId: string) =>
     void limits.acknowledge(noticeId).then(
       () => setMessage("usage notice acknowledged"),
@@ -2388,7 +2401,7 @@ function OverviewScreen({
   const workspaceNotices = workspaces.views.filter((view) => view.waiting);
   // A clone bb removed that cow held back: work might be lost with it, so it stays in the queue until the person decides.
   const heldNotices = workspaces.held;
-  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length + heldNotices.length + limits.notices.length;
+  const notices = capNotices.length + traceNotices.length + keyRequests.length + workspaceNotices.length + heldNotices.length + limits.notices.length + watch.notices.length;
   const waiting = overview.queue.length + notices;
   const row = (line: Line, flat: boolean, settle = false) => {
     // While filtering every group is drawn unfolded: what matches inside it is showing.
@@ -2417,6 +2430,7 @@ function OverviewScreen({
         onOpen={openChat}
         sidebar={sidebarIndex.get(line.thread.id)}
         outcome={judgedHere(line) ? ledger.outcomes.get(line.thread.id) : undefined}
+        watch={line.thread.archivedAt === null ? watch.marks[line.thread.id] : undefined}
       />
       {card(line.thread.id)}
     </Fragment>
@@ -2684,12 +2698,20 @@ function OverviewScreen({
               </h2>
               <p className="cow-sub">
                 Asks, questions, permission requests, refused permissions, failures, briefs with disputes,
-                replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, usage near a limit or a budget, oldest first.
+                replies addressed to you, parked work that came back, reminders of work waiting on someone else, what an agent took out of this queue, new capabilities and decisions made outside cow, usage near a limit or a budget, a worker over its cap or caught by a stuck check, oldest first.
               </p>
+              {watch.errors.length > 0 ? (
+                <p className="cow-warn" data-cow-watch-error="">
+                  {watch.errors.join(" · ")}
+                </p>
+              ) : null}
               {notices > 0 ? (
                 <ul className="cow-queue cow-notices" data-cow-notices={notices}>
                   {limits.notices.map((notice) => (
                     <UsageNotice key={notice.id} notice={notice} now={now} onAck={ackLimit} />
+                  ))}
+                  {watch.notices.map((notice) => (
+                    <WatchNoticeItem key={notice.id} notice={notice} now={now} onAck={ackWatch} />
                   ))}
                   {workspaceNotices.map((view) => (
                     <li key={view.folder} className="cow-q cow-q-notice" data-cow-workspace-notice={view.folder} data-cow-hint="" onClick={() => reader.open(reviewTarget(workspaces, view))}>

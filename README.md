@@ -199,6 +199,18 @@ tells:** nothing is paused or stopped, and no agent is shown the budget.
 `bb cow usage` prints the same. Details are under
 [Usage and a budget](docs/reference.md#usage-and-a-budget).
 
+**Caps and stuck checks, shown only.** cow keeps a small record of each
+running worker's progress: its tool calls, its turns' times, its last event,
+what is in progress, and its last few calls as a kind, a hash and a clipped
+label (no message text, output or file contents). The setting `caps` (JSON
+keyed by label, `*` for any other, each with any of `toolCalls`, `minutes`
+and `dollars`; empty means none) and three stuck checks, on by default (the
+same call 3 times in a row, a running turn quiet for 15 minutes, one item in
+progress for 45; 0 turns each off), put a mark on the worker's line, such as
+`over cap: 41 of 40 tool calls` or `quiet 22m`, and one notice per worker per
+reason in your queue. **cow never stops, pauses or messages the worker.**
+Details are under [Caps and stuck checks](docs/reference.md#caps-and-stuck-checks).
+
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
 goes to the Kept section, folded by default, never coloured, with no
@@ -256,7 +268,8 @@ not shown the agent's summary or its labels: it gets the claims and their
 evidence, the task the thread was started with (read by cow, with each check
 of its "Done means" section, which it answers for too), and what the thread
 changed (the files and the diff, collected by cow from its git checkout,
-clipped). A diff that changes an existing test, or the configuration of CI, a
+or in a copy-on-write workspace from the folder and each repository it
+brought, clipped). A diff that changes an existing test, or the configuration of CI, a
 linter, a formatter, a type checker or a test runner, is a dispute cow raises
 with no model. A check is one model's reading of that material. It is not
 proof, and a failed check is shown as a failure, never as a pass.
@@ -485,7 +498,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, and which provider sessions started a new process since (no text). The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or month. No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, in a copy-on-write workspace each repository's folder name and base or why it was not read, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, and which provider sessions started a new process since (no text). The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or month. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
 | the same database, table `plugin_settings` | the five settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -525,7 +538,11 @@ Two things cow does cause to be sent, both by bb, to a model provider:
   changed**: every changed file's path and status, and the diff (up to
   60,000 characters in all and 12,000 a file), which cow collects by running
   git, read-only and with hooks off, in the thread's checkout on its own
-  machine. Uncommitted and untracked files are included. Lock files and
+  machine. In a copy-on-write workspace that is the workspace folder and
+  every repository cow brought into the clone (by cow's record of the clone,
+  not the file in it), each against the commit it was on when the clone was
+  made, its files under its folder, the limits shared fairly between them.
+  Uncommitted and untracked files are included. Lock files and
   binary files go by name only, and so do files a clone would leave out as
   secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`,
   `.npmrc`, and anything under `.aws` or `.ssh`); a link is never followed.
@@ -746,7 +763,9 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   files by name only, and it is told what was cut. It runs no test, builds
   nothing and opens no file, so a claim that something works is judged from
   what the material shows, not by trying it. It sees no commits or files
-  outside the thread's checkout, no message after the first, and nothing at
+  outside the thread's checkout (in a copy-on-write workspace, outside its
+  folder and the repositories cow brought into it; a nested repository cow
+  did not bring is not read), no message after the first, and nothing at
   all of a thread with no git checkout. The task's "Done means" checks are
   found by a simple reading of the first message's Markdown. The flag on
   changed tests and configuration reads file names only. And it is one
@@ -809,7 +828,7 @@ uses one that is not listed.
 | `experimental_listAncestors` (backend) | which threads are above a thread: who may act for whom, and which capabilities apply |
 | `experimental_listPluginMetadata` (backend) | finding cow's notes on threads that bb has since deleted, and which hidden threads are cow's checker runs, for the month's spend |
 | `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
-| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, and usageWindowPercent from 1 to 100 |
+| `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, usageWindowPercent from 1 to 100, and the stuck checks' settings as numbers of 0 or more |
 | `experimental_environments` (backend) | registering the copy-on-write workspace as an environment provider |
 | `experimental_client` (backend) | the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed |
 | `experimental_defineHostEntry` (backend) | the copy-on-write workspace: the host entry that clones and removes a workspace |

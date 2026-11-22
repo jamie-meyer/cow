@@ -305,6 +305,10 @@ notification, when a window or the budget passes its mark: you do not need
 to watch it, and it is not a reason to stop, shorten or change work you were
 asked to do. Only the user acknowledges a usage notice, on the page.
 
+Caps per label and stuck checks (the same call again and again, a quiet or a
+long-running turn) are shown to the user, as a mark on a worker's line and in `bb cow status`.
+A worker is never stopped by cow: a mark is not an instruction to you or to it.
+
 ### `bb cow park <thread> --reason <text> [--pickup …]`
 
 Sets work aside without losing it. The reason is required. `--pickup` is when

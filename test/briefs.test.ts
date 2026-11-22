@@ -816,6 +816,58 @@ test("a brief stored by 0.2.17 reads and shows as it did, and checking it again 
   assert.match(w.started[0]?.prompt ?? "", /t3: The README mentions the limit\./);
 });
 
+test("a brief stored by 0.2.21 opens and shows what its checker was shown as it did", async () => {
+  const kv = memoryKv();
+  const shown = {
+    task: { state: "none", why: "cow did not read it" },
+    diff: { state: "collected", base: "b".repeat(40), baseText: "the merge base of HEAD and main", files: [{ path: "src/a.ts", status: "modified", from: null, untracked: false }], filesTotal: 1, chars: 40, clipped: [], omitted: [], namesOnly: [] },
+    flagged: [],
+    at: NOW,
+  };
+  await kv.set("brief:child:0001", {
+    threadId: "child",
+    projectId: "proj_1",
+    version: 1,
+    submittedAt: NOW,
+    submittedBy: "child",
+    brief: BRIEF,
+    check: { model: "small", provider: null, chosen: { provider: "default", model: "setting" }, startedAt: NOW, runs: [{ status: "done", verdicts: verdicts("supported", "supported", "supported", "supported"), threadId: "chk_old", startedAt: NOW, finishedAt: NOW, attempt: 1 }] },
+    earlierChecks: 0,
+    readAt: null,
+    earlierDisputes: 0,
+    earlierContradicted: null,
+    replaced: null,
+    failedRecheck: null,
+    shown,
+  });
+  const w = world(kv);
+  const record = await w.briefs.get("child");
+  assert.deepEqual(record.shown, shown);
+  const text = reviewText({ threadId: "child", version: 1, summary: BRIEF.summary }, briefView(record).review);
+  assert.match(text, /\n {2}diff: against bbbbbbbbbbbb, the merge base of HEAD and main; 1 changed file, 40 characters of diff\n/);
+  assert.doesNotMatch(text, /repositor/);
+});
+
+test("in a copy-on-write workspace the record names each repository and its base, and a test changed in a brought one is flagged under its folder", async () => {
+  const w = world();
+  w.files.set("child/diff.txt", "ok");
+  const collected = changed(["app/test/login.test.ts", "modified"], ["app/src/login.ts", "modified"]);
+  assert.ok(collected.ok);
+  const repos = [
+    { as: null, base: null, baseText: null, filesTotal: 0, why: "the workspace folder is not a git checkout" },
+    { as: "app", base: "c".repeat(40), baseText: "the commit it was on when cow made the clone", filesTotal: 2, why: null },
+  ];
+  w.diffs.set("child", { ok: true, diff: { ...collected.diff, base: "c".repeat(40), baseText: "each repository against its own base", repos } });
+  const record = await w.briefs.submit({ caller: "child", threadId: null, raw: RAW });
+  assert.ok(record.shown?.diff.state === "collected");
+  assert.deepEqual(record.shown.diff.repos, repos);
+  assert.deepEqual(record.shown.flagged, ["app/test/login.test.ts"]);
+  assert.match(w.started[0]?.prompt ?? "", /- the workspace folder: not read: the workspace folder is not a git checkout\n- "app" \(its files under app\/\): against cccccccccccc, the commit it was on when cow made the clone; 2 files changed\n/);
+  const text = reviewText({ threadId: "child", version: 1, summary: "s" }, briefView(await w.briefs.get("child")).review);
+  assert.match(text, /diff: 2 repositories of a copy-on-write workspace, each against its own base; 2 changed files/);
+  assert.match(text, /"app" \(its files under app\/\): against cccccccccccc/);
+});
+
 test("what the checker is shown is kept in parts under bb's 256 KB a value, whatever its characters", async () => {
   const kv = memoryKv();
   const w = world(kv);

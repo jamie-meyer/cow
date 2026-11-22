@@ -2128,3 +2128,9 @@
 .cow-usage-hot {
   color: var(--cow-needs);
 }
+
+/* A worker over its cap or caught by a stuck check: shown, never enforced. */
+.cow-watch {
+  font-weight: 600;
+  color: var(--cow-needs);
+}

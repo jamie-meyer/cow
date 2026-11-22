@@ -5,7 +5,7 @@ import { filterOverview } from "../src/filter.ts";
 import { keepHolds, keepNote } from "../src/keep.ts";
 import type { KeepNote } from "../src/shared.ts";
 import { type Activity, type ThreadFacts, derive } from "../src/state.ts";
-import { statusReport, statusText } from "../src/status.ts";
+import { statusReport, statusText, withWatch } from "../src/status.ts";
 import { KEPT_SECTION, SETTLE_SECTION, buildOverview, cursorOrder, foldMove, keepFolds, sectionFolded, unfoldAround } from "../src/tree.ts";
 import { undoShort, undoText } from "../src/undo.ts";
 import { verbBlocked, verbLabel } from "../src/verbs.ts";
@@ -144,4 +144,14 @@ test("bb cow status lists kept threads under their own heading", () => {
   const report = statusReport(overview, NOW, false);
   assert.deepEqual(report.kept.map((line) => [line.id, line.state, line.doing, line.inState]), [["a", "kept", "an idea about pricing", "3d"]]);
   assert.match(statusText(report), /Kept: around on purpose, asking for nothing \(1\)\n {4}kept\s+3d  a \(a\)  an idea about pricing\n/);
+});
+
+test("bb cow status shows a worker's caps and stuck-check marks beside its line, and --json their facts; Main's line gets none", () => {
+  const overview = page([leaf("a"), leaf("s")], { a: kept() });
+  const facts = { toolCalls: 4, minutesSinceFirstTurn: 2, label: null, times: 3, kind: "commandExecution", call: "ls" };
+  const report = withWatch(statusReport(overview, NOW, false), { a: [{ reason: "repeat", mark: "the same command 3 times", facts }], main: [] });
+  assert.deepEqual(report.kept[0]?.watch, [{ reason: "repeat", mark: "the same command 3 times", facts }]);
+  assert.equal(report.main.watch, undefined);
+  assert.match(statusText(report), /a \(a\)  an idea about pricing  \[the same command 3 times\]\n/);
+  assert.equal(JSON.parse(JSON.stringify(report)).kept[0].watch[0].facts.call, "ls");
 });

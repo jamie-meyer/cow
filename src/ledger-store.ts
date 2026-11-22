@@ -11,6 +11,7 @@ import {
   type LedgerRow,
   type Outcome,
   TURN_EVENT_TYPES,
+  type WorkFacts,
   buildRow,
   judge,
   judgementsSchema,
@@ -82,7 +83,14 @@ export interface LedgerStore {
   syncUsage(threadId: string): Promise<LedgerRow | null>;
 }
 
-export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void = () => undefined, usage?: UsageStore): LedgerStore {
+export function createLedgerStore(
+  kv: Kv,
+  read: ReadEvents,
+  changed: () => void = () => undefined,
+  usage?: UsageStore,
+  /** A worker's tool calls and working minutes, read when its row is written. */
+  work?: (threadId: string) => Promise<WorkFacts | null>,
+): LedgerStore {
   const one = serial();
   const tokensNow = async (threadId: string) => (usage ? usageTotal((await usage.read(threadId)).state) : null);
   const judgementsOf = async (threadId: string): Promise<Judgement[]> => {
@@ -111,7 +119,8 @@ export function createLedgerStore(kv: Kv, read: ReadEvents, changed: () => void 
       one(thread.id, async () => {
         const facts = readTurns(await turnEvents(read, thread.id));
         const tokens = await tokensNow(thread.id).catch(() => null);
-        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id), (await labelOf(thread.id))?.label ?? null, tokens);
+        const done = work ? await work(thread.id).catch(() => null) : null;
+        const row = buildRow(thread, facts, archived, await judgementsOf(thread.id), (await labelOf(thread.id))?.label ?? null, tokens, done);
         if (row === null) return null;
         await kv.set(ROW_PREFIX + thread.id, row);
         changed();

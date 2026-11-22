@@ -4,7 +4,9 @@
 // collects it itself, in the thread's checkout, on the machine it is on (see
 // the host entry); the submitting agent has no say in it.
 
+import { lstatSync, realpathSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { join } from "node:path";
 import { DEFAULT_EXCLUDES, createMatcher } from "../clone/glob.ts";
 import { type ChangedFile, type FileStatus, isLockFile } from "./paths.ts";
 
@@ -28,6 +30,7 @@ export const DIFF_LIMITS = {
   /** Characters of an untracked file read to show it as added. */
   untrackedFile: 200_000,
 } as const;
+export type DiffLimits = Record<keyof typeof DIFF_LIMITS, number>;
 
 /** A git that runs in a directory and never through a shell. */
 export type Git = (cwd: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -51,6 +54,8 @@ export interface DiffCollected {
   omitted: string[];
   /** Files shown by name only, and why. */
   namesOnly: { path: string; why: NameOnly }[];
+  /** In one of cow's clones: each repository looked at, with its base, or why it was not read. Absent elsewhere. */
+  repos?: DiffRepo[];
 }
 
 export type DiffResult = { ok: true; diff: DiffCollected } | { ok: false; why: string };
@@ -186,6 +191,92 @@ async function findBase(git: Git, cwd: string, bases: readonly string[]): Promis
   return { base: sha, baseText: "HEAD: no base branch resolved, so only uncommitted and untracked changes are shown" };
 }
 
+/** One checkout's changed files, before any of them is diffed. */
+interface Listed {
+  top: string;
+  base: string;
+  baseText: string;
+  /** Every changed file, sorted, with its path as it is shown (under `prefix`). */
+  all: ChangedFile[];
+  /** The path within the checkout, by the path as it is shown. */
+  inside: Map<string, string>;
+  prefix: string;
+}
+
+const gitFailed = (what: string, out: { code: number; stderr: string }) => `git could not ${what}: ${out.stderr.trim().slice(0, 300) || `exit ${out.code}`}`;
+const byPathOrder = (a: ChangedFile, b: ChangedFile) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+/**
+ * List what the checkout at `top` changed since `base`: tracked changes and
+ * untracked files. Paths are shown under `prefix` ("app/" for a brought
+ * repository); `skip` names top-level folders left out (the brought
+ * repositories, inside the workspace folder's own checkout).
+ */
+async function listChanges(git: Git, top: string, found: { base: string; baseText: string }, prefix = "", skip: ReadonlySet<string> = new Set()): Promise<{ ok: true; listed: Listed } | { ok: false; why: string }> {
+  const { base, baseText } = found;
+  const listed = await git(top, ["diff", "--name-status", "-z", "-M", base, "--"]);
+  if (listed.code !== 0) return { ok: false, why: gitFailed("list the changed files", listed) };
+  const tracked = parseNameStatus(listed.stdout);
+  const others = await git(top, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (others.code !== 0) return { ok: false, why: gitFailed("list the untracked files", others) };
+  const untracked: ChangedFile[] = others.stdout
+    .split("\0")
+    .filter((path) => path !== "")
+    .map((path) => ({ path, status: "added", from: null, untracked: true }));
+  const kept = (path: string) => !skip.has(path.replace(/\/$/, "").split("/")[0] ?? "");
+  const inside = new Map<string, string>();
+  const all = [...tracked, ...untracked]
+    .filter((file) => kept(file.path) && (file.from === null || kept(file.from)))
+    .map((file) => {
+      const shown = { ...file, path: `${prefix}${file.path}`, from: file.from === null ? null : `${prefix}${file.from}` };
+      inside.set(shown.path, file.path);
+      return shown;
+    })
+    .sort(byPathOrder);
+  return { ok: true, listed: { top, base, baseText, all, inside, prefix } };
+}
+
+/** The diff of each of `files` (listed by `listChanges`), and those shown by name only. */
+async function diffParts(
+  git: Git,
+  listed: Listed,
+  files: readonly ChangedFile[],
+  readUntracked: (path: string) => Promise<string | null>,
+  limits: DiffLimits,
+): Promise<{ ok: true; parts: { path: string; text: string }[]; namesOnly: DiffCollected["namesOnly"]; chars: number } | { ok: false; why: string }> {
+  const { top, base, prefix } = listed;
+  const flags = prefix === "" ? DIFF_FLAGS : DIFF_FLAGS.map((flag) => (flag === "--src-prefix=a/" ? `--src-prefix=a/${prefix}` : flag === "--dst-prefix=b/" ? `--dst-prefix=b/${prefix}` : flag));
+  const whole = await git(top, ["diff", ...flags, base, "--"]);
+  if (whole.code !== 0) return { ok: false, why: gitFailed("make the diff", whole) };
+  const byPath = splitDiff(whole.stdout);
+  let chars = 0;
+  const namesOnly: DiffCollected["namesOnly"] = [];
+  const parts: { path: string; text: string }[] = [];
+  for (const file of files) {
+    const own = listed.inside.get(file.path) ?? file.path;
+    const ownFrom = file.from === null ? null : (listed.inside.get(file.from) ?? file.from.slice(prefix.length));
+    if (isSecretPath(own) || isSecretPath(file.path) || (file.from !== null && (isSecretPath(file.from) || (ownFrom !== null && isSecretPath(ownFrom))))) {
+      namesOnly.push({ path: file.path, why: "secret" });
+      continue;
+    }
+    if (isLockFile(file.path)) {
+      namesOnly.push({ path: file.path, why: "lock file" });
+      continue;
+    }
+    // A rename with no change of content names its new path only in "rename to", which git writes without the prefix.
+    let part = byPath.get(file.path) ?? (prefix === "" ? null : (byPath.get(own) ?? null));
+    if (file.untracked) part = await untrackedPart(file.path, () => readUntracked(`${top}/${own}`), limits.untrackedFile);
+    if (part === null) continue;
+    chars += part.length;
+    if (isBinary(part)) {
+      namesOnly.push({ path: file.path, why: "binary" });
+      continue;
+    }
+    parts.push({ path: file.path, text: part });
+  }
+  return { ok: true, parts, namesOnly, chars };
+}
+
 /**
  * Collect what a checkout changed since its base: `bases` are the branch
  * names to try, the environment's own first. Fails, saying why, when `cwd`
@@ -202,46 +293,178 @@ export async function collectDiff(
   const inside = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (inside.code !== 0) return { ok: false, why: "the thread's folder is not a git checkout" };
   const top = inside.stdout.trim();
-  const { base, baseText } = await findBase(git, top, bases);
-  const listed = await git(top, ["diff", "--name-status", "-z", "-M", base, "--"]);
-  if (listed.code !== 0) return { ok: false, why: `git could not list the changed files: ${listed.stderr.trim().slice(0, 300) || `exit ${listed.code}`}` };
-  const tracked = parseNameStatus(listed.stdout);
-  const others = await git(top, ["ls-files", "--others", "--exclude-standard", "-z"]);
-  if (others.code !== 0) return { ok: false, why: `git could not list the untracked files: ${others.stderr.trim().slice(0, 300) || `exit ${others.code}`}` };
-  const untracked: ChangedFile[] = others.stdout
-    .split("\0")
-    .filter((path) => path !== "")
-    .map((path) => ({ path, status: "added", from: null, untracked: true }));
-  const all = [...tracked, ...untracked].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const files = all.slice(0, limits.files);
+  const found = await listChanges(git, top, await findBase(git, top, bases));
+  if (!found.ok) return found;
+  const { listed } = found;
+  const files = listed.all.slice(0, limits.files);
+  const made = await diffParts(git, listed, files, readUntracked, limits);
+  if (!made.ok) return made;
+  const clipped = clipParts(made.parts, limits);
+  return {
+    ok: true,
+    diff: { base: listed.base, baseText: listed.baseText, files, filesTotal: listed.all.length, text: clipped.text, chars: made.chars, clipped: clipped.clipped, omitted: clipped.omitted, namesOnly: made.namesOnly },
+  };
+}
 
-  const whole = await git(top, ["diff", ...DIFF_FLAGS, base, "--"]);
-  if (whole.code !== 0) return { ok: false, why: `git could not make the diff: ${whole.stderr.trim().slice(0, 300) || `exit ${whole.code}`}` };
-  const byPath = splitDiff(whole.stdout);
-  let chars = 0;
-  const namesOnly: DiffCollected["namesOnly"] = [];
-  const parts: { path: string; text: string }[] = [];
-  for (const file of files) {
-    if (isSecretPath(file.path) || (file.from !== null && isSecretPath(file.from))) {
-      namesOnly.push({ path: file.path, why: "secret" });
-      continue;
+/**
+ * Split `total` between claims of the given sizes so that no claim gets more
+ * than it asks and none gets less than an even share while another gets
+ * more (max-min fair). Whole numbers; what is left over is not handed out.
+ */
+export function fairShares(total: number, demands: readonly number[]): number[] {
+  const out = demands.map(() => 0);
+  let left = Math.max(0, Math.floor(total));
+  let open = demands.map((_, n) => n).filter((n) => (demands[n] ?? 0) > 0);
+  while (open.length > 0 && left > 0) {
+    const each = Math.floor(left / open.length);
+    if (each === 0) {
+      for (const n of open.slice(0, left)) out[n] = (out[n] ?? 0) + 1;
+      break;
     }
-    if (isLockFile(file.path)) {
-      namesOnly.push({ path: file.path, why: "lock file" });
-      continue;
+    for (const n of open) {
+      const give = Math.min(each, (demands[n] ?? 0) - (out[n] ?? 0));
+      out[n] = (out[n] ?? 0) + give;
+      left -= give;
     }
-    let part = byPath.get(file.path) ?? null;
-    if (file.untracked) part = await untrackedPart(file.path, () => readUntracked(`${top}/${file.path}`), limits.untrackedFile);
-    if (part === null) continue;
-    chars += part.length;
-    if (isBinary(part)) {
-      namesOnly.push({ path: file.path, why: "binary" });
-      continue;
-    }
-    parts.push({ path: file.path, text: part });
+    open = open.filter((n) => (out[n] ?? 0) < (demands[n] ?? 0));
   }
-  const clipped = clipParts(parts, limits);
-  return { ok: true, diff: { base, baseText, files, filesTotal: all.length, text: clipped.text, chars, clipped: clipped.clipped, omitted: clipped.omitted, namesOnly } };
+  return out;
+}
+
+/** One repository of a clone, as cow recorded it when it made the clone. */
+export interface CloneRepo {
+  /** Its folder in the clone; null for the workspace folder itself. */
+  as: string | null;
+  /** Its HEAD when the clone was made; null when it was not a git repository or had no commit. */
+  head: string | null;
+}
+
+/** What was looked at in one repository of a clone: its base, or why it could not be read. */
+export interface DiffRepo {
+  as: string | null;
+  /** The commit compared against, and what it is; null when it was not read. */
+  base: string | null;
+  baseText: string | null;
+  /** How many of its files changed. */
+  filesTotal: number;
+  /** Why it was not read; null when it was. */
+  why: string | null;
+}
+
+const realOrNull = (path: string) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+/** The base of a repository of a clone: the commit it was on when cow made the clone, when it still has it. */
+async function cloneBase(git: Git, top: string, head: string | null, bases: readonly string[]): Promise<{ base: string; baseText: string }> {
+  const now = await git(top, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  if (head === null) {
+    if (now.code !== 0) return { base: EMPTY_TREE, baseText: "the empty tree (the repository has no commits yet)" };
+    return { base: EMPTY_TREE, baseText: "the empty tree (it had no commits when cow made the clone)" };
+  }
+  if (/^[0-9a-f]{40,64}$/.test(head) && (await git(top, ["cat-file", "-e", `${head}^{commit}`])).code === 0) return { base: head, baseText: "the commit it was on when cow made the clone" };
+  const found = await findBase(git, top, bases);
+  return { base: found.base, baseText: `${found.baseText} (the commit it was on when cow made the clone is gone)` };
+}
+
+/**
+ * What a thread in one of cow's clones changed: in the workspace folder when
+ * it is a git checkout, and in each repository the clone brought, each
+ * against its own base. `repos` is cow's record of the clone, made when it
+ * was made, never what a file in the clone says now. A brought repository's
+ * files are shown under its folder (`app/file.txt`); the limits are shared
+ * fairly between the repositories, so that one cannot crowd out another.
+ */
+export async function collectCloneDiff(
+  git: Git,
+  clonePath: string,
+  repos: readonly CloneRepo[],
+  bases: readonly string[],
+  readUntracked: (path: string) => Promise<string | null>,
+  limits: DiffLimits = DIFF_LIMITS,
+): Promise<DiffResult> {
+  const brought = new Set(repos.filter((repo) => repo.as !== null).map((repo) => repo.as!));
+  const looked: DiffRepo[] = [];
+  const read: Listed[] = [];
+  for (const repo of repos) {
+    const dir = repo.as === null ? clonePath : join(clonePath, repo.as);
+    const not = (why: string) => looked.push({ as: repo.as, base: null, baseText: null, filesTotal: 0, why });
+    const info = lstatSync(dir, { throwIfNoEntry: false });
+    if (info === undefined) {
+      not("it is no longer in the clone");
+      continue;
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      not("it is no longer a folder in the clone");
+      continue;
+    }
+    const top = await git(dir, ["rev-parse", "--show-toplevel"]);
+    if (top.code !== 0 || realOrNull(top.stdout.trim()) !== realOrNull(dir)) {
+      not(repo.as === null ? "the workspace folder is not a git checkout" : "it is not a git repository");
+      continue;
+    }
+    const found = await listChanges(git, dir, await cloneBase(git, dir, repo.head, bases), repo.as === null ? "" : `${repo.as}/`, repo.as === null ? brought : new Set());
+    if (!found.ok) {
+      not(found.why);
+      continue;
+    }
+    read.push(found.listed);
+    looked.push({ as: repo.as, base: found.listed.base, baseText: found.listed.baseText, filesTotal: found.listed.all.length, why: null });
+  }
+  if (read.length === 0) return { ok: false, why: `none of the clone's repositories could be read (${looked.map((repo) => `${repo.as ?? "the workspace folder"}: ${repo.why}`).join("; ")})` };
+
+  // Files listed, then characters of diff: each repository its fair share.
+  const fileShares = fairShares(limits.files, read.map((listed) => listed.all.length));
+  const made: { listed: Listed; files: ChangedFile[]; parts: { path: string; text: string }[] }[] = [];
+  const namesOnly: DiffCollected["namesOnly"] = [];
+  let chars = 0;
+  for (const [n, listed] of read.entries()) {
+    const files = listed.all.slice(0, fileShares[n] ?? 0);
+    const parts = await diffParts(git, listed, files, readUntracked, limits);
+    const entry = looked.find((repo) => repo.base !== null && (repo.as === null ? listed.prefix === "" : listed.prefix === `${repo.as}/`))!;
+    if (!parts.ok) {
+      Object.assign(entry, { base: null, baseText: null, why: parts.why });
+      continue;
+    }
+    made.push({ listed, files, parts: parts.parts });
+    namesOnly.push(...parts.namesOnly);
+    chars += parts.chars;
+  }
+  if (made.length === 0) return { ok: false, why: `none of the clone's repositories could be read (${looked.map((repo) => `${repo.as ?? "the workspace folder"}: ${repo.why}`).join("; ")})` };
+  const textShares = fairShares(
+    limits.total,
+    made.map((repo) => repo.parts.reduce((sum, part) => sum + Math.min(part.text.length, limits.perFile), 0)),
+  );
+  const texts: string[] = [];
+  const clipped: string[] = [];
+  const omitted: string[] = [];
+  for (const [n, repo] of made.entries()) {
+    const cut = clipParts(repo.parts, { total: textShares[n] ?? 0, perFile: limits.perFile, minPerFile: limits.minPerFile });
+    texts.push(cut.text);
+    clipped.push(...cut.clipped);
+    omitted.push(...cut.omitted);
+  }
+  const files = made.flatMap((repo) => repo.files).sort(byPathOrder);
+  const first = looked.find((repo) => repo.base !== null)!;
+  return {
+    ok: true,
+    diff: {
+      base: first.base!,
+      baseText: "each repository against its own base",
+      files,
+      filesTotal: made.reduce((sum, repo) => sum + repo.listed.all.length, 0),
+      text: texts.join(""),
+      chars,
+      clipped,
+      omitted,
+      namesOnly: namesOnly.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+      repos: looked,
+    },
+  };
 }
 
 /** An untracked file as an added one in a diff. */

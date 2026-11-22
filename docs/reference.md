@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Caps and stuck checks](#caps-and-stuck-checks) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -94,6 +94,12 @@ thread is a project when:
 - it has, or has had, threads under it (a group's head); or
 - it is marked as one: `P` on its line (and again to unmark; `u` takes
   either back), or `bb cow project <thread>` and `--clear` from the CLI.
+
+That is how the page draws and sorts it. For outcomes, labels, the ledger
+and the caps and stuck checks, a thread under a parent that is not marked
+and whose own threads are all archived is a worker, not a project: a worker
+that started and archived test threads of its own still gets its outcome
+and its ledger row. Main and a marked project are never workers.
 
 A project that is not archived is never done, and never moves to the To settle
 section. When it has nothing to say (no turn running, nothing waiting on
@@ -1168,9 +1174,30 @@ fence is an instruction.
   to 200,000 bytes. The prompt names every file cut short, left out, or
   shown by name only, and the checker is told that when what was left out
   could decide a verdict, it cannot tell.
+- **In a copy-on-write workspace.** When the thread runs in one of cow's
+  clones, cow reads the workspace folder (when it is a git checkout) and
+  every repository the clone brought, each on its own. Which repositories
+  those are comes from cow's own record of the clone, written when it was
+  made, never from the `cow.workspace.json` in the clone, which the agent
+  can edit. Each is compared against the commit it was on when cow made the
+  clone; when that commit is gone from it, against the merge base found as
+  above, and the prompt says so; one that had no commits then, against the
+  empty tree. The folder's own list leaves out the brought folders, and a
+  brought repository's files are listed and diffed under its folder
+  (`app/file.txt`). One list and one diff go to the checker, with each
+  repository named with its base, and any that could not be read (gone
+  from the clone, no longer a folder, not a git repository) named with why;
+  the others are still shown. The limits above apply to the whole, shared
+  fairly: each repository gets an even share of the 5,000 files listed and
+  of the 60,000 characters before any gets more, so a large diff in one
+  cannot leave out another's small change. The rule about tests and
+  configuration reads the combined list, with the folder in each path.
+  The brief's record names each repository and its base. A folder that is
+  not a git checkout still gets its brought repositories' changes.
 - **No diff.** With no environment, an environment that is not a git
-  checkout, git failing, or the `checkerDiff` setting off, the check still
-  runs, and the checker is told there is no diff and why.
+  checkout (nor one of cow's clones with a repository to read), git
+  failing, or the `checkerDiff` setting off, the check still runs, and the
+  checker is told there is no diff and why.
 - **The claims**: each claim's id and text, its evidence, and the list of
   what was not done. Not the summary, not the labels, not the judgement
   calls.
@@ -1479,9 +1506,14 @@ dispatch. It can be set before or after the worker is archived; a row
 already written is updated, as a later outcome updates it. The page does not
 show it on the thread's line.
 
-**A worker** is a thread that finished a turn and is not a project, a Main
-or an automation's run. Anything else gets no row, and an outcome for it
-is refused.
+**A worker** is a thread that finished a turn and is not a Main or an
+automation's run, and is not a project by this rule: it is marked as one;
+or it has a thread under it that is not archived; or, with no parent, it
+has or has had threads under it. A thread under a parent whose own threads
+are all archived is a worker, though the page draws it as a group's head.
+Anything else gets no row, and an outcome for it is refused. (On the page,
+`e` and `o` on a line drawn as a group's head still treat it as a project;
+give it its outcome with `bb cow outcome` or `bb cow archive --outcome`.)
 
 **The row.** Written when the worker is archived through cow (`e`, `x` on
 parked work that came back, `bb cow archive`), whether or not an outcome was
@@ -1509,7 +1541,11 @@ given, and updated when the outcome changes. It holds, and only holds:
   recorded none; a row written before 0.2.19 reads as unknown usage, shown
   as "usage unknown", never as zero. When usage arrives after the row was
   written (a turn that ended after it was archived), the row is brought up
-  to date, as a later outcome updates it.
+  to date, as a later outcome updates it;
+- its tool calls and its working minutes (the lengths of its turns, summed,
+  to a tenth of a minute), from cow's progress record (see "Caps and stuck
+  checks"). Null when not read; a row written before 0.2.21 reads as null.
+  Nothing summarises them yet.
 
 It holds no dollars: they are worked out when shown, so a corrected price
 applies to rows already written.
@@ -1694,6 +1730,85 @@ push-notifications plugin, or with no channel on, only the queue has it.
 thread a message, or pauses or stops one, and no agent is shown a budget or
 asked to watch one: the check is code on cow's server, and what it finds is
 for you.
+
+## Caps and stuck checks
+
+A worker that loops keeps making calls, so it never reads as stuck by its
+events alone, and nothing else says it has gone far past what its kind of
+job takes. cow keeps a small record of each running worker's progress and
+**shows** you when one is over a cap or caught by a stuck check. **It never
+stops, pauses, interrupts or messages a thread**, and no agent is shown its
+cap: what cow finds is for you.
+
+**Who is checked.** Workers only: a thread under a parent, not a Main, not
+marked as a project, with no open thread under it (the rule of "A worker"
+under [The ledger](#the-ledger)), not an automation's run, not archived.
+Main and project threads never get a mark or a notice.
+
+**What cow keeps per worker**, in its own storage, brought up to date when bb
+says the thread's events changed (cow's server is told, then reads the turn,
+item and usage events after the last one it read): its tool calls so far
+(items that are not reasoning, messages or plans; a command moved to the
+background is not counted twice), when its first and its current turn
+started, the lengths of its finished turns, when its last event was, what
+is in progress and since when, when a file last changed, and the last 5
+calls' identity: the kind of item, a hash of the whole of it (the command;
+or the tool with its arguments; or the paths), and a label of at most 60
+characters: a command's first line, or a tool's name alone. **It keeps no
+message text, no output, no file contents and no tool arguments**, and no
+command past those 60 characters.
+
+**Caps**, from one setting, `caps`: JSON keyed by label (`bb cow label`),
+with `*` for workers of any other label or none. Each entry has any of
+`toolCalls` (a whole number), `minutes` (wall-clock since the worker's first
+turn started) and `dollars` (list price, from the usage cow reads as each
+turn ends: **so known only once a turn has ended**, never during one). Such
+as:
+
+    {"lookup": {"toolCalls": 40, "minutes": 20}, "code-change": {"dollars": 5}, "*": {"minutes": 90}}
+
+A worker labelled `lookup` is held to its own entry, not to `*`'s. A cap is
+gone over, not reached: a cap of 2 tool calls is over at 3. Caps apply
+whether its turn runs or not. Empty, the default, means no caps. A value
+not in this form (not JSON, a key that is no label, an unknown field, a
+number that is not above zero, tool calls that are not whole) is reported on
+the page above the queue, and **no cap applies at all**: never some of
+them.
+
+**Stuck checks**, on by default, only while the worker's turn is running,
+each with its own setting; 0 turns it off:
+
+| Setting | Default | Caught when |
+| --- | --- | --- |
+| `stuckRepeats` | 3 | the same call (the same command, or the same tool with the same arguments) this many times or more in a row |
+| `stuckQuietMinutes` | 15 | its turn runs with no event and nothing in progress for this many minutes |
+| `stuckLongItemMinutes` | 45 | one item (a command, a tool call) has been in progress this many minutes |
+
+Turns are not counted for any of this: a long command moved to the
+background ends a turn, and a new one starts when it finishes.
+
+**The mark.** A worker over a cap or caught by a check has, on its line,
+which and by how much, for as long as it is true: `over cap: 512 of 400 tool
+calls`, `over cap: 95 of 60 minutes`, `over cap: $3.20 of $2.00 (list price,
+known only once a turn has ended)`, `the same command 4 times` (or "the same
+tool call"), `quiet 22m`, `one command in progress 52m`. `bb cow status`
+shows the same marks in brackets at the end of the line, and `--json` gives
+each as `watch: [{reason, mark, facts}]`, the facts being the numbers behind
+it (tool calls, minutes since its first turn, its label, and the call or the
+times).
+
+**One notice per worker per reason.** The first time a worker is over a cap
+or caught by a check, cow puts one notice in your queue with the facts it
+collected and nothing else, such as: “Fix the parser” (lookup) is over cap:
+41 of 40 tool calls. 41 tool calls, 12m since its first turn started. cow
+does not stop it. A click, or its hint (`f`), acknowledges it as a signed
+call (`watch_ack`) logged under your key; an unsigned call is refused. Once
+raised, that reason does not come back for that worker, acknowledged or not;
+the mark stays while it is true.
+
+**When it is checked.** When a worker's events change, and once a minute on
+cow's one timer, which the usage notices share, page open or not, and when a
+setting changes. `bb cow status` checks every worker as it reads.
 
 ## Undo
 
@@ -2094,7 +2209,7 @@ agent and stop no other.
 
 | Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
 | --- | --- | --- | --- |
-| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read`, `ledger_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card, the ledger | yes: `bb cow status`, `asks`, `brief show`, `caps`, `ledger` read the same | nothing. They change nothing |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read`, `ledger_read`, `watch_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card, the ledger, the caps and stuck-check marks and notices | yes: `bb cow status`, `asks`, `brief show`, `caps`, `ledger` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
 | `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, except their open asks. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask, and those of threads under it, stay in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. This method leaves no trace in the queue or the log, unlike `bb cow park`. Removing a note only puts a line back |
@@ -2133,6 +2248,7 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `ledger` | reads the ledger | nothing |
 | `spend` | reads the month's tokens and list-price dollars | nothing |
 | `usage` | reads the usage line: windows, the month, the budget and pace, the usage notices waiting | nothing. Only the signed `limit_ack` acknowledges a usage notice |
+| `status`'s caps and stuck-check marks | read: a worker's marks, beside its line and in `--json` | nothing. Only the signed `watch_ack` acknowledges a worker notice, and nothing stops a worker |
 
 What follows from this: **the queue is everything cow knows waits on you,
 minus what has been parked, kept or archived.** Nothing else of cow's that is

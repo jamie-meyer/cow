@@ -2,6 +2,7 @@
 // and the order a person should read things in. Pure, for the CLI and the page.
 
 import type { Brief, Claim, Label } from "./brief.ts";
+import type { DiffRepo } from "./diff.ts";
 import type { ChangedFile } from "./paths.ts";
 import { type ChosenBy, checkerOn } from "./provider.ts";
 
@@ -71,6 +72,8 @@ export interface Shown {
         clipped: string[];
         omitted: string[];
         namesOnly: { path: string; why: "lock file" | "binary" | "secret" }[];
+        /** In one of cow's clones: each repository looked at, with its base or why it was not read. Absent before 0.2.22 and outside clones. */
+        repos?: DiffRepo[];
       };
   /** Files whose change decides whether the job's checks pass (see paths.ts): a dispute with no model behind it. */
   flagged: string[];
@@ -423,6 +426,13 @@ function taskLines(entry: ReviewedTask): string[] {
   return lines;
 }
 
+/** One repository of a clone, as the prompt and the record name it: its base, or why it was not read. */
+export function repoLine(repo: DiffRepo): string {
+  const name = repo.as === null ? "the workspace folder" : `${JSON.stringify(repo.as)} (its files under ${repo.as}/)`;
+  if (repo.why !== null || repo.base === null) return `${name}: not read: ${repo.why ?? "unknown"}`;
+  return `${name}: against ${repo.base.slice(0, 12)}, ${repo.baseText}; ${repo.filesTotal} ${repo.filesTotal === 1 ? "file" : "files"} changed`;
+}
+
 const names = (paths: readonly string[], max = 10): string => `${paths.slice(0, max).join(", ")}${paths.length > max ? `, and ${paths.length - max} more` : ""}`;
 
 /** What the checker was shown besides the brief, in lines; empty for a brief stored before 0.2.18. */
@@ -438,7 +448,11 @@ export function shownLines(shown: Shown | null): string[] {
   if (diff.state === "off") out.push("  diff: none, turned off in cow's settings");
   else if (diff.state === "none") out.push(`  diff: none (${diff.why})`);
   else {
-    out.push(`  diff: against ${diff.base.slice(0, 12)}, ${diff.baseText}; ${diff.filesTotal} changed ${diff.filesTotal === 1 ? "file" : "files"}, ${diff.chars} characters of diff`);
+    if (diff.repos === undefined) out.push(`  diff: against ${diff.base.slice(0, 12)}, ${diff.baseText}; ${diff.filesTotal} changed ${diff.filesTotal === 1 ? "file" : "files"}, ${diff.chars} characters of diff`);
+    else {
+      out.push(`  diff: ${diff.repos.length} ${diff.repos.length === 1 ? "repository" : "repositories"} of a copy-on-write workspace, each against its own base; ${diff.filesTotal} changed ${diff.filesTotal === 1 ? "file" : "files"}, ${diff.chars} characters of diff`);
+      for (const repo of diff.repos) out.push(`    ${repoLine(repo)}`);
+    }
     if (diff.clipped.length > 0) out.push(`    cut short: ${names(diff.clipped)}`);
     if (diff.omitted.length > 0) out.push(`    left out for want of room: ${names(diff.omitted)}`);
     if (diff.namesOnly.length > 0) out.push(`    by name only: ${names(diff.namesOnly.map((entry) => `${entry.path} (${entry.why})`))}`);

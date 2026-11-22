@@ -118,6 +118,12 @@ test("the row's keys are exactly the allowed set: no title, prompt, message text
   const { inputTokens: _i, cacheReadTokens: _r, cacheWriteTokens: _w, outputTokens: _o, ...before } = row;
   const read = rowSchema.parse(before);
   assert.deepEqual([read.inputTokens, read.cacheReadTokens, read.cacheWriteTokens, read.outputTokens], [null, null, null, null], "a row written by 0.2.18 reads as unknown usage");
+  assert.deepEqual([row.toolCalls, row.workingMinutes], [null, null], "no work read: unknown, not zero");
+  const { toolCalls: _t, workingMinutes: _m, ...older } = row;
+  const was = rowSchema.parse(older);
+  assert.deepEqual([was.toolCalls, was.workingMinutes], [null, null], "a row written before 0.2.21 reads as unknown tool calls and minutes");
+  const worked = buildRow(thread, readTurns(workerLog()), { at: NOW, by: "thr_lead" }, [], null, null, { toolCalls: 7, workingMinutes: 12.5 });
+  assert.deepEqual([worked?.toolCalls, worked?.workingMinutes], [7, 12.5]);
   for (const value of Object.values(row)) assert.ok(typeof value !== "string" || value.length <= 200);
 });
 
@@ -182,6 +188,8 @@ const row = (overrides: Partial<LedgerRow>): LedgerRow => ({
   cacheReadTokens: null,
   cacheWriteTokens: null,
   outputTokens: null,
+  toolCalls: null,
+  workingMinutes: null,
   ...overrides,
 });
 

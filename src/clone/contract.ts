@@ -236,8 +236,11 @@ export const cloneHostContract = defineRpcContract({
   },
   /**
    * What a brief's thread changed: in its checkout at `path`, against the
-   * merge base with the first of `bases` that resolves. Reads only; runs git
-   * with hooks off. "none" when the folder is not a git checkout or git fails.
+   * merge base with the first of `bases` that resolves. When `path` is one of
+   * cow's clones, the workspace folder and every repository the clone brought
+   * (by cow's record of the clone), each against the commit it was on when
+   * the clone was made. Reads only; runs git with hooks off. "none" when
+   * nothing could be read.
    */
   brief_diff: {
     input: z.object({ path: absolute, bases: z.array(z.string().min(1).max(300)).max(10) }),

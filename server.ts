@@ -9,6 +9,8 @@ import { Refusal } from "./src/kv.ts";
 import { judgementSchema, rowSchema, type LedgerSummary } from "./src/ledger.ts";
 import { registerLedger } from "./src/ledger-backend.ts";
 import { type UsageReport, registerLimits } from "./src/limits-backend.ts";
+import { type WatchReport, registerWatch } from "./src/watch-backend.ts";
+import { createTicker } from "./src/ticker.ts";
 import type { Spend } from "./src/spend.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
@@ -128,6 +130,15 @@ export const rpcContract = defineRpcContract({
     output: z.custom<UsageReport>(),
   },
   /**
+   * The caps and stuck checks: each worker's marks (what it is over or caught
+   * by now), the notices waiting, and the settings as read. Only reads; a
+   * notice is acknowledged by a signed call. Nothing stops a worker.
+   */
+  watch_read: {
+    input: z.null(),
+    output: z.custom<WatchReport>(),
+  },
+  /**
    * Archive a thread in bb with cow's reason for it; a null reason forgets an
    * earlier one. `dropped` stops its turn first. A worker gets its ledger row,
    * archived by the person.
@@ -165,10 +176,20 @@ export default async function plugin(bb: BbPluginApi) {
   };
   // The ledger, the usage read from bb's events, the list prices and the month's spend. Its project marks are cow's notes.
   // (Called only once the actions below exist.)
-  const ledgers = registerLedger(bb, async (ids) => Object.keys((await actions.notes(ids)).projects));
+  const ledgers = registerLedger(bb, async (ids) => Object.keys((await actions.notes(ids)).projects), (threadId) => watch.work(threadId));
   const ledger = ledgers.ledger;
-  // The usage line and the notices before a limit: checked on a timer, page open or not. It only tells.
-  const limits = registerLimits(bb, log, (month) => ledgers.everything(month));
+  // One timer for what cow checks on a clock, page open or not.
+  const ticker = createTicker(Date.now, (text) => bb.log.warn(`a timed check failed: ${text}`));
+  bb.onDispose(() => ticker.stop());
+  // The usage line and the notices before a limit. It only tells.
+  const limits = registerLimits(bb, log, (month) => ledgers.everything(month), ticker);
+  // Caps and stuck checks on workers: a mark on the line and one notice per reason. It only tells: no thread is ever stopped, paused or sent anything.
+  const watch = registerWatch(bb, log, ticker, {
+    mains: async () => Object.values((await readState()).mains),
+    marked: async (ids) => Object.keys((await actions.notes(ids)).projects),
+    label: async (threadId) => (await ledger.label(threadId))?.label ?? null,
+    dollars: (threadId) => ledgers.dollars(threadId),
+  });
   const actions = createActions(bb, readState, {
     outside: async () => {
       const found = new Map<string, { id: string; text: string; at: number }[]>();
@@ -229,10 +250,11 @@ export default async function plugin(bb: BbPluginApi) {
       if (cause instanceof CowError) throw new Refusal(cause.code, cause.message, cause.hint);
       throw cause;
     }
-  }, workspaces, limits);
+  }, workspaces, limits, watch);
 
   bb.rpc.register(rpcContract, {
     usage_read: ({ fresh }) => limits.report(fresh === true),
+    watch_read: () => watch.report(),
     main_state: () => readState(),
     ledger_read: ({ days }) => actions.ledger(days),
     spend_read: ({ mainId, month }) => ledgers.spend(mainId, month),
@@ -285,7 +307,7 @@ export default async function plugin(bb: BbPluginApi) {
     cowCli({ ...actions, spend: async (mainId, projectId, month) => {
       const main = await actions.mainFor(mainId, projectId);
       return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
-    }, usage: () => limits.report(true) }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
+    }, usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was

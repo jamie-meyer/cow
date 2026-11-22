@@ -10,7 +10,7 @@
 import { z } from "zod";
 import type { Brief } from "./brief.ts";
 import { DIFF_LIMITS, type DiffCollected, fileLine } from "./diff.ts";
-import { type ClaimVerdict, VERDICTS } from "./review.ts";
+import { type ClaimVerdict, VERDICTS, repoLine } from "./review.ts";
 import { TASK_LIMITS, type TaskRead } from "./task.ts";
 
 /** The task as cow read it: none, with why, or the first message and its checks. */
@@ -119,12 +119,19 @@ export function checkerPrompt(brief: Brief, nonce: string, material: Material = 
     out.push(`There is no diff: ${diff.why}. Judge from the evidence alone.`);
   } else {
     const more = diff.filesTotal - diff.files.length;
+    const counted = `${diff.filesTotal} ${diff.filesTotal === 1 ? "file" : "files"} changed${more > 0 ? `; the first ${diff.files.length} are listed, and ${more} more are not` : ", all listed"}:`;
+    if (diff.repos === undefined) out.push(`Compared against ${diff.base.slice(0, 12)}, ${diff.baseText}. Uncommitted and untracked files are included. ${counted}`);
+    else {
+      out.push(
+        "The thread runs in a copy-on-write workspace of cow's. Each of its repositories was compared against its own base, and a brought repository's files are listed under its folder:",
+        ...diff.repos.map((repo) => `- ${repoLine(repo)}`),
+        `Uncommitted and untracked files are included. ${counted}`,
+      );
+    }
     out.push(
-      `Compared against ${diff.base.slice(0, 12)}, ${diff.baseText}. Uncommitted and untracked files are included. ` +
-        `${diff.filesTotal} ${diff.filesTotal === 1 ? "file" : "files"} changed${more > 0 ? `; the first ${diff.files.length} are listed, and ${more} more are not` : ", all listed"}:`,
       ...fence("FILES", nonce, diff.files.length === 0 ? "(none)" : diff.files.map(fileLine).join("\n")),
       "",
-      `The diff below is cut to ${DIFF_LIMITS.total} characters in all and ${DIFF_LIMITS.perFile} per file; it was ${diff.chars} characters before.`,
+      `The diff below is cut to ${DIFF_LIMITS.total} characters in all${diff.repos === undefined ? "" : ", shared fairly between the repositories,"} and ${DIFF_LIMITS.perFile} per file; it was ${diff.chars} characters before.`,
     );
     const notes: string[] = [];
     if (diff.clipped.length > 0) notes.push(`Cut short: ${list(diff.clipped)}.`);
