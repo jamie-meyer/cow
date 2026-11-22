@@ -109,7 +109,7 @@ export const KEY_GROUPS: readonly { title: string; keys: readonly { keys: string
     title: "What finished work came to",
     keys: [
       { keys: "o", does: "on a line under Archived or To settle, say what the worker came to, or change it: 1 done (the work was used as it came back), 2 partial (some of it was used, or it needed a second worker), 3 redone (it was wrong, and you or another thread redid it), 4 dropped (it was not used); any other key cancels. Signed as yours: no thread can overwrite it" },
-      { keys: "L", does: "the ledger over the page: for the last 14 days, by model, by dispatching thread and by label (the kind of job, then by model within it), how many workers, each outcome, the median time to first report and steers before it, how many you judged, the tokens and list-price dollars and the dollars per done; then the latest rows, and this month's tokens and dollars under Main (workers, project threads, Main, cow's checker runs). Dollars are an estimate at list price, not a bill. It holds no titles, prompts or message text. b shows one grouping at a time, j k scroll, q or Esc closes" },
+      { keys: "L", does: "the ledger over the page: for the last 14 days, by model, by dispatching thread and by label (the kind of job, then by model within it), how many workers, each outcome, the median time to first report and steers before it, how many you judged, the tokens and list-price dollars and the dollars per done; then the latest rows, and the last 30 days' tokens and dollars under Main (workers, project threads, Main, cow's checker runs). Dollars are an estimate at list price, not a bill. It holds no titles, prompts or message text. b shows one grouping at a time, j k scroll, q or Esc closes" },
     ],
   },
   {
