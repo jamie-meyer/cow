@@ -442,6 +442,14 @@ about it: see [The context card](docs/reference.md#the-context-card).
 A confirmation takes `y`; any other key cancels it. Keys with Cmd, Ctrl or
 Alt are left to bb, apart from the ones named above.
 
+Scrolling by key is eased: a press goes a step, a held key glides at a steady
+speed until it is let go, half pages and the ends take a short fixed time, and
+the list follows its cursor the same way. With the system's "reduce motion"
+setting every one of them is a jump. A click on the page, a text selection in
+the chat included, leaves the keys with cow; only a field you type in keeps
+them, until Esc. While focus is in bb's own fields, menus or panels, or another
+plugin's, cow's keys do nothing.
+
 ## The CLI, for agents
 
 `bb cow` gives an agent what it is meant to do: raise an ask, submit a brief,

@@ -27,8 +27,11 @@ export function canOpenPage(): boolean {
   return navigate !== null;
 }
 
-/** Go to cow's page; when it is already in view, leave it as it is, open chat and all. */
+/** Go to cow's page; when it is already in view, leave it as it is, open chat and all, and give it the keyboard. */
 export function openPage(): void {
-  if (pageSignal.mounted) return;
+  if (pageSignal.mounted) {
+    pageSignal.focus?.();
+    return;
+  }
   navigate?.toPluginPanel("main");
 }

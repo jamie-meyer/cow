@@ -4,6 +4,34 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.24
+
+- **Scrolling by key is smooth.** One scroller now moves everything a key
+  scrolls: the list and the queue following the cursor, the legend, the
+  sheets and cards (`L`, `C`, `W`, a brief's), the reader and the chat in the
+  pane. A press goes a step, eased over 140 ms, and lands exactly on it. A
+  held key glides at a steady 900 pixels a second from the keyboard's first
+  repeat, however fast it repeats, with no steps queued up, and when let go
+  it slows to rest within about 54 pixels; the opposite key turns round at
+  once. Half pages, pages and the ends take 180 ms however far they go. The
+  list follows a held `j` or `k` steadily, keeping the cursor line in view on
+  every frame. It is driven by time, so it is the same at any frame rate, and
+  with the system's "reduce motion" setting every motion is a jump, as before.
+  Hints, the reader's search and its place kept for back and forward read
+  where the scrolling is going, not where it has got to. The `W` sheet now
+  follows its cursor too.
+- **The keyboard stays with cow after a click.** Clicking a message in the
+  chat, selecting text in it, clicking a link, a button, a line, a notice or
+  empty space leaves `j`, `k` and the rest working, without scrolling and
+  without clearing the selection. A field you type in keeps the keys until Esc
+  or sending, as before. Opening the page by its command when it is already
+  open, and bb's window getting the keyboard back with focus nowhere, give the
+  page the keys.
+- **cow leaves other keyboards alone.** While focus is in bb's own fields,
+  menus, sidebar or panels, or in another plugin's, cow's keys do nothing;
+  before, a plain key pressed with focus on a button outside the page was
+  still taken. A click back on the page brings them back.
+
 ## 0.2.23
 
 - **Tokens and dollars while a turn runs, if you turn it on.** A new setting,

@@ -22,6 +22,7 @@ import type { Command } from "./keys.ts";
 import type { RaisedData } from "./raisedData.ts";
 import { fileAttribute } from "./reader/trigger.ts";
 import { formatAge } from "./text.ts";
+import { followInto } from "./scroll.ts";
 
 const LABEL_TEXT: Record<Label, string> = { checked: "checked", inferred: "inferred", "not-checked": "not checked" };
 const VERDICT_TEXT: Record<Verdict, string> = { supported: "supported", "not-supported": "not supported", "cannot-tell": "cannot tell" };
@@ -269,7 +270,7 @@ function CallRow({ item, current, card, onSelect }: { item: Extract<SheetItem, {
 function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetHost; items: readonly SheetItem[]; asks: readonly Ask[]; onSelect: (id: string) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
-    ref.current?.querySelector(".cow-bf-item.cow-cur")?.scrollIntoView({ block: "nearest" });
+    followInto(ref.current?.querySelector(".cow-bf-item.cow-cur"));
   }, [open.cursor, open.expanded]);
   const title = host.titleOf(open.threadId);
   const record = open.record;

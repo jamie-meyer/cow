@@ -15,6 +15,7 @@ import { type FileRef, type LineRange, ROOT_LABEL, copyText, parseDocLink } from
 import { type Motion, ReaderKeys, moveCursor, scrollToShow } from "./move.ts";
 import { type Box, type Row, collectRows, matchBoxes, rowBox, rowLineNumber } from "./rows.ts";
 import { findMatches, firstMatch, stepMatch } from "./search.ts";
+import { jumpScroll, restingTop, scrollerOf } from "../scroll.ts";
 
 type Sdk = ReturnType<typeof useSdk>;
 
@@ -131,7 +132,8 @@ function Sheet({
   /** After a motion: how the window follows the cursor. */
   /** Where the window was when the file changed on disk: put back once the new text is drawn. */
   const keepScroll = useRef<number | null>(null);
-  const follow = useRef<{ from: number; to: number; carry: boolean; centre: boolean } | null>(null);
+  /** The motion the window follows; `jump`: at once, as when a file opens on its lines. */
+  const follow = useRef<{ from: number; to: number; carry: boolean; centre: boolean; jump?: boolean } | null>(null);
 
   // ---- reading ------------------------------------------------------------
 
@@ -176,7 +178,7 @@ function Sheet({
           (next) => {
             if (next.type === "diff" || next.sha === sha) return;
             // What is drawn is drawn again; the window stays where it was.
-            keepScroll.current = scrollRef.current?.scrollTop ?? null;
+            keepScroll.current = scrollRef.current ? restingTop(scrollRef.current) : null;
             setLoad(next);
             setChanged(true);
           },
@@ -260,7 +262,7 @@ function Sheet({
     }
     if (marked) {
       const to = Math.min(total - 1, marked.start - 1);
-      follow.current = { from: 0, to, carry: false, centre: true };
+      follow.current = { from: 0, to, carry: false, centre: true, jump: true };
       setCursor(to);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,9 +309,16 @@ function Sheet({
     if (box && moved) {
       const before = all[moved.from];
       const beforeBox = before ? rowBox(before, origin) : null;
-      if (moved.carry && beforeBox) scroller.scrollTop += box.top - beforeBox.top;
+      // From where the window is going, not where it has got to: a held key's cursor runs ahead of it.
+      const glide = scrollerOf(scroller);
+      let to = glide.destination();
+      if (moved.carry && beforeBox) to += box.top - beforeBox.top;
       const view = scroller.clientHeight;
-      scroller.scrollTop += scrollToShow(box.top, box.height, scroller.scrollTop, view, moved.centre ? view / 3 : Math.min(40, view / 4));
+      to += scrollToShow(box.top, box.height, to, view, moved.centre ? view / 3 : Math.min(40, view / 4));
+      if (moved.jump) {
+        glide.stop();
+        scroller.scrollTop = to;
+      } else if (Math.abs(to - glide.destination()) >= 0.5) glide.toward(to);
     }
     // Scrolling moved what the boxes below are measured from.
     origin = content.getBoundingClientRect();
@@ -351,8 +360,8 @@ function Sheet({
     follow.current = { from: at, to: next, carry: motion.kind === "half" || motion.kind === "page", centre: motion.kind === "goto" || motion.kind === "block" };
     if (next === at) {
       // At an end already: the window still goes all the way.
-      if (motion.kind === "top" || (next === 0 && (motion.kind === "half" || motion.kind === "page"))) scroller.scrollTop = 0;
-      if (motion.kind === "bottom" || (next === all.length - 1 && (motion.kind === "half" || motion.kind === "page"))) scroller.scrollTop = scroller.scrollHeight;
+      if (motion.kind === "top" || (next === 0 && (motion.kind === "half" || motion.kind === "page"))) jumpScroll(scroller, "top");
+      if (motion.kind === "bottom" || (next === all.length - 1 && (motion.kind === "half" || motion.kind === "page"))) jumpScroll(scroller, "end");
       follow.current = null;
       return;
     }
@@ -435,7 +444,7 @@ function Sheet({
     }
   };
 
-  const view = (): View => ({ cursor: at, scrollTop: scrollRef.current?.scrollTop ?? 0, raw, split, query });
+  const view = (): View => ({ cursor: at, scrollTop: scrollRef.current ? restingTop(scrollRef.current) : 0, raw, split, query });
   const docLink = (href: string): OpenTarget | null => {
     if (!file) return null;
     const link = parseDocLink(href, file.absPath);

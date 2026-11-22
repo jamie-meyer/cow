@@ -16,6 +16,8 @@
 //   in one step to leave the pin, and tells the chat it scrolled, so that
 //   bb lets go before the next growth; bb then holds the place it was put.
 
+import { repeating, scrollerOf } from "./scroll.ts";
+
 /**
  * The element that scrolls the chat's messages: of everything inside the
  * pane that can scroll up and down, the tallest. The composer's own field
@@ -72,61 +74,29 @@ function leaveEnd(element: HTMLElement, top: number): void {
 }
 
 /**
- * Scrolls one element toward a target that each press moves, a part of the
- * way on every frame: one press glides, and a held key keeps gliding
- * instead of jumping.
+ * Scroll the chat by key: a step of `delta` pixels (its repeat, a key held,
+ * glides on until it is let go), half a page (`half`), or to the newest
+ * message ("end"), which it follows while text arrives. The motion is the
+ * page's one scroller's, as everywhere else on the page; each move is told to
+ * the chat first, as a wheel would be.
  */
-export class Glide {
-  private element: HTMLElement | null = null;
-  private target = 0;
-  private frame = 0;
-  private toEnd = false;
-
-  /** Move the target by `delta` pixels; "end" goes to the newest message. */
-  push(element: HTMLElement, delta: number | "end"): void {
-    const max = bottomOf(element);
-    if (this.element !== element || this.frame === 0) {
-      this.element = element;
-      this.target = element.scrollTop;
-    }
-    this.toEnd = delta === "end";
-    if (delta === "end") this.target = max;
-    else {
-      const leaving = delta < 0 && atEnd(element);
-      this.target = stepTarget(this.target, delta, max);
-      if (leaving) {
-        // Off the pin at once, in one step: gliding off it would be undone on the way.
-        leaveEnd(element, Math.max(0, Math.min(element.scrollTop, max - LEAVE_PX)));
-      }
-    }
-    if (this.frame === 0) this.frame = requestAnimationFrame(this.step);
+export function scrollChat(element: HTMLElement, delta: number | "end", half = false): void {
+  const scroller = scrollerOf(element, (by) => announce(element, by));
+  if (delta === "end") return scroller.jump("end");
+  const max = bottomOf(element);
+  const from = scroller.moving ? scroller.destination() : element.scrollTop;
+  const to = stepTarget(from, delta, max);
+  if (delta < 0 && atEnd(element)) {
+    // Off the pin at once, in one step: gliding off it would be undone on the way.
+    const off = Math.max(0, Math.min(element.scrollTop, max - LEAVE_PX));
+    scroller.stop();
+    leaveEnd(element, off);
+    if (half) return scroller.jump(to);
+    if (off - to > 0) scroller.step(-1, off - to);
+    return;
   }
-
-  stop(): void {
-    if (this.frame !== 0) cancelAnimationFrame(this.frame);
-    this.frame = 0;
-    this.element = null;
-  }
-
-  private step = (): void => {
-    const element = this.element;
-    this.frame = 0;
-    if (!element || !element.isConnected) return;
-    // The newest message moves further off while text arrives.
-    if (this.toEnd) this.target = bottomOf(element);
-    const left = this.target - element.scrollTop;
-    if (Math.abs(left) < 1.5) {
-      announce(element, left);
-      element.scrollTop = this.target;
-      return;
-    }
-    const before = element.scrollTop;
-    announce(element, left);
-    element.scrollTop = before + left * 0.35 + Math.sign(left);
-    // At an end, or held by something else: stop instead of pushing for ever.
-    if (element.scrollTop === before) return;
-    this.frame = requestAnimationFrame(this.step);
-  };
+  if (half) return scroller.jump(to);
+  if (to !== from || repeating()) scroller.step(delta > 0 ? 1 : -1, Math.abs(to - from) || Math.abs(delta));
 }
 
 /** How long upward wheel movement is added up before it is forgotten. */

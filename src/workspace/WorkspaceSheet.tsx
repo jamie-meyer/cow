@@ -4,11 +4,12 @@
 // sync, where s syncs the selected repository and S all of them. Approving,
 // dismissing, reading a command's output and bringing work back are signed.
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { OpenTarget } from "../reader/files.ts";
 import type { Signer } from "../signing/page.ts";
 import { formatAge } from "../text.ts";
+import { followInto } from "../scroll.ts";
 import type { workspaceRpcContract } from "./backend.ts";
 import { KEPT_WHY, WORKSPACES_CHANGED, WORKSPACE_FILE } from "./file.ts";
 import type { BackPlan, WorkspaceView } from "./service.ts";
@@ -177,6 +178,10 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
   const selected = rows[index] ?? null;
   const live = useRef({ rows, selected, index, confirming });
   live.current = { rows, selected, index, confirming };
+  // The sheet follows its cursor, as the page does.
+  useLayoutEffect(() => {
+    if (open) followInto(document.querySelector("[data-cow-workspaces] .cow-cur"));
+  }, [open, index]);
 
   /** Open the sheet; with a held clone's id, on its line. */
   const show = (heldId?: string) => {

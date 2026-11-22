@@ -1449,8 +1449,8 @@ async function readingChecks(page, ids, shot, chooseMain) {
   check('" scrolls up half a page', Math.abs(bottom - upHalf - Math.min(bottom, Math.round(chatHeight / 2))) <= 3, `${bottom - upHalf} of ${chatHeight}`);
   await page.key(":");
   check(": scrolls down half a page", (await settle()) === bottom);
-  for (let i = 0; i < 6; i += 1) await page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "'", code: "Quote", windowsVirtualKeyCode: 222, autoRepeat: i > 0 });
-  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "'", code: "Quote", windowsVirtualKeyCode: 222 });
+  // Held for most of a second: a step, then a steady glide from the keyboard's first repeat until it is let go.
+  await holdKey(page, "'", 800, { every: 40 });
   const held = await settle();
   check("a held key keeps scrolling", bottom - held > 250 || held === 0, String(bottom - held));
   check(
@@ -5105,6 +5105,80 @@ const cursorId = `document.querySelector(".cow-main .cow-cur")?.dataset.cowLine 
 const mode = `${ROOT}?.dataset.cowMode`;
 const screen = `${ROOT}?.dataset.cowScreen`;
 
+/**
+ * Sample an expression on every frame the page draws, until `stop` is called:
+ * what a person would see, frame by frame, while a key scrolls. Each sample is
+ * read once the frame's own work is done (the scroller moves in the same
+ * frame), with the frame's time; `timed` keeps the time, as [time, value].
+ */
+async function sampleFrames(page, expression, { timed = false } = {}) {
+  await page.eval(`(() => { window.__cowSamples = []; window.__cowSampling = true; const tick = (time) => { if (!window.__cowSampling) return; setTimeout(() => { const value = ${expression}; window.__cowSamples.push(${timed ? "[time, value]" : "value"}); }, 0); requestAnimationFrame(tick); }; requestAnimationFrame(tick); return true; })()`);
+  return async () => JSON.parse(await page.eval(`(() => { window.__cowSampling = false; return JSON.stringify(window.__cowSamples); })()`));
+}
+
+/** Hold a key down for `ms`, repeating every `every` ms as a keyboard does after its delay, then let it go. */
+async function holdKey(page, key, ms, { every = 50, delay = 300 } = {}) {
+  const base = { key, code: /^[a-z]$/.test(key) ? `Key${key.toUpperCase()}` : key === "'" ? "Quote" : key === ";" ? "Semicolon" : key, windowsVirtualKeyCode: /^[a-z]$/.test(key) ? key.toUpperCase().charCodeAt(0) : key === "'" ? 222 : 186 };
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...base, text: key });
+  await sleep(delay);
+  const end = Date.now() + ms - delay;
+  while (Date.now() < end) {
+    await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...base, text: key, autoRepeat: true });
+    await sleep(every);
+  }
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+}
+
+/** Wait until an expression gives the same value on several frames in a row; returns it. */
+async function atRest(page, expression, timeout = 3000) {
+  return page.eval(`new Promise((done) => { let last = null, same = 0; const end = performance.now() + ${timeout}; const tick = () => { const now = ${expression}; same = now === last ? same + 1 : 0; last = now; if (same >= 8 || performance.now() > end) return done(now); requestAnimationFrame(tick); }; requestAnimationFrame(tick); })`);
+}
+
+/**
+ * The largest move between two frames, how many frames moved at all, the
+ * mean time between frames, and the largest move against the time its frame
+ * took (a headless browser on a busy machine draws far fewer frames than a
+ * screen does: a smooth glide then moves further between two of them).
+ */
+function frameMoves(tops, times = null) {
+  const moves = tops.slice(1).map((top, i) => Math.abs(top - tops[i]));
+  const gaps = times ? times.slice(1).map((time, i) => time - times[i]) : [];
+  return {
+    largest: Math.round(Math.max(0, ...moves) * 10) / 10,
+    moved: moves.filter((move) => move > 0.25).length,
+    frames: moves.length,
+    range: Math.round(Math.max(...tops) - Math.min(...tops)),
+    frameMs: gaps.length ? Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length) : null,
+    perMs: gaps.length ? Math.round(Math.max(0, ...moves.map((move, i) => move / Math.max(1, gaps[i]))) * 1000) / 1000 : null,
+  };
+}
+
+/**
+ * Press a key that scrolls a step, `tries` times, each from the same place
+ * (`reset` puts it back), and say where each landed and what the frames in
+ * between showed: how many were part of the way, and whether any went past.
+ */
+async function stepLandings(page, expression, { press, reset, tries = 3 }) {
+  const landings = [];
+  for (let i = 0; i < tries; i += 1) {
+    await reset();
+    const from = await atRest(page, expression);
+    const stop = await sampleFrames(page, expression);
+    await press();
+    const to = await atRest(page, expression);
+    const seen = await stop();
+    const low = Math.min(from, to), high = Math.max(from, to);
+    landings.push({ from, to, between: seen.filter((value) => value > low && value < high).length, past: seen.some((value) => value < low || value > high) });
+  }
+  return landings;
+}
+
+/** Each landing a step of `step` from where it started, never past it, and part of the way on frames in at least two tries. */
+const steppedWell = (landings, step) =>
+  landings.every((landing) => landing.to - landing.from === step && !landing.past) &&
+  new Set(landings.map((landing) => landing.to)).size === 1 &&
+  landings.filter((landing) => landing.between >= 1).length >= 2;
+
 /** Puts the server's record of Mains back exactly as it was before this run. */
 let restoreStored = async () => undefined;
 
@@ -5846,6 +5920,34 @@ async function main() {
       })())`),
     );
     check("G goes to the last stop on the page, below every line", bottom.last && bottom.belowTheLines, bottom.on);
+
+    // -- holding j: the view follows the cursor, frame by frame --
+    // A short window, so the list has more lines than fit.
+    await page.resize(1440, 300);
+    await page.key("g");
+    await page.key("g");
+    const listView = `(() => { const v = document.querySelector(".cow-main"); if (!v) return null; const c = v.querySelector(".cow-cur"); const vr = v.getBoundingClientRect(); const cr = c?.getBoundingClientRect(); return [v.scrollTop, cr ? cr.top - vr.top : null, cr ? vr.bottom - cr.bottom : null, v.scrollHeight - v.clientHeight]; })()`;
+    const stopList = await sampleFrames(page, listView, { timed: true });
+    await holdKey(page, "j", 2000);
+    await atRest(page, `document.querySelector(".cow-main").scrollTop`);
+    const listTimed = (await stopList()).filter((sample) => sample[1]);
+    const listFrames = listTimed.map((sample) => sample[1]);
+    const cursorFrames = listFrames.filter((frame) => frame[1] !== null);
+    const outOfView = cursorFrames.filter((frame) => frame[1] < -1 || frame[2] < -1);
+    check("holding j for two seconds, the cursor line is in view on every frame", cursorFrames.length > 60 && outOfView.length === 0, JSON.stringify({ frames: cursorFrames.length, out: outOfView.slice(0, 3) }));
+    const listMoves = frameMoves(listFrames.map((frame) => frame[0]), listTimed.map((sample) => sample[0]));
+    const listRoom = listFrames[0]?.[3] ?? 0;
+    // The cursor moves a 17-pixel line every 50 ms, 0.34 pixels a millisecond: a jump moves a line at once,
+    // a glide no more than a little over the cursor's speed for the time a frame took, and never a line in one 60th of a second.
+    const moving = listFrames.findIndex((frame, i) => i > 0 && frame[0] !== listFrames[i - 1][0]);
+    const lastMove = listFrames.findLastIndex((frame, i) => i > 0 && frame[0] !== listFrames[i - 1][0]);
+    const during = lastMove > moving ? lastMove - moving + 1 : 0;
+    check(
+      "and the view follows it on many frames, never faster than the cursor goes, nor a line at once",
+      listRoom > 100 && listMoves.range > 100 && listMoves.perMs !== null && listMoves.perMs < 0.6 && listMoves.largest < Math.max(12, 0.6 * listMoves.frameMs) && listMoves.moved >= Math.max(8, during * 0.7),
+      JSON.stringify({ ...listMoves, room: listRoom, during }),
+    );
+    await page.resize(1440, 900);
   });
 
   await part("folding", {}, async () => {
@@ -6085,6 +6187,16 @@ async function main() {
     await shot("legend");
     await page.key("j");
     check("keys do nothing behind the legend", await page.eval(isCursor(ids.asks)));
+    // One j in a sheet: a step, eased over several frames, landing on the same place every time.
+    await page.resize(1440, 500);
+    const legendTop = `Math.round(document.querySelector("[data-cow-help] .cow-card").scrollTop)`;
+    const legendLandings = await stepLandings(page, legendTop, { reset: () => page.key("g"), press: () => page.key("j") });
+    check(
+      "in the legend, one j goes a step down, over several frames, to the same place every time",
+      legendLandings.every((landing) => landing.from === 0) && steppedWell(legendLandings, 60),
+      JSON.stringify(legendLandings),
+    );
+    await page.resize(1440, 900);
     await page.key("Escape");
     check("Escape closes the legend", await page.eval(`!document.querySelector("[data-cow-help]")`));
   });
@@ -6156,8 +6268,107 @@ async function main() {
       (await page.eval(`!document.activeElement?.closest("[data-cow-chat]")`)) &&
         (await page.eval(`!!document.querySelector("[data-cow-pane]")`)),
     );
+
+    // -- one ' in the chat: a step, over several frames, landing on the same place every time --
+    // The fixture's chat may be short: a tall block at its end makes room to scroll, and is taken away after.
+    const chatBox = `[...document.querySelectorAll("[data-cow-chat] *")].filter((el) => /auto|scroll/.test(getComputedStyle(el).overflowY) && el.clientHeight > 0).sort((a, b) => b.clientHeight - a.clientHeight)[0]`;
+    await page.eval(`(() => { const box = ${chatBox}; const rows = box.querySelectorAll("[data-timeline-row-id]"); const pad = document.createElement("div"); pad.dataset.cowTestRoom = ""; pad.style.height = "1500px"; (rows[rows.length - 1] ?? box.firstElementChild ?? box).append(pad); return true; })()`);
+    const chatTopNow = `Math.round(${chatBox}.scrollTop)`;
+    await page.key("\\");
+    await atRest(page, chatTopNow);
+    await page.key("'");
+    await atRest(page, chatTopNow);
+    let chatFirst = true;
+    const chatLandings = await stepLandings(page, chatTopNow, {
+      reset: async () => {
+        if (!chatFirst) await page.key(";");
+        chatFirst = false;
+      },
+      press: () => page.key("'"),
+    });
+    check(
+      "in the chat, one ' goes a step up, over several frames, to the same place every time",
+      new Set(chatLandings.map((landing) => landing.from)).size === 1 && steppedWell(chatLandings, -66),
+      JSON.stringify(chatLandings),
+    );
+    await page.eval(`document.querySelector("[data-cow-test-room]")?.remove(); true`);
+    await page.key("\\");
+    await atRest(page, chatTopNow);
+
+    // -- the keyboard stays with the page after a click --
+    const cursorNow = `${ROOT}?.querySelector(".cow-cur[data-cow-line]")?.dataset.cowLine ?? null`;
+    const focusNow = `(document.activeElement?.tagName ?? "none") + (document.activeElement?.closest("[data-cow-root]") ? " in the page" : " elsewhere")`;
+    /** j moves the cursor, and the chat has not got the keyboard; k puts it back. */
+    const jMoves = async () => {
+      const before = await page.eval(cursorNow);
+      await page.key("j");
+      const after = await page.eval(cursorNow);
+      const moved = before !== null && after !== null && after !== before && !(await page.eval(inChatNow));
+      if (moved) await page.key("k");
+      return { moved, before, after, focus: await page.eval(focusNow) };
+    };
+    await page.key("g");
+    await page.key("g");
+    await page.key("j");
+    // A point on the text of a message in the chat: not a link, a button or a field.
+    const messageText = `(() => { for (const row of [...document.querySelectorAll("[data-cow-chat] [data-timeline-row-id]")].reverse()) { const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT); for (let node = walker.nextNode(); node; node = walker.nextNode()) { const text = node.textContent ?? ""; if (text.trim().length < 16) continue; const range = document.createRange(); range.setStart(node, 0); range.setEnd(node, Math.min(text.length, 40)); const rect = range.getClientRects()[0]; if (!rect || rect.width < 60) continue; const x = rect.left + 4, y = rect.top + rect.height / 2; const hit = document.elementFromPoint(x, y); if (!hit || !node.parentElement?.contains(hit) && hit !== node.parentElement) continue; if (hit.closest("a, button, [role=button], input, textarea, [contenteditable=true]")) continue; return [x, y, Math.min(rect.right - 4, x + 50)]; } } return null; })()`;
+    const point = await page.eval(messageText);
+    check("the chat shows a message's text to click", point !== null);
+    if (point) {
+      await page.click(point[0], point[1]);
+      const afterMessage = await jMoves();
+      check("after clicking a message in the chat, j still moves the cursor", afterMessage.moved, JSON.stringify(afterMessage));
+      const again = await page.eval(messageText);
+      await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x: again[0], y: again[1], button: "left", buttons: 1, clickCount: 1 });
+      await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: (again[0] + again[2]) / 2, y: again[1], button: "left", buttons: 1 });
+      await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: again[2], y: again[1], button: "left", buttons: 1 });
+      await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: again[2], y: again[1], button: "left", buttons: 0, clickCount: 1 });
+      await sleep(300);
+      const selected = await page.eval(`String(getSelection())`);
+      const afterSelecting = await jMoves();
+      const kept = await page.eval(`String(getSelection())`);
+      check("after selecting text in the chat, j still moves the cursor, and the selection is still there", selected.length > 3 && afterSelecting.moved && kept === selected, JSON.stringify({ selected, kept, ...afterSelecting }));
+      await page.eval(`getSelection().removeAllRanges(); true`);
+    }
+    // Empty space: the page's heading, away from anything in it.
+    const emptySpace = `(() => { const head = document.querySelector(".cow-head"); const r = head.getBoundingClientRect(); for (let x = r.right - 6; x > r.left + r.width / 2; x -= 12) { const hit = document.elementFromPoint(x, r.top + 3); if (hit === head || hit?.classList.contains("cow-app")) return [x, r.top + 3]; } return null; })()`;
+    const empty = await page.eval(emptySpace);
+    check("the page has empty space to click", empty !== null);
+    if (empty) {
+      await page.click(empty[0], empty[1]);
+      const afterEmpty = await jMoves();
+      check("after clicking empty space on the page, j still moves the cursor", afterEmpty.moved, JSON.stringify(afterEmpty));
+    }
+    await page.key("/");
+    await page.key("j");
+    check("the filter still takes a typed j as text", (await page.eval(`document.querySelector("input[data-cow-filter]")?.value ?? null`)) === "j", String(await page.eval(`document.activeElement?.outerHTML.slice(0, 120)`)));
+    await page.key("Escape");
+    // Focus somewhere that is not the page: the page's keys do nothing.
+    await page.eval(`(() => { const outside = document.createElement("button"); outside.id = "cow-test-outside"; outside.textContent = "outside"; outside.style.cssText = "position: fixed; left: 0; bottom: 0; z-index: 99999"; document.body.append(outside); outside.focus(); return true; })()`);
+    const beforeOutside = await page.eval(cursorNow);
+    await page.key("j");
+    await page.key("j");
+    check(
+      "with focus outside the page, its keys do nothing",
+      (await page.eval(cursorNow)) === beforeOutside && (await page.eval(`document.activeElement?.id === "cow-test-outside"`)),
+      JSON.stringify({ before: beforeOutside, after: await page.eval(cursorNow), focus: await page.eval(focusNow) }),
+    );
+    if (empty) {
+      await page.click(empty[0], empty[1]);
+      const afterBack = await jMoves();
+      check("one click back into the page, and its keys work", afterBack.moved, JSON.stringify(afterBack));
+    }
+    await page.eval(`document.getElementById("cow-test-outside")?.remove(); true`);
+
     await page.key("Escape");
     check("Escape again closes the pane", await page.eval(`!document.querySelector("[data-cow-pane]")`));
+    // The queue shows beside the list when no chat is open.
+    const queueText = await page.eval(`(() => { const p = document.querySelector(".cow-queue li[data-cow-hint] p, .cow-queue li p"); if (!p) return null; const r = p.getBoundingClientRect(); return r.width > 0 ? [r.left + Math.min(20, r.width / 2), r.top + r.height / 2] : null; })()`);
+    if (queueText) {
+      await page.click(queueText[0], queueText[1]);
+      const afterNotice = await jMoves();
+      check("after clicking the text of an entry in the queue, j still moves the cursor", afterNotice.moved, JSON.stringify(afterNotice));
+    } else check("the queue has an entry to click", false);
   });
 
   await part("say-and-live", { needs: ["attention"] }, async () => {
