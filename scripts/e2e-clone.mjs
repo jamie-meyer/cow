@@ -599,7 +599,7 @@ async function briefDiffInClone({ plugin, project, model, rpc, signer, base, ext
 
     const brief = {
       summary: "Added app/file.txt.",
-      claims: [{ id: "file", text: "A new file app/file.txt was committed in the app repository, holding the single line \"change\".", label: "checked", evidence: [] }],
+      claims: [{ id: "file", text: "A new file app/file.txt was committed in the app repository, holding the single line \"change\".", label: "inferred" }],
     };
     const briefFile = join(base, "brief.json");
     writeFileSync(briefFile, JSON.stringify(brief));
@@ -617,7 +617,8 @@ async function briefDiffInClone({ plugin, project, model, rpc, signer, base, ext
     );
     check("the changed existing test in a brought repository is flagged with its folder", JSON.stringify(record?.shown?.flagged) === '["lib/test/a.test.js"]', JSON.stringify(record?.shown?.flagged));
     const checkerThread = record?.check?.runs?.[0]?.threadId;
-    const history = checkerThread ? await run(BB, ["thread", "history", checkerThread, "--json"]) : { stdout: "" };
+    // The checker's one prompt is its first message: in its event log.
+    const history = checkerThread ? await run(BB, ["thread", "log", checkerThread, "--json", "--limit", "20"]) : { stdout: "" };
     const strings = [];
     const walk = (value) => (typeof value === "string" ? strings.push(value) : value && typeof value === "object" ? Object.values(value).forEach(walk) : undefined);
     try {
@@ -627,9 +628,12 @@ async function briefDiffInClone({ plugin, project, model, rpc, signer, base, ext
     }
     const what = /WHAT CHANGED[\s\S]*?THE CLAIMS/.exec(strings.find((text) => text.includes("WHAT CHANGED")) ?? "")?.[0] ?? "";
     console.log(`the example's WHAT CHANGED:\n${what}`);
+    if (what === "") console.log(`the checker's log, as bb gave it: ${history.stdout.slice(0, 2000)} ${history.stderr ?? ""}`);
     check("the checker's prompt holds app/file.txt's diff and names each repository's base", what.includes("+++ b/app/file.txt") && what.includes("+change") && what.includes(`"app" (its files under app/): against ${heads.app.slice(0, 12)}`), what.slice(0, 400));
     const done = record?.check?.runs?.find((r) => r.status === "done");
     check("the checker found the claim about app/file.txt supported", done?.verdicts?.find((v) => v.id === "file")?.verdict === "supported", JSON.stringify(record?.check?.runs));
+    await bb("thread", "archive", id).catch(() => {});
+    await bb("environment", "cleanup", t.environmentId).catch((error) => console.error(`could not clean up ${t.environmentId}: ${error.message}`));
   } finally {
     await set("checkerModel", config.checkerModel);
     await set("checkerProvider", config.checkerProvider);
