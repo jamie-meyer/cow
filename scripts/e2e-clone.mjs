@@ -535,6 +535,8 @@ async function workspaceE2e() {
     }
     check("and the held clone is still there", heldDirty && existsSync(heldDirty.path));
     for (const entry of [heldDirty, heldFail].filter(Boolean)) await signer.must("workspace_held_remove", { id: entry.id });
+    // The example thread's clone is held too (the workspace file was edited in it): every held clone of this copy is the run's own.
+    for (const entry of (await rpc("workspace_state", null)).result.held) await signer.must("workspace_held_remove", { id: entry.id });
     const state5 = (await rpc("workspace_state", null)).result;
     check("the signed removal deletes them", state5.held.length === 0 && [heldDirty, heldFail].every((entry) => entry && !existsSync(entry.path)), JSON.stringify(state5.held).slice(0, 300));
   } finally {
@@ -599,7 +601,7 @@ async function briefDiffInClone({ plugin, project, model, rpc, signer, base, ext
 
     const brief = {
       summary: "Added app/file.txt.",
-      claims: [{ id: "file", text: "A new file app/file.txt was committed in the app repository, holding the single line \"change\".", label: "inferred" }],
+      claims: [{ id: "file", text: "The app repository has a new file, app/file.txt, holding the single line \"change\".", label: "inferred" }],
     };
     const briefFile = join(base, "brief.json");
     writeFileSync(briefFile, JSON.stringify(brief));
