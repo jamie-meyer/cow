@@ -36,9 +36,16 @@ const repoPath = z
 
 export const workspaceFileSchema = z
   .object({
-    /** Repositories a thread brings: `path` relative to the workspace folder or absolute; `as` the folder name in the clone. */
+    /**
+     * Repositories a thread brings: `path` relative to the workspace folder or absolute; `as` the folder name in the clone;
+     * `branch` "thread" (the default) puts it on the thread's branch, "keep" leaves it on what it was copied on, with no branch made.
+     */
     bring: z
-      .array(z.object({ path: repoPath, as: folderName, sync: command.optional(), setup: command.optional(), back: command.optional(), teardown: command.optional() }).strict())
+      .array(
+        z
+          .object({ path: repoPath, as: folderName, branch: z.enum(["thread", "keep"]).optional(), sync: command.optional(), setup: command.optional(), back: command.optional(), teardown: command.optional() })
+          .strict(),
+      )
       .max(50)
       .default([]),
     /** The workspace folder's own commands. */
@@ -130,6 +137,14 @@ export function commandFor(file: WorkspaceFile, as: string | null, kind: Command
   if (as === null) return file[kind] ?? null;
   return file.bring.find((item) => item.as === as)?.[kind] ?? null;
 }
+
+/** Whether a brought repository is left on its own branch (`"branch": "keep"`): no thread branch is made in it. The workspace folder (null) never is. */
+export function keepsBranch(file: WorkspaceFile, as: string | null): boolean {
+  return as !== null && file.bring.find((item) => item.as === as)?.branch === "keep";
+}
+
+/** Why back skips a repository the workspace file left on its own branch. */
+export const KEPT_WHY = 'left on its own branch ("branch": "keep"), so there is no thread branch to bring back; bring its commits back by hand, from the clone';
 
 /** A brought path resolved against the workspace folder (both POSIX). */
 export function resolveBringPath(folder: string, path: string): string {

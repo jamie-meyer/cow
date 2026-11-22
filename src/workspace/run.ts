@@ -21,6 +21,13 @@ const MAX_LINE = 500;
 const KEEP_BYTES = 64 * 1024;
 /** After SIGTERM at the time limit, SIGKILL this long later. */
 const KILL_GRACE_MS = 2000;
+/**
+ * After the command itself exits, how long to wait for the rest of its
+ * output. A process it left behind (in a session of its own, which the kill
+ * at the time limit does not reach) can hold its output open for ever; the
+ * run is over when the command is, not when every such process is.
+ */
+const OUTPUT_GRACE_MS = 1000;
 
 export interface RunVars {
   COW_SOURCE: string;
@@ -77,10 +84,14 @@ export function runCommand(args: { command: string; cwd: string; vars: RunVars; 
         if (child.pid !== undefined) process.kill(-child.pid, signal);
       } catch {}
     };
+    let exitCode: number | null = null;
+    let lastResort: NodeJS.Timeout | null = null;
     const timer = setTimeout(() => {
       timedOut = true;
       kill("SIGTERM");
       setTimeout(() => kill("SIGKILL"), KILL_GRACE_MS).unref();
+      // Stopped or not, and whatever still holds its output, the run ends here.
+      lastResort = setTimeout(() => finish(null), KILL_GRACE_MS + OUTPUT_GRACE_MS);
     }, args.timeoutMs);
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
@@ -88,12 +99,20 @@ export function runCommand(args: { command: string; cwd: string; vars: RunVars; 
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      if (lastResort) clearTimeout(lastResort);
+      // A process left behind may still hold the pipes: stop reading them.
+      child.stdout.destroy();
+      child.stderr.destroy();
       const tail = lastLines(output + extra);
       if (timedOut) tail.push(`(stopped: it ran longer than ${Math.round(args.timeoutMs / 1000)} s)`);
       done({ at, ms: Math.round(performance.now() - started), code: timedOut ? null : code, timedOut, tail: tail.slice(-TAIL_LINES) });
     };
     child.on("error", (error) => finish(127, `\n${error.message}`));
-    child.on("close", (code) => finish(code));
+    child.on("exit", (code) => {
+      exitCode = code;
+      setTimeout(() => finish(exitCode), OUTPUT_GRACE_MS);
+    });
+    child.on("close", (code) => finish(code ?? exitCode));
   });
 }
 

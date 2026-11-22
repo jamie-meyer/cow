@@ -2257,7 +2257,9 @@ The `workspace` commands are described in [docs/clone.md](clone.md#the-workspace
 `workspace` lists each workspace folder cow knows, whether its
 `cow.workspace.json` is approved, changed or missing, and each repository's
 last sync (when, exit code), whether it is dirty now, and which commands it
-has, never their text. `workspace add` only proposes a folder: its file
+has, never their text; a repository the file leaves on its own branch
+(`"branch": "keep"`) is marked "keeps its own branch", here and in `W`.
+`workspace add` only proposes a folder: its file
 waits for your approval on the page. `workspace sync` runs the approved sync
 commands; anyone may run it. `workspace back` shows what bringing a thread's
 work back would run, for each repository how many commits it has that its
@@ -2267,6 +2269,34 @@ from removal (see [When the clone is removed](clone.md#when-the-clone-is-removed
 each one's id, its thread's title, when it was held, why and where it is,
 never a command's output. Nothing in the CLI removes one or runs its
 teardown: you do, from `W` on the page, signed.
+
+Three rules of the copy-on-write workspace, in full in
+[docs/clone.md](clone.md):
+
+- **The copy.** A file or directory that disappears from a source while it
+  is being cloned (git's `.git/index.lock`, made and removed by any `git
+  status` there) is left out, at any depth, and the clone goes on; any other
+  error, such as a permission, a full disk or a source gone altogether,
+  fails it. A failed clone leaves nothing behind: asking again for the same
+  thread starts over. A command (sync, setup, back, teardown) is over when it
+  exits, so one that leaves a process running cannot keep the next clone or
+  removal on the machine waiting.
+- **What counts as saved.** When bb removes a clone, a commit counts as saved
+  when the source repository has it, or when one of the clone's own
+  remote-tracking refs (`refs/remotes/…`) contains it: a branch the thread
+  pushed, or a newer `main` it fetched, does not hold the clone. That is the
+  clone's own record of what was pushed or fetched; cow contacts no remote,
+  so a remote that later deleted the branch would not agree. Uncommitted
+  changes, a stash, and commits on a local branch or a detached HEAD that no
+  remote-tracking ref contains still hold it.
+- **`"branch": "keep"`.** On a `bring` entry, it leaves that repository on
+  whatever it was copied on, with no thread branch made in it; the default
+  (`"thread"`, or no field) puts it on the thread's branch, and the workspace
+  folder always is. The field is part of the approved content: changing it
+  waits for your approval like any other change. Sync works as before (it
+  runs in the sources). Bringing work back skips such a repository, saying
+  "left on its own branch", and runs nothing for it; `B` names it as not
+  looked at; bring its commits back by hand.
 
 **What a workspace keeps, and where.** In cow's own storage (bb's database):
 each workspace folder cow knows, by real path, with the content you last

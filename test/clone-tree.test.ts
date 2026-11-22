@@ -1,7 +1,8 @@
 // The cloner, on temporary directories. These need macOS and APFS; the perl
 // helper is used so they also run where osascript is refused.
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
+import fs, { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -161,4 +162,99 @@ test("EXDEV from the helper stops with an error naming both volumes, and nothing
     return true;
   });
   assert.throws(() => lstatSync(destination));
+});
+
+/** Run `work` with `fs[name]` wrapped by `wrap`, as the cloner's own imports see it. */
+async function withPatched<K extends "lstatSync" | "readdirSync">(name: K, wrap: (original: (typeof fs)[K]) => (typeof fs)[K], work: () => Promise<void>): Promise<void> {
+  const original = fs[name];
+  fs[name] = wrap(original);
+  syncBuiltinESMExports();
+  try {
+    await work();
+  } finally {
+    fs[name] = original;
+    syncBuiltinESMExports();
+  }
+}
+
+test("an entry that disappears between being listed and being looked at is left out, a file or a directory", { skip: !mac }, async () => {
+  const source = fresh("vanish-walk");
+  writeFileSync(join(source, "keep.txt"), "keep");
+  mkdirSync(join(source, ".git"));
+  writeFileSync(join(source, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(source, ".git", "index.lock"), "");
+  mkdirSync(join(source, "gone", "deeper"), { recursive: true });
+  writeFileSync(join(source, "gone", "a.txt"), "a");
+  writeFileSync(join(source, "gone", "deeper", "b.txt"), "b");
+  mkdirSync(join(source, "listed"));
+  writeFileSync(join(source, "listed", "c.txt"), "c");
+  const destination = join(fresh("vanish-walk-out"), "clone");
+  const removed = new Set<string>();
+  // index.lock is deleted just before it is looked at; "gone" just before it is looked at; "listed" after it was looked at, before it is listed.
+  await withPatched("lstatSync", (lstat) => ((path: fs.PathLike, ...rest: unknown[]) => {
+    const text = String(path);
+    if (!removed.has(text) && (text === join(source, ".git", "index.lock") || text === join(source, "gone"))) {
+      removed.add(text);
+      rmSync(text, { recursive: true, force: true });
+    }
+    return (lstat as (...a: unknown[]) => unknown)(path, ...rest);
+  }) as typeof fs.lstatSync, async () => {
+    await withPatched("readdirSync", (readdir) => ((path: fs.PathLike, ...rest: unknown[]) => {
+      if (!removed.has(String(path)) && String(path) === join(source, "listed")) {
+        removed.add(String(path));
+        rmSync(String(path), { recursive: true, force: true });
+      }
+      return (readdir as (...a: unknown[]) => unknown)(path, ...rest);
+    }) as typeof fs.readdirSync, async () => {
+      const result = await cloneTree(helper, source, destination, { chunk: 1 });
+      assert.equal(result.vanished, 3);
+    });
+  });
+  assert.deepEqual(list(destination), [".git", ".git/HEAD", "keep.txt"]);
+});
+
+test("an entry that disappears between being listed and being cloned is left out, at any depth", { skip: !mac }, async () => {
+  const source = fresh("vanish-copy");
+  mkdirSync(join(source, "repo", ".git"), { recursive: true });
+  writeFileSync(join(source, "repo", ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(source, "repo", ".git", "index.lock"), "");
+  mkdirSync(join(source, "big", "inner"), { recursive: true });
+  for (let i = 0; i < 4; i += 1) writeFileSync(join(source, "big", "inner", `f${i}.txt`), `${i}`);
+  writeFileSync(join(source, "big", "x.txt"), "x");
+  mkdirSync(join(source, "small"));
+  writeFileSync(join(source, "small", "s.txt"), "s");
+  writeFileSync(join(source, "stay.txt"), "stay");
+  const doomed = new Map([
+    // A single file in a recreated directory.
+    [join(source, "repo", ".git", "index.lock"), "file"],
+    // A recreated directory (more entries than a chunk), files in it.
+    [join(source, "big", "inner"), "dir"],
+    // A directory cloned in one call.
+    [join(source, "small"), "dir"],
+  ]);
+  const racing: CloneCall = {
+    kind: "test",
+    clone: (from, to) => {
+      for (const path of doomed.keys()) rmSync(path, { recursive: true, force: true });
+      return helper.clone(from, to);
+    },
+    close: () => {},
+  };
+  const destination = join(fresh("vanish-copy-out"), "clone");
+  const result = await cloneTree(racing, source, destination, { chunk: 3 });
+  assert.ok(result.vanished >= 3, `vanished ${result.vanished}`);
+  assert.deepEqual(list(destination), ["big", "big/x.txt", "repo", "repo/.git", "repo/.git/HEAD", "stay.txt"]);
+});
+
+test("a permission error still fails the clone with its message; so does a source that is gone", { skip: !mac }, async () => {
+  const source = fresh("denied");
+  mkdirSync(join(source, "locked"));
+  writeFileSync(join(source, "locked", "secret.txt"), "s");
+  chmodSync(join(source, "locked"), 0o000);
+  try {
+    await assert.rejects(cloneTree(helper, source, join(fresh("denied-out"), "clone"), { chunk: 1 }), /EACCES: permission denied, scandir .*locked/);
+  } finally {
+    chmodSync(join(source, "locked"), 0o755);
+  }
+  await assert.rejects(cloneTree(helper, join(base, "no-such-source"), join(fresh("gone-out"), "clone")), /ENOENT/);
 });

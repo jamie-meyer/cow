@@ -9,6 +9,9 @@ import { after, before, test } from "node:test";
 import { type CloneCall, startHelper } from "../src/clone/helper.ts";
 import { type Layout, layout, removeClone, sweepTrash } from "../src/clone/remove.ts";
 import { createClone } from "../src/clone/workspace.ts";
+import { sha256Hex } from "../src/signing/backend.ts";
+import { type Approved, KEPT_WHY, approvedFile, backCandidates, backFromClone } from "../src/workspace/ops.ts";
+import { RepoLocks, RunStore } from "../src/workspace/run.ts";
 
 const mac = process.platform === "darwin";
 let helper: CloneCall;
@@ -237,4 +240,26 @@ test("the sweep empties leftover trash", { skip: !mac }, async () => {
   assert.equal(await sweepTrash(w.paths), 2);
   assert.deepEqual(readdirSync(w.paths.trash), []);
   assert.ok(lstatSync(w.paths.clones).isDirectory());
+});
+
+test('"branch": "keep": that repository stays on what it was copied on, the others and the workspace folder get the thread\'s branch; back skips it with the reason', { skip: !mac }, async () => {
+  const w = world();
+  const text = JSON.stringify({ bring: [{ path: w.alpha, as: "alpha", branch: "keep", back: "true" }, { path: w.beta, as: "beta", branch: "thread", back: "true" }] });
+  const approved: Approved = { folder: w.workspace, text, hash: sha256Hex(text) };
+  const commands = { store: new RunStore(join(w.root, "data")), locks: new RepoLocks() };
+  const made = await createClone({ paths: w.paths, pathKey: "keep1", branch: "cow/thread-k", inputs: null, workspace: { approved, pick: null }, commands, helper });
+  const clone = made.path;
+  assert.equal(run(clone, "branch", "--show-current"), "cow/thread-k");
+  assert.equal(run(join(clone, "beta"), "branch", "--show-current"), "cow/thread-k");
+  assert.equal(run(join(clone, "alpha"), "branch", "--show-current"), "main");
+  assert.equal(run(join(clone, "alpha"), "branch", "--list", "cow/thread-k"), "");
+  assert.ok(!existsSync(join(clone, "alpha", ".git", "index.lock")), "still made independent: lock removed");
+  assert.ok(!existsSync(join(clone, "alpha", ".git", "worktrees")), "still made independent: worktree list removed");
+  assert.deepEqual(made.resource.bring.map((item) => [item.as, item.branched]), [["alpha", false], ["beta", true]]);
+  // A commit in each: back runs for beta and skips alpha, saying why.
+  for (const repo of ["alpha", "beta"]) run(join(clone, repo), "commit", "-q", "--allow-empty", "-m", "work");
+  const plan = await backCandidates(w.paths, clone, approvedFile(approved));
+  assert.deepEqual(plan.repos.map((repo) => [repo.as, repo.ahead, repo.why]), [[null, 0, null], ["alpha", null, KEPT_WHY], ["beta", 1, null]]);
+  const results = await backFromClone(commands, w.paths, clone, approved);
+  assert.deepEqual(results.map((result) => [result.as, result.status]), [[null, "nothing-new"], ["alpha", "skipped"], ["beta", "ran"]]);
 });

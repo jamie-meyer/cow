@@ -87,7 +87,13 @@ The clone's record keeps the hash of the approved content it was made from.
    `<clone>/<as>`. Large trees are cloned in chunks of at most 5,000 entries,
    so other programs' file renames on the volume never wait more than a few
    tens of milliseconds (one call for the whole tree would hold them for as
-   long as it runs). Symlinks are cloned as links, never followed.
+   long as it runs). Symlinks are cloned as links, never followed. The
+   sources are live: git, an editor or a build may create and delete files
+   in them while they are cloned (`git status` makes and removes
+   `.git/index.lock`). A file or directory that disappears between being
+   listed and being looked at or cloned is left out, at any depth, and the
+   clone goes on. Any other error (a permission, a full disk, a source that is
+   gone altogether) still fails it.
 3. **Left out.** Anything matching an exclude pattern never exists in the
    clone, even for a moment. The default list is `.env`, `.env.*`, `*.pem`,
    `*.key`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `.aws`, `.ssh`, `*.sock`,
@@ -101,7 +107,10 @@ The clone's record keeps the hash of the approved content it was made from.
    removed, since it is stale in the clone and `git worktree remove` there
    could delete a real worktree; and a branch named for the thread is created
    from the source's HEAD and checked out. Uncommitted, staged and untracked
-   changes come along and stay in place. Git hooks do not run.
+   changes come along and stay in place. Git hooks do not run. A brought
+   repository with `"branch": "keep"` in the workspace file is made
+   independent the same way but left on whatever it was copied on: no thread
+   branch is made in it. The workspace folder always gets the thread's branch.
 5. **Read-only.** Each `readOnly` path loses write permission for everyone,
    recursively. Notes are context for the thread, a snapshot it must not
    edit: what it wrote there would be lost with the clone.
@@ -153,6 +162,7 @@ knows nothing about git or any other tool: `sync`, `setup`, `back` and
 | --- | --- |
 | `bring[].path` | The repository: relative to the workspace folder, or absolute. |
 | `bring[].as` | Its folder name in the clone, as for the explicit inputs. |
+| `bring[].branch` | `"thread"` (the default, also when absent): the clone of it is put on the thread's branch. `"keep"`: it stays on whatever it was copied on, and no thread branch is made in it. For a workspace that brings several repositories of which a thread usually changes one. |
 | `bring[].sync`, `.setup`, `.back`, `.teardown` | Optional commands for that repository. |
 | `sync`, `setup`, `back`, `teardown` | Optional commands for the workspace folder itself. |
 | `readOnly`, `exclude`, `includeSecrets` | As for the explicit inputs. |
@@ -211,7 +221,9 @@ the command's text.
 | `COW_WORKSPACE` | the workspace folder's real path |
 
 At the time limit the command and everything it started get SIGTERM, then
-SIGKILL two seconds later. One command runs at a time per repository. Of
+SIGKILL two seconds later. A command is over when it exits: a process it
+left running (a server it started in the background, say) does not keep it
+going, and output that process writes after that second is not kept. One command runs at a time per repository. Of
 each run cow keeps when it ran, how long it took, its exit code and its last
 20 lines of output, in its host data folder only
 (`~/.bb/plugins/cow/host-data/workspace/runs.json`, readable by you alone):
@@ -260,6 +272,14 @@ yours alone, and only the page does it: `B` on the thread's line names each
 repository with new commits and the command it would run; `y` runs them,
 signed by your page's key, and shows what each exited with; any other key
 cancels. Each run is added to the log.
+
+A repository with `"branch": "keep"` has no thread branch to compare, so
+bringing work back skips it and says why ("left on its own branch"), and
+runs nothing for it, also when the thread committed there; `B` names it as
+not looked at. Bring such work back by hand (below); until you do, a commit
+there holds the clone when it is removed, like any commit its source does
+not have. Sync is not affected: it runs in the sources, whatever a clone is
+on.
 
 `bb cow workspace back <thread>` runs nothing, for anyone. It prints the same
 plan, each repository with its new commits and the command that would run,
@@ -362,9 +382,15 @@ work that would be lost:
 - anything uncommitted or untracked (`git status --porcelain`; ignored files
   do not count; in the workspace folder, the brought repositories inside it
   are left to their own check);
-- commits its source repository does not have: a branch, a stash or a
-  detached HEAD whose commit the source has no object for. Work already
-  brought back, or pushed and then fetched into the source, does not count.
+- commits saved nowhere: a branch, a stash or a detached HEAD whose commit
+  the source has no object for, and that none of the clone's own
+  remote-tracking refs (`refs/remotes/…`) contains. Work already brought
+  back, pushed from the clone, or fetched into the clone from a remote (a
+  newer `main`, say) does not count.
+
+What a remote has is read from the clone's own record of what it pushed or
+fetched; cow contacts no remote. A remote that later lost the branch (it was
+deleted there, or force-pushed over) is not asked, so it would not agree.
 
 A folder that is not a git repository cannot be judged and does not hold the
 clone. Changes that came along from a dirty source count like any other,
@@ -396,7 +422,8 @@ look inside or fetch from it. There, on a held clone:
 - `t` runs the approved teardown again, where the clone is now, and judges
   it as removal does: with nothing left to hold it, it is removed;
 - `d` asks to remove it for good, naming what would be lost (each
-  repository's uncommitted changes and commits its source does not have);
+  repository's uncommitted changes and commits neither its source nor a
+  remote has);
   `y` removes it, any other key keeps it.
 
 Each is signed by your page's key and added to the log; so is each clone

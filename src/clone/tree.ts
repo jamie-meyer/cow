@@ -11,8 +11,15 @@
 //
 // Cloning across volumes fails (EXDEV); it is reported and never replaced by
 // a copy.
+//
+// The source is live: git, an editor or a build may create and delete files
+// in it while it is walked and cloned (`.git/index.lock` above all). An entry
+// that is gone by the time it is looked at, listed or cloned (ENOENT, or
+// ENOTDIR for a directory replaced by a file) is left out, at any depth, and
+// the clone goes on. Every other error, and a source that is gone altogether,
+// still fails the clone.
 import { execFileSync } from "node:child_process";
-import { type Stats, chmodSync, lstatSync, mkdirSync, readdirSync, statSync, utimesSync } from "node:fs";
+import { type Stats, chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CloneCall } from "./helper.ts";
 import { DEFAULT_EXCLUDES, type Matcher, createMatcher } from "./glob.ts";
@@ -20,6 +27,8 @@ import { DEFAULT_EXCLUDES, type Matcher, createMatcher } from "./glob.ts";
 export const EXDEV = 18;
 export const ENOTSUP = 45;
 export const EEXIST = 17;
+export const ENOENT = 2;
+export const ENOTDIR = 20;
 
 export interface CloneTreeOptions {
   /** Most entries one clonefile call may clone. */
@@ -46,6 +55,8 @@ export interface CloneTreeResult {
   excluded: number;
   /** Sockets, FIFOs and devices left out. */
   skipped: number;
+  /** Entries that disappeared from the source between being listed and being looked at or cloned, left out. */
+  vanished: number;
   /** Largest number of entries in one call. */
   largestChunk: number;
   walkMs: number;
@@ -106,18 +117,47 @@ export function errnoText(errno: number): string {
   return names[errno] ?? `errno ${errno}`;
 }
 
-function walk(source: string, matcher: Matcher, signal: AbortSignal | undefined): { root: Node; excluded: number; skipped: number } {
+/** True for the errors that mean an entry is no longer there: it was deleted, or a directory on its path was replaced. */
+export function isGone(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** lstat, or null when the entry is gone. */
+function lstatIfThere(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (isGone(error)) return null;
+    throw error;
+  }
+}
+
+function walk(source: string, matcher: Matcher, signal: AbortSignal | undefined): { root: Node; excluded: number; skipped: number; vanished: number } {
   let excluded = 0;
   let skipped = 0;
-  const visit = (absolute: string, relative: string, name: string, stats: Stats): Node => {
+  let vanished = 0;
+  /** A node, or null when the directory disappeared before it could be listed. */
+  const visit = (absolute: string, relative: string, name: string, stats: Stats): Node | null => {
     const node: Node = { name, relative, stats, count: 1, clean: true };
     if (!stats.isDirectory()) return node;
     signal?.throwIfAborted();
     node.children = [];
-    for (const entry of readdirSync(absolute).sort()) {
+    let names: string[];
+    try {
+      names = readdirSync(absolute).sort();
+    } catch (error) {
+      if (relative !== "" && isGone(error)) return null;
+      throw error;
+    }
+    for (const entry of names) {
       const childAbsolute = join(absolute, entry);
       const childRelative = relative === "" ? entry : `${relative}/${entry}`;
-      const childStats = lstatSync(childAbsolute);
+      const childStats = lstatIfThere(childAbsolute);
+      if (childStats === null) {
+        vanished += 1;
+        continue;
+      }
       if (matcher.matches(childRelative, childStats.isDirectory())) {
         excluded += 1;
         node.clean = false;
@@ -129,6 +169,10 @@ function walk(source: string, matcher: Matcher, signal: AbortSignal | undefined)
         continue;
       }
       const child = visit(childAbsolute, childRelative, entry, childStats);
+      if (child === null) {
+        vanished += 1;
+        continue;
+      }
       node.children.push(child);
       node.count += child.count;
       if (!child.clean) node.clean = false;
@@ -137,7 +181,7 @@ function walk(source: string, matcher: Matcher, signal: AbortSignal | undefined)
   };
   const stats = lstatSync(source);
   if (!stats.isDirectory()) throw new CloneError(`${source} is not a directory`);
-  return { root: visit(source, "", "", stats), excluded, skipped };
+  return { root: visit(source, "", "", stats)!, excluded, skipped, vanished };
 }
 
 /** Clone `source` to `destination`, which must not exist yet; its folder must. */
@@ -155,18 +199,25 @@ export async function cloneTree(helper: CloneCall, source: string, destination: 
   }
   checkSameVolume(source, dirname(destination));
 
-  const { root, excluded, skipped } = walk(source, matcher, options.signal);
+  const { root, excluded, skipped, vanished } = walk(source, matcher, options.signal);
   const walked = performance.now();
   const result: CloneTreeResult = {
-    entries: root.count, chunks: 0, files: 0, recreated: 0, excluded, skipped, largestChunk: 0, walkMs: walked - started, cloneMs: 0, totalMs: 0,
+    entries: root.count, chunks: 0, files: 0, recreated: 0, excluded, skipped, vanished, largestChunk: 0, walkMs: walked - started, cloneMs: 0, totalMs: 0,
   };
 
-  const call = async (from: string, to: string, entries: number): Promise<void> => {
+  /** Clone one entry; false when it disappeared from the source after it was listed (it is left out). */
+  const call = async (from: string, to: string, entries: number, top: boolean): Promise<boolean> => {
     options.signal?.throwIfAborted();
     const errno = await helper.clone(from, to);
     if (errno === EXDEV || errno === ENOTSUP) throw volumeError(from, to, errno);
+    // ENOENT names the source or the destination's folder; cow made the folder, so it is the source only when the source is gone now.
+    if (!top && (errno === ENOENT || errno === ENOTDIR) && lstatIfThere(from) === null && lstatIfThere(dirname(to)) !== null) {
+      result.vanished += 1;
+      return false;
+    }
     if (errno !== 0) throw new CloneError(`clonefile ${from} -> ${to} failed: ${errnoText(errno)}`, errno);
     result.largestChunk = Math.max(result.largestChunk, entries);
+    return true;
   };
 
   const observeAll = (node: Node, absolute: string) => {
@@ -175,28 +226,45 @@ export async function cloneTree(helper: CloneCall, source: string, destination: 
     for (const child of node.children ?? []) observeAll(child, join(absolute, child.name));
   };
 
-  const place = async (node: Node, from: string, to: string): Promise<void> => {
+  /** Place one node; the number of entries it put in the destination. */
+  const place = async (node: Node, from: string, to: string): Promise<number> => {
+    const top = node.relative === "";
     if (node.children === undefined) {
-      await call(from, to, 1);
+      if (!(await call(from, to, 1, top))) return 0;
       result.files += 1;
-      return;
+      return 1;
     }
     if (node.clean && node.count <= chunk) {
-      await call(from, to, node.count);
+      if (!(await call(from, to, node.count, top))) return 0;
       result.chunks += 1;
-      return;
+      return node.count;
+    }
+    const gone = () => !top && lstatIfThere(from)?.isDirectory() !== true;
+    if (gone()) {
+      // The directory went away after it was listed: none of it is cloned.
+      result.vanished += 1;
+      return 0;
     }
     mkdirSync(to, { mode: 0o700 });
     result.recreated += 1;
-    for (const child of node.children) await place(child, join(from, child.name), join(to, child.name));
+    let placed = 1;
+    for (const child of node.children) placed += await place(child, join(from, child.name), join(to, child.name));
+    if (gone()) {
+      // It went away while its entries were being cloned: what was cloned of it goes too.
+      rmSync(to, { recursive: true, force: true });
+      result.recreated -= 1;
+      result.vanished += 1;
+      return 0;
+    }
     // Mode and times last: adding the children changed the times, and a
     // directory without write permission could not have taken them.
     chmodSync(to, node.stats.mode & 0o7777);
     utimesSync(to, node.stats.atime, node.stats.mtime);
+    return placed;
   };
 
   observeAll(root, source);
-  await place(root, source, destination);
+  result.entries = await place(root, source, destination);
   const ended = performance.now();
   result.cloneMs = ended - walked;
   result.totalMs = ended - started;

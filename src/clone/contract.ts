@@ -112,6 +112,8 @@ const repoStatus = z.object({
   commands: z.object({ sync: z.boolean(), setup: z.boolean(), back: z.boolean(), teardown: z.boolean() }),
   sync: runSummary.nullable(),
   lastOkSyncAt: z.number().nullable(),
+  /** Left on its own branch (`"branch": "keep"`): a clone makes no thread branch in it. */
+  keep: z.boolean().optional(),
 });
 export type RepoStatusWire = z.infer<typeof repoStatus>;
 const syncResult = z.object({

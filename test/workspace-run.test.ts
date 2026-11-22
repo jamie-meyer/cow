@@ -173,3 +173,18 @@ test("sync before clone: an old sync is redone first, and a failure is a warning
   await createClone({ paths, pathKey: "k6", branch: "cow/t6", inputs: null, workspace: { approved: w.approved, pick: ["web"] }, commands: deps, helper });
   assert.equal(existsSync(join(w.web, "pulled")), false);
 });
+
+test("a command is over when it exits, even when a process it left in a session of its own still holds its output", async () => {
+  const dir = mkdtempSync(join(base, "cmd-"));
+  const vars = { COW_SOURCE: "/s", COW_AS: ".", COW_WORKSPACE: "/w" };
+  // The detached process keeps stdout open for 30 s; the time limit is longer than this test waits.
+  const left = await runCommand({ command: "perl -e 'use POSIX; fork and exit; POSIX::setsid(); sleep 30'; echo started; exit 4", cwd: dir, vars, timeoutMs: 60_000 });
+  assert.equal(left.code, 4);
+  assert.equal(left.timedOut, false);
+  assert.deepEqual(left.tail, ["started"]);
+  assert.ok(left.ms < 5000, `took ${left.ms} ms`);
+  // One that outlives its time limit and leaves such a process behind ends at the limit too.
+  const stuck = await runCommand({ command: "perl -e 'use POSIX; fork and exit; POSIX::setsid(); sleep 30'; sleep 30", cwd: dir, vars, timeoutMs: 300 });
+  assert.equal(stuck.timedOut, true);
+  assert.ok(stuck.ms < 5000, `took ${stuck.ms} ms`);
+});

@@ -8,7 +8,7 @@ export interface Unsaved {
   repo: boolean;
   /** Uncommitted, staged or untracked entries (`git status --porcelain`); ignored files do not count. */
   uncommitted: number;
-  /** Branches (and a detached HEAD or a stash) whose commits the source does not have. */
+  /** Branches (and a detached HEAD or a stash) with commits that are neither in the source nor in a remote-tracking ref of the clone. */
   branches: string[];
   /** Why it could not be told, when it could not. */
   error: string | null;
@@ -60,7 +60,7 @@ export function reasonText(reason: HoldReason): string {
     case "uncommitted":
       return `${nameOf(reason.as)}: ${reason.count} uncommitted or untracked ${reason.count === 1 ? "change" : "changes"}, and no teardown`;
     case "unsaved-commits":
-      return `${nameOf(reason.as)}: commits its source does not have (${reason.branches.join(", ")}), and no teardown`;
+      return `${nameOf(reason.as)}: commits neither its source nor a remote has (${reason.branches.join(", ")}), and no teardown`;
     case "cannot-check":
       return `${nameOf(reason.as)}: could not tell whether it holds unsaved work (${reason.why})`;
   }
@@ -72,7 +72,7 @@ export function lossText(as: string | null, unsaved: Unsaved): string | null {
   if (unsaved.error !== null) return `${nameOf(as)}: unknown (${unsaved.error})`;
   const parts = [
     ...(unsaved.uncommitted > 0 ? [`${unsaved.uncommitted} uncommitted or untracked ${unsaved.uncommitted === 1 ? "change" : "changes"}`] : []),
-    ...(unsaved.branches.length > 0 ? [`commits its source does not have on ${unsaved.branches.join(", ")}`] : []),
+    ...(unsaved.branches.length > 0 ? [`commits neither its source nor a remote has on ${unsaved.branches.join(", ")}`] : []),
   ];
   return parts.length === 0 ? null : `${nameOf(as)}: ${parts.join(" and ")}`;
 }

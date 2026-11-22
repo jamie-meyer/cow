@@ -12,7 +12,7 @@ import { git } from "./git.ts";
 export { git };
 import { type Layout, checkPathKey, donePath, removeClone, resolveCloneFolder, strictlyInside } from "./remove.ts";
 import { type CloneTreeResult, checkSameVolume, cloneTree } from "./tree.ts";
-import { resolveBringPath } from "../workspace/file.ts";
+import { keepsBranch, resolveBringPath } from "../workspace/file.ts";
 import { type Approved, type CommandDeps, approvedFile, runSetups, syncBeforeClone } from "../workspace/ops.ts";
 
 export class StepError extends Error {}
@@ -132,8 +132,13 @@ function observer(notes: Notes, part: string, root: string, sources: string[]) {
 }
 
 
-/** Make a cloned repository independent, and put it on the thread's branch from the source's HEAD; changes stay. */
-async function fixGit(repo: string, branch: string): Promise<boolean> {
+/**
+ * Make a cloned repository independent, and put it on the thread's branch
+ * from the source's HEAD; changes stay. With `branch` null (`"branch": "keep"`)
+ * it stays on what it was copied on and no branch is made. True when it was
+ * put on the thread's branch.
+ */
+async function fixGit(repo: string, branch: string | null): Promise<boolean> {
   const dotGit = join(repo, ".git");
   if (!isDirectory(dotGit)) return false;
   for (const name of readdirSync(dotGit)) if (name.endsWith(".lock")) unlinkSync(join(dotGit, name));
@@ -149,6 +154,7 @@ async function fixGit(repo: string, branch: string): Promise<boolean> {
   if (isDirectory(refs)) dropLocks(refs);
   // The source's list of linked worktrees: stale here, and `git worktree remove` in the clone could delete a real one.
   if (lstatSync(join(dotGit, "worktrees"), { throwIfNoEntry: false }) !== undefined) rmSync(join(dotGit, "worktrees"), { recursive: true, force: true });
+  if (branch === null) return false;
   const checkout = await git(repo, ["checkout", "--quiet", "-b", branch]);
   if (checkout.code !== 0) throw new StepError(`git checkout -b ${branch} failed: ${checkout.stderr.trim().slice(0, 500)}`);
   return true;
@@ -268,8 +274,9 @@ export async function createClone(args: {
     step = "put the workspace folder's repository on the thread's branch";
     branched.push(facts[0]!.isRepo ? await fixGit(workspace, branch) : false);
     for (const item of bring) {
-      step = `put ${item.as} on the thread's branch`;
-      branched.push(facts[bring.indexOf(item) + 1]!.isRepo ? await fixGit(join(workspace, item.as), branch) : false);
+      const keep = fromFile !== null && keepsBranch(fromFile.file, item.as);
+      step = keep ? `make ${item.as}'s repository independent (it keeps its own branch)` : `put ${item.as} on the thread's branch`;
+      branched.push(facts[bring.indexOf(item) + 1]!.isRepo ? await fixGit(join(workspace, item.as), keep ? null : branch) : false);
     }
 
     for (const rel of inputs.readOnly) {

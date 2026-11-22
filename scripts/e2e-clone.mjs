@@ -43,7 +43,13 @@
 // uncommitted file in web (no teardown) is held, listed by `bb <id>
 // workspace`, with its files intact at the held path; a third's, whose
 // teardown fails, is held; unsigned removal is refused; the signed
-// `workspace_held_remove` deletes both.
+// `workspace_held_remove` deletes both. Last, with "branch": "keep" on api
+// (and approval asked again for it): sync still runs for api; four threads'
+// clones are made while a loop runs `git status` in both sources; web has the
+// thread's branch and api stays on main with none; back skips api and says
+// why; in web the check commits on a new branch in two clones and pushes it
+// from one, and fetches a newer main into a third: the pushed one and the
+// fetched one are removed, the unpushed one is held naming the branch.
 // The thread is archived at the end, also after a failure. The bb CLI is run
 // without BB_THREAD_ID for the "outside any thread" calls, as a terminal would.
 //
@@ -533,6 +539,82 @@ async function workspaceE2e() {
     for (const entry of [heldDirty, heldFail].filter(Boolean)) await signer.must("workspace_held_remove", { id: entry.id });
     const state5 = (await rpc("workspace_state", null)).result;
     check("the signed removal deletes them", state5.held.length === 0 && [heldDirty, heldFail].every((entry) => entry && !existsSync(entry.path)), JSON.stringify(state5.held).slice(0, 300));
+
+    // 4. "branch": "keep" on api, and what counts as saved. No setup or teardown now: each repository is judged by what it holds.
+    const kept = { bring: [{ path: "../api", as: "api", branch: "keep", sync: "git pull -q --ff-only", back }, { path: "../web", as: "web", sync: "git pull -q --ff-only", back }], readOnly: ["notes"] };
+    writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify({ ...kept, bring: [{ ...kept.bring[0], branch: undefined }, kept.bring[1]] }, null, 2)}\n`);
+    const plainState = (await rpc("workspace_state", null)).result.workspaces.find((view) => view.folder === ws);
+    await signer.must("workspace_approve", { folder: ws, hash: plainState.currentHash });
+    writeFileSync(join(ws, "cow.workspace.json"), `${JSON.stringify(kept, null, 2)}\n`);
+    const keptState = (await rpc("workspace_state", null)).result.workspaces.find((view) => view.folder === ws);
+    check('adding "branch": "keep" asks for approval again, though no command would newly run', keptState.status === "changed" && keptState.waiting === true && keptState.fresh.length === 0, JSON.stringify(keptState).slice(0, 300));
+    await signer.must("workspace_approve", { folder: ws, hash: keptState.currentHash });
+    const keptListed = await bbOutside(plugin, "workspace", ws);
+    check("bb <id> workspace says api keeps its own branch, and not web", /api .*keeps its own branch/.test(keptListed.stdout) && !/web .*keeps its own branch/.test(keptListed.stdout), keptListed.stdout);
+    const keptSync = await bbOutside(plugin, "workspace", "sync", ws, "--only", "api", "--json");
+    check("sync still runs for a repository left on its own branch", JSON.parse(keptSync.stdout || "{}").synced?.[0]?.results?.[0]?.status === "ran" && JSON.parse(keptSync.stdout).synced[0].results[0].code === 0, keptSync.stdout + keptSync.stderr);
+
+    // While these clones are made, a loop runs git status in both sources: git creates and deletes .git/index.lock there all along.
+    const statusLoop = spawn("/bin/sh", ["-c", `while :; do git -C "${api}" status >/dev/null 2>&1; git -C "${web}" status >/dev/null 2>&1; done`], { stdio: "ignore" });
+    let fourThreads;
+    try {
+      // A newer main on origin, which the source web has not fetched.
+      writeFileSync(join(base, "web-pusher", "a.txt"), "third\n");
+      await git(join(base, "web-pusher"), "commit", "-q", "-am", "third");
+      await git(join(base, "web-pusher"), "push", "-q", "origin", "main");
+      const ids4 = {
+        pushed: await spawnOne("cow test: pushed branch", "true"),
+        notPushed: await spawnOne("cow test: unpushed branch", "true"),
+        fetched: await spawnOne("cow test: fetched main", "true"),
+        keep: await spawnOne("cow test: branch keep", "true"),
+      };
+      extraThreads.push(...Object.values(ids4));
+      fourThreads = Object.fromEntries(await Promise.all(Object.entries(ids4).map(async ([name, id]) => [name, await waitIdle(id)])));
+      check("four clones made while git status ran in both sources, none failed", Object.values(fourThreads).every((t) => t.environmentId));
+    } finally {
+      statusLoop.kill();
+    }
+    const pathOf = async (t) => ((await bb("environment", "show", t.environmentId)).environment ?? (await bb("environment", "show", t.environmentId))).path;
+    // What a thread would do in its clone, done here, in each clone's web: the person's example, with and without the push; a fetch of the newer main.
+    for (const name of ["pushed", "notPushed"]) {
+      const clonedWeb = join(await pathOf(fourThreads[name]), "web");
+      await git(clonedWeb, "switch", "-q", "-c", "feature");
+      await git(clonedWeb, "commit", "-q", "--allow-empty", "-m", `feature (${name})`);
+      if (name === "pushed") await git(clonedWeb, "push", "-q", "origin", "feature");
+    }
+    const fetchedWeb = join(await pathOf(fourThreads.fetched), "web");
+    await git(fetchedWeb, "fetch", "-q", "origin");
+    await git(fetchedWeb, "branch", "-f", "main", "origin/main");
+    const newerMain = await git(join(base, "web-pusher"), "rev-parse", "HEAD");
+    check("the fetched clone's main is the newer main, which the source does not have", (await git(fetchedWeb, "rev-parse", "main")) === newerMain && (await run("git", ["-C", web, "cat-file", "-e", `${newerMain}^{commit}`])).code !== 0);
+    const keepPath = await pathOf(fourThreads.keep);
+    const webBranch = await git(join(keepPath, "web"), "branch", "--show-current");
+    check(
+      'with "branch": "keep" on api: web has the thread branch, api stays on main and has no thread branch',
+      webBranch !== "main" && (await git(join(keepPath, "api"), "branch", "--show-current")) === "main" && (await git(join(keepPath, "api"), "branch", "--list", webBranch)) === "",
+      `web on ${webBranch}, api on ${await git(join(keepPath, "api"), "branch", "--show-current")}`,
+    );
+    const keptPlan = JSON.parse((await bbOutside(plugin, "workspace", "back", fourThreads.keep.id, "--json")).stdout || "{}");
+    check("back skips api, left on its own branch, and says why", keptPlan.repos?.find((r) => r.as === "api")?.ahead === null && /left on its own branch/.test(keptPlan.repos?.find((r) => r.as === "api")?.why ?? ""), JSON.stringify(keptPlan).slice(0, 500));
+    const keptBack = await signer.must("workspace_back", { threadId: fourThreads.keep.id });
+    check("the signed back runs nothing for api", keptBack.results?.find((r) => r.as === "api")?.status === "skipped", JSON.stringify(keptBack).slice(0, 400));
+    check("the source api has no thread branch", (await git(api, "branch", "--list", webBranch)) === "");
+    check("origin has the pushed branch", (await git(base, "--git-dir", join(base, "web.git"), "branch", "--list", "feature")) !== "");
+
+    const removals = await Promise.all(Object.values(fourThreads).map((t) => removeEnvironment(t.id, t.environmentId)));
+    check("bb settles the four removals", removals.every((l) => l?.phase === "destroyed" && l?.teardown?.status === "removed"), JSON.stringify(removals));
+    const state6 = (await rpc("workspace_state", null)).result;
+    const heldOf = (t) => state6.held.find((entry) => entry.threadId === t.id);
+    check("a branch the thread pushed is saved: that clone is removed, not held", !heldOf(fourThreads.pushed), JSON.stringify(heldOf(fourThreads.pushed)?.reasons));
+    check(
+      "the same branch not pushed holds the clone, naming it",
+      heldOf(fourThreads.notPushed)?.reasons?.some((r) => r.as === "web" && r.kind === "unsaved-commits" && r.branches.includes("feature")),
+      JSON.stringify(heldOf(fourThreads.notPushed)?.reasons),
+    );
+    check("a fetched newer main alone does not hold the clone", !heldOf(fourThreads.fetched), JSON.stringify(heldOf(fourThreads.fetched)?.reasons));
+    check("nor does a repository left on its own branch with nothing new", !heldOf(fourThreads.keep), JSON.stringify(heldOf(fourThreads.keep)?.reasons));
+    for (const entry of state6.held) await signer.must("workspace_held_remove", { id: entry.id });
+    check("the held clone is removed, signed", (await rpc("workspace_state", null)).result.held.length === 0);
   } finally {
     for (const extra of extraThreads) await bb("thread", "archive", extra).catch(() => {});
     if (threadId && !flag("keep")) {

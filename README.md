@@ -306,7 +306,13 @@ originals. It is started from the command line for now. A
 the commands you write to keep them in sync, set a clone up and bring a
 thread's work back (git, a stacking tool, anything); none of them runs until
 you approve the file's content on the page, and each change waits for you
-again. Details are in [docs/clone.md](docs/clone.md).
+again. A brought repository marked `"branch": "keep"` stays on its own
+branch instead of getting the thread's. A file that git or an editor
+deletes while the clone is made (`.git/index.lock`) is left out instead of
+failing it. When the clone is removed, work that is neither in its source
+nor in one of the clone's remote-tracking refs (pushed, or fetched) holds it
+for you to look at; cow trusts the clone's own record of the remote, and
+contacts none. Details are in [docs/clone.md](docs/clone.md).
 
 ## Keys
 

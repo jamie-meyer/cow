@@ -10,7 +10,7 @@ import type { OpenTarget } from "../reader/files.ts";
 import type { Signer } from "../signing/page.ts";
 import { formatAge } from "../text.ts";
 import type { workspaceRpcContract } from "./backend.ts";
-import { WORKSPACES_CHANGED, WORKSPACE_FILE } from "./file.ts";
+import { KEPT_WHY, WORKSPACES_CHANGED, WORKSPACE_FILE } from "./file.ts";
 import type { BackPlan, WorkspaceView } from "./service.ts";
 import type { HeldWire } from "../clone/contract.ts";
 import { type HoldReason, lossText, reasonText } from "../clone/judge.ts";
@@ -142,7 +142,9 @@ export function reviewTarget(data: WorkspacesData, view: WorkspaceView): OpenTar
 export function backConfirmText(plan: BackPlan): string {
   const lines = plan.repos.filter((repo) => (repo.ahead ?? 0) > 0);
   if (lines.length === 0) return "";
-  return `bring back ${lines.map((repo) => `${repo.as ?? "the workspace folder"} (${repo.ahead} commit${repo.ahead === 1 ? "" : "s"}): ${repo.command === null ? "no back command, skipped" : `runs ${repo.command}`}`).join("; ")}, in each source, with your full access?`;
+  const kept = plan.repos.filter((repo) => repo.why === KEPT_WHY).map((repo) => repo.as ?? "the workspace folder");
+  const keptText = kept.length === 0 ? "" : ` ${kept.join(", ")} ${kept.length === 1 ? "keeps its" : "keep their"} own branch, so B does not look there.`;
+  return `bring back ${lines.map((repo) => `${repo.as ?? "the workspace folder"} (${repo.ahead} commit${repo.ahead === 1 ? "" : "s"}): ${repo.command === null ? "no back command, skipped" : `runs ${repo.command}`}`).join("; ")}, in each source, with your full access?${keptText}`;
 }
 
 /** What a held clone is called on the page: its thread's title, else its thread, else its id. */
@@ -280,6 +282,7 @@ export function useWorkspaceSheet(args: { data: WorkspacesData; openReader: (tar
                     {repo.exists ? (repo.dirty ? "dirty" : "clean") : "missing"} ·{" "}
                     {repo.sync === null ? "never synced" : `synced ${formatAge(Math.max(0, now - repo.sync.at))} ago, ${repo.sync.timedOut ? "stopped at its time limit" : `exit ${repo.sync.code}`}`} · commands:{" "}
                     {commands.length === 0 ? "none" : commands.join(", ")}
+                    {repo.keep ? <span data-cow-workspace-keep=""> · keeps its own branch: a thread makes no branch in it</span> : null}
                   </span>
                 </div>
               );

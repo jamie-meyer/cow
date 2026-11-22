@@ -129,7 +129,7 @@ export function viewText(view: WorkspaceView, now: number): string {
     const commands = (["sync", "setup", "back", "teardown"] as const).filter((kind) => repo.commands[kind]);
     const sync = repo.sync === null ? "never synced" : `last sync ${formatAge(now - repo.sync.at)} ago, ${repo.sync.timedOut ? "stopped at its time limit" : `exit ${repo.sync.code}`}`;
     lines.push(
-      `  ${(repo.as ?? ".").padEnd(14)} ${repo.exists ? (repo.dirty ? "dirty" : "clean") : "missing"} · ${sync} · commands: ${commands.length === 0 ? "none" : commands.join(", ")} · ${repo.path}`,
+      `  ${(repo.as ?? ".").padEnd(14)} ${repo.exists ? (repo.dirty ? "dirty" : "clean") : "missing"} · ${sync} · commands: ${commands.length === 0 ? "none" : commands.join(", ")}${repo.keep ? " · keeps its own branch" : ""} · ${repo.path}`,
     );
   }
   return lines.join("\n");
@@ -161,7 +161,7 @@ export function backPlanText(plan: BackPlan, approved: boolean): string {
   if (!approved) lines.push(`  no approved ${WORKSPACE_FILE} covers this clone, so there is no back command to run`);
   for (const repo of plan.repos) {
     const ahead = repo.ahead === 0 ? "nothing new" : repo.ahead === null ? `unknown${repo.why ? ` (${repo.why})` : ""}` : `${repo.ahead} new commit${repo.ahead === 1 ? "" : "s"}`;
-    const would = repo.ahead === 0 ? "nothing to bring back" : repo.command === null ? "no back command" : `would run: ${repo.command}`;
+    const would = repo.ahead === 0 ? "nothing to bring back" : repo.ahead === null ? "skipped, nothing runs" : repo.command === null ? "no back command" : `would run: ${repo.command}`;
     lines.push(`  ${(repo.as ?? ".").padEnd(14)} ${ahead} · ${would} · in ${repo.source}`);
   }
   lines.push(BACK_HOW);

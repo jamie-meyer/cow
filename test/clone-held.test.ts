@@ -124,7 +124,7 @@ test("the outcome table", () => {
   assert.deepEqual(judge([{ as: null, teardown: null, unsaved: { ...ok, error: "git status failed" } }]), [{ as: null, kind: "cannot-check", why: "git status failed" }]);
   assert.equal(reasonText({ as: "api", kind: "teardown-failed", code: 3, timedOut: false }), "api: teardown exited 3");
   assert.equal(reasonText({ as: null, kind: "uncommitted", count: 1 }), "the workspace folder: 1 uncommitted or untracked change, and no teardown");
-  assert.equal(lossText("web", { ...dirty, branches: ["wip"] }), "web: 2 uncommitted or untracked changes and commits its source does not have on wip");
+  assert.equal(lossText("web", { ...dirty, branches: ["wip"] }), "web: 2 uncommitted or untracked changes and commits neither its source nor a remote has on wip");
   assert.equal(lossText("web", ok), null);
 });
 
@@ -233,4 +233,50 @@ test("a clone with nothing unsaved and no teardown is removed; a clone with expl
   assert.equal(outcome.kind, "removed");
   assert.deepEqual(outcome.teardowns, []);
   assert.equal(existsSync(clone), false);
+});
+
+test("unsaved work: a commit one of the clone's remote-tracking refs contains is saved; the rest is judged as before", async () => {
+  n += 1;
+  const root = join(base, `u${n}`);
+  mkdirSync(root);
+  const origin = join(root, "origin.git");
+  git(root, "init", "-q", "--bare", "-b", "main", origin);
+  const app = repo(root, "app");
+  git(app, "remote", "add", "origin", origin);
+  git(app, "push", "-q", "origin", "main");
+  git(app, "fetch", "-q", "origin");
+
+  // Pushed from the clone: origin has it, the source has not fetched it.
+  const pushed = copyOf(app, join(root, "pushed"), "cow/t");
+  git(pushed, "switch", "-q", "-c", "feature");
+  git(pushed, "commit", "-q", "--allow-empty", "-m", "feature");
+  assert.deepEqual((await unsavedWork(pushed, app)).branches, ["feature"]);
+  git(pushed, "push", "-q", "origin", "feature");
+  assert.deepEqual(await unsavedWork(pushed, app), { repo: true, uncommitted: 0, branches: [], error: null });
+  // A later local commit on top of the pushed one is not on the remote.
+  git(pushed, "commit", "-q", "--allow-empty", "-m", "after the push");
+  assert.deepEqual((await unsavedWork(pushed, app)).branches, ["feature"]);
+
+  // A newer main, fetched and pulled into the clone's main: saved on origin/main.
+  const other = copyOf(app, join(root, "other"), "elsewhere");
+  git(other, "commit", "-q", "--allow-empty", "-m", "newer main");
+  git(other, "push", "-q", "origin", "elsewhere:main");
+  const fetched = copyOf(app, join(root, "fetched"), "cow/t");
+  git(fetched, "fetch", "-q", "origin");
+  git(fetched, "branch", "-q", "-f", "main", "origin/main");
+  assert.deepEqual(await unsavedWork(fetched, app), { repo: true, uncommitted: 0, branches: [], error: null });
+
+  // Uncommitted changes, a stash and a detached HEAD no remote-tracking ref contains still count.
+  const dirty = copyOf(app, join(root, "dirty"), "cow/t");
+  writeFileSync(join(dirty, "a.txt"), "changed\n");
+  assert.equal((await unsavedWork(dirty, app)).uncommitted, 1);
+  git(dirty, "stash", "-q");
+  assert.deepEqual((await unsavedWork(dirty, app)).branches, ["the stash"]);
+  const detached = copyOf(app, join(root, "detached"), "cow/t");
+  git(detached, "checkout", "-q", "--detach");
+  git(detached, "commit", "-q", "--allow-empty", "-m", "loose");
+  assert.deepEqual((await unsavedWork(detached, app)).branches, ["a detached HEAD"]);
+  // A detached HEAD on a commit a remote-tracking ref contains is saved.
+  git(detached, "checkout", "-q", "--detach", "origin/main");
+  assert.deepEqual((await unsavedWork(detached, app)).branches, []);
 });

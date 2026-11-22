@@ -30,11 +30,15 @@ const statusPath = (line: string) => {
 
 /**
  * Whether the repository at `clone` holds work its source at `source` does
- * not: anything uncommitted or untracked, and any branch tip the source has
- * no such commit for (so work already fetched back into the source, or
- * pushed and fetched through it, does not count). `skip` names top-level
- * folders that are other repositories of the clone (the brought ones, inside
- * the workspace folder's clone), which are judged on their own.
+ * not: anything uncommitted or untracked, and any branch tip (or stash, or
+ * detached HEAD) that is saved neither in the source nor on a remote. A tip is
+ * saved in the source when the source has the commit (work fetched back into
+ * it, or pushed and fetched through it); on a remote when one of the clone's
+ * own remote-tracking refs (`refs/remotes/…`) contains it: the clone's record
+ * of what it pushed or fetched, read locally, with no remote contacted. `skip`
+ * names top-level folders that are other repositories of the clone (the
+ * brought ones, inside the workspace folder's clone), which are judged on
+ * their own.
  */
 export async function unsavedWork(clone: string, source: string, skip: readonly string[] = []): Promise<Unsaved> {
   const dotGit = lstatSync(join(clone, ".git"), { throwIfNoEntry: false });
@@ -56,12 +60,13 @@ export async function unsavedWork(clone: string, source: string, skip: readonly 
   }
   if (tips.length === 0) return { repo: true, uncommitted, branches: [], error: null };
   const sourceGit = lstatSync(join(source, ".git"), { throwIfNoEntry: false });
-  if (sourceGit === undefined) return { repo: true, uncommitted, branches: tips.map((tip) => tip.name), error: null };
-  // The source has a commit when it has the object: a commit's history comes with it.
   const branches: string[] = [];
   for (const tip of tips) {
-    const found = await git(source, ["cat-file", "-e", `${tip.sha}^{commit}`]);
-    if (found.code !== 0) branches.push(tip.name);
+    // The source has a commit when it has the object: a commit's history comes with it.
+    if (sourceGit !== undefined && (await git(source, ["cat-file", "-e", `${tip.sha}^{commit}`])).code === 0) continue;
+    const onRemote = await git(clone, ["for-each-ref", "--count=1", `--contains=${tip.sha}`, "--format=%(refname)", "refs/remotes"]);
+    if (onRemote.code !== 0) return { repo: true, uncommitted, branches: [], error: `git for-each-ref --contains failed: ${onRemote.stderr.trim().slice(0, 200)}` };
+    if (onRemote.stdout.trim() === "") branches.push(tip.name);
   }
   return { repo: true, uncommitted, branches: [...new Set(branches)], error: null };
 }

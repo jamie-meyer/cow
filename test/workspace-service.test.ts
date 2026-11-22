@@ -327,3 +327,17 @@ test("nothing but the signed actions reaches a held clone's teardown again or it
   const removers = sources.filter((file) => /["']clone_remove["']\s*,/.test(file.text) && /host\.call\(/.test(file.text)).map((file) => file.name);
   assert.deepEqual(removers, ["clone/provider.ts"]);
 });
+
+test('"branch": "keep" is part of the approved content: adding it asks for approval again, though no command would newly run', async () => {
+  const w = world();
+  const shown = await w.workspaces.propose(FOLDER);
+  await w.workspaces.approve({ folder: FOLDER, hash: shown.currentHash! }, "key-1");
+  const kept = GOOD.replace('"as": "api",', '"as": "api",\n      "branch": "keep",');
+  assert.notEqual(kept, GOOD);
+  w.disk.set(FOLDER, kept);
+  const [view] = await w.workspaces.views();
+  assert.equal(view!.status, "changed");
+  assert.equal(view!.waiting, true);
+  assert.deepEqual(view!.fresh, []);
+  assert.equal((await w.workspaces.approvedFor(FOLDER)).text, GOOD);
+});

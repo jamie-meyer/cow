@@ -1,7 +1,7 @@
 // The workspace file: read strictly, every problem naming its field.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandsOf, lineDiff, newCommands, parseWorkspaceFile, resolveBringPath, reviewText } from "../src/workspace/file.ts";
+import { commandsOf, keepsBranch, lineDiff, newCommands, parseWorkspaceFile, resolveBringPath, reviewText } from "../src/workspace/file.ts";
 
 const good = {
   bring: [{ path: "../api", as: "api", sync: "git pull --ff-only", setup: "npm install", back: 'git -C "$COW_SOURCE" fetch "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH"' }],
@@ -89,4 +89,14 @@ test("teardown: per repository and for the workspace folder, read strictly, and 
   ]);
   const text = reviewText({ folder: "/w/ws", approvedText: JSON.stringify(good), currentText: JSON.stringify(withTeardown), problems: [], fresh: newCommands(before.file, parsed.file) });
   assert.match(text, /Commands that would newly run[^\n]*\n {2}the workspace folder: teardown\n {4}echo top-down\n {2}api: teardown\n {4}dropdb/);
+});
+
+test('bring: "branch" is "thread" or "keep", absent by default', () => {
+  const read = parseWorkspaceFile(JSON.stringify({ bring: [{ path: "../a", as: "a", branch: "keep" }, { path: "../b", as: "b", branch: "thread" }, { path: "../c", as: "c" }] }));
+  assert.ok(read.ok);
+  assert.deepEqual(read.file.bring.map((item) => item.branch), ["keep", "thread", undefined]);
+  assert.deepEqual([keepsBranch(read.file, "a"), keepsBranch(read.file, "b"), keepsBranch(read.file, "c"), keepsBranch(read.file, null)], [true, false, false, false]);
+  const wrong = parseWorkspaceFile(JSON.stringify({ bring: [{ path: "../a", as: "a", branch: "main" }] }));
+  assert.ok(!wrong.ok);
+  assert.match(wrong.problems.join("\n"), /^bring\[0\]\.branch: /m);
 });

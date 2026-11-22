@@ -1844,7 +1844,8 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
 
     // B: a thread in a clone of the workspace commits once; B brings it back.
     const backCommand = 'git -C "$COW_SOURCE" fetch -q "$COW_CLONE" "$COW_BRANCH:$COW_BRANCH"';
-    write({ bring: [{ path: "../api", as: "api", sync: "true", back: backCommand }, { path: "../docs", as: "docs", back: backCommand }] });
+    // docs is left on its own branch ("branch": "keep"): no thread branch is made in it, and B does not look there.
+    write({ bring: [{ path: "../api", as: "api", sync: "true", back: backCommand }, { path: "../docs", as: "docs", back: backCommand, branch: "keep" }] });
     let withBack = await view();
     for (let i = 0; i < 20 && withBack.currentHash === withBack.approvedHash; i += 1) withBack = await view();
     await signer.must("workspace_approve", { folder, hash: withBack.currentHash });
@@ -1871,6 +1872,11 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     const branch = await git(join(clonePath, "api"), "branch", "--show-current");
     check("the clone fixture committed in its clone", (await git(join(clonePath, "api"), "log", "-1", "--format=%s")) === "work from the thread", clonePath);
     check("the source has no such branch yet", (await git(api, "branch", "--list", branch)) === "");
+    check(
+      'docs, with "branch": "keep", stays on its own branch, with no thread branch; api is on the thread\'s',
+      (await git(join(clonePath, "docs"), "branch", "--show-current")) === "main" && (await git(join(clonePath, "docs"), "branch", "--list", branch)) === "" && branch !== "main",
+      `${branch} / docs on ${await git(join(clonePath, "docs"), "branch", "--show-current")}`,
+    );
 
     const cloneLine = `document.querySelector('.cow-main [data-cow-line="${cloneThread}"]')`;
     await page.waitFor(`!!${cloneLine}`, { label: "the clone fixture's line", timeout: 60_000 });
@@ -1884,7 +1890,7 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     };
     await pressB();
     const asked = await page.eval(confirmText);
-    check("B names each repository with new commits and the command it would run, and only those", asked.includes("api (1 commit): runs git -C \"$COW_SOURCE\" fetch") && !asked.includes("docs"), asked);
+    check("B names each repository with new commits and the command it would run, and only those; docs keeps its own branch, so B does not look there", asked.includes("api (1 commit): runs git -C \"$COW_SOURCE\" fetch") && !asked.includes("docs (") && asked.includes("docs keeps its own branch, so B does not look there"), asked);
     await shot("workspace-back-confirm");
     await page.key("n");
     await page.waitFor(`!document.querySelector("[data-cow-confirm]")`, { label: "cancelled" });
@@ -1922,6 +1928,8 @@ async function workspaceChecks(page, ids, shot, chooseMain) {
     const rowText = await page.eval(`${heldRow}.textContent`);
     check("W's held part lists it with its thread's title, when, why and its path, selected", rowText.includes(TITLE) && /held .* ago/.test(rowText) && rowText.includes("docs: 1 uncommitted") && rowText.includes(heldEntry.path) && (await page.eval(`${heldRow}.dataset.cowSelected === "true"`)), rowText);
     await shot("workspace-held-sheet");
+    const repoRow = (as) => page.eval(`document.querySelector('[data-cow-workspace="${folder}"] [data-cow-workspace-repo="${as}"]')?.textContent ?? ""`);
+    check('W says docs keeps its own branch ("branch": "keep"), and not api', /keeps its own branch/.test(await repoRow("docs")) && !/keeps its own branch/.test(await repoRow("api")), `${await repoRow("docs")} / ${await repoRow("api")}`);
     const sheetNote = `(document.querySelector("[data-cow-workspaces-note]")?.textContent ?? "")`;
     await page.key("d");
     await page.waitFor(`!!document.querySelector("[data-cow-held-confirm]")`, { label: "d's confirmation" });

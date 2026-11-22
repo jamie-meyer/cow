@@ -10,7 +10,9 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { git } from "../clone/git.ts";
 import { type Layout, checkPathKey, donePath, resolveCloneFolder } from "../clone/remove.ts";
-import { type CommandKind, MAX_FILE_BYTES, WORKSPACE_FILE, type WorkspaceFile, commandFor, parseWorkspaceFile, resolveBringPath } from "./file.ts";
+import { type CommandKind, MAX_FILE_BYTES, WORKSPACE_FILE, type WorkspaceFile, KEPT_WHY, commandFor, keepsBranch, parseWorkspaceFile, resolveBringPath } from "./file.ts";
+
+export { KEPT_WHY };
 import { type RepoLocks, type RunRecord, type RunStore, type RunVars, TIME_LIMITS, runCommand } from "./run.ts";
 
 /** Content the person approved, as cow's server keeps it. `folder` is the workspace folder's real path. */
@@ -268,6 +270,11 @@ export async function backCandidates(paths: Layout, clonePath: string, file: Wor
   for (const repo of all) {
     const clone = repo.as === null ? clonePath : join(clonePath, repo.as);
     const hasCommand = file !== null && commandFor(file, repo.as, "back") !== null;
+    if (!repo.branched && repo.head !== null && repo.as !== null) {
+      // "branch": "keep": its work, if any, is on a branch of its own, which back does not look for.
+      repos.push({ as: repo.as, source: repo.path, clone, ahead: null, hasCommand, why: KEPT_WHY });
+      continue;
+    }
     if (!repo.branched || repo.head === null) {
       repos.push({ as: repo.as, source: repo.path, clone, ahead: null, hasCommand, why: "not a git repository on the thread's branch" });
       continue;
@@ -339,6 +346,8 @@ export interface RepoStatus {
   commands: Record<CommandKind, boolean>;
   sync: { at: number; ms: number; code: number | null; timedOut: boolean } | null;
   lastOkSyncAt: number | null;
+  /** Left on its own branch by the file (`"branch": "keep"`). */
+  keep: boolean;
 }
 
 export async function repoStatuses(store: RunStore, folder: string, file: WorkspaceFile): Promise<RepoStatus[]> {
@@ -353,6 +362,7 @@ export async function repoStatuses(store: RunStore, folder: string, file: Worksp
       commands: { sync: commandFor(file, repo.as, "sync") !== null, setup: commandFor(file, repo.as, "setup") !== null, back: commandFor(file, repo.as, "back") !== null, teardown: commandFor(file, repo.as, "teardown") !== null },
       sync: runs.sync ? { at: runs.sync.at, ms: runs.sync.ms, code: runs.sync.code, timedOut: runs.sync.timedOut } : null,
       lastOkSyncAt: runs.lastOkSyncAt ?? null,
+      keep: keepsBranch(file, repo.as),
     });
   }
   return out;
