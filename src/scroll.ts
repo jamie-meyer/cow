@@ -56,6 +56,10 @@ export const FOLLOW_MS = 100;
 export const HOLD_LAPSE_MS = 400;
 /** While the cursor's key repeats, the cursor line is kept this many lines from the edge. */
 export const FOLLOW_LINES = 3;
+/** Gone to the bottom, it stays with a bottom that keeps moving off for at most this long. */
+export const END_CHASE_MS = 2000;
+/** Nearer the bottom than this when a frame comes, it is at the bottom. */
+const AT_BOTTOM_PX = 1.5;
 /** Further from where it was put than this, the view was moved by something else. */
 const MOVED_PX = 3;
 
@@ -335,6 +339,12 @@ export class Scroller {
     this.surface.write(p);
     this.put = this.surface.read();
     if (state.done) {
+      // Gone to the bottom while the bottom moves on (text arriving): a frame that finds it
+      // short of the bottom puts it there again, until one finds it there, or for a while.
+      if (segment.kind === "curve" && segment.end && max - read > AT_BOTTOM_PX && t - (segment.t0 + segment.d) < END_CHASE_MS) {
+        this.run();
+        return;
+      }
       this.segment = { kind: "still" };
       this.keep = null;
       return;

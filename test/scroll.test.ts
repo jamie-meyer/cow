@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FOLLOW_MS, HOLD_SPEED, JUMP_MS, STEP_MS, STOP_MS, Scroller, type Frames, type Surface, keyReleased, whilePressing } from "../src/scroll.ts";
+import { END_CHASE_MS, FOLLOW_MS, HOLD_SPEED, JUMP_MS, STEP_MS, STOP_MS, Scroller, type Frames, type Surface, keyReleased, whilePressing } from "../src/scroll.ts";
 
 /** A page of `size` pixels showing `height` of them, and a clock that moves only when told. */
 function world({ size = 100_000, height = 500, start = 10_000, hz = 60, reduced = false } = {}) {
@@ -302,4 +302,39 @@ test("from rest after something else moved it, a step goes from there", () => {
   w.scroller.jump(4_000);
   w.pass(JUMP_MS + 20);
   assert.equal(w.top(), 4_000);
+});
+
+test("gone to the end, it stays with an end that keeps moving off, and stops once the end holds still", () => {
+  let top = 0;
+  let size = 5000;
+  let now = 0;
+  let queue: (() => void)[] = [];
+  const surface: Surface = { read: () => top, write: (to) => void (top = to), max: () => size - 500, height: () => 500 };
+  const frames: Frames = { now: () => now, request: (run) => queue.push(run), cancel: () => undefined, reduced: () => false };
+  const scroller = new Scroller(surface, frames);
+  const frame = (grow: number) => {
+    now += 50;
+    size += grow;
+    const due = queue;
+    queue = [];
+    for (const run of due) run();
+  };
+  scroller.jump("end");
+  // Text arrives between every two frames, long after the ease is over: each frame is at the end as it then is.
+  for (let i = 0; i < 20; i += 1) {
+    frame(30);
+    if (now > JUMP_MS) assert.equal(top, size - 500);
+  }
+  assert.equal(scroller.moving, true);
+  // The end holds still: the next frame finds it there and it rests.
+  frame(0);
+  frame(0);
+  assert.equal(scroller.moving, false);
+  assert.equal(top, size - 500);
+  // It does not chase for ever.
+  scroller.jump(0);
+  for (let i = 0; i < 10; i += 1) frame(0);
+  scroller.jump("end");
+  for (let i = 0; i < (JUMP_MS + END_CHASE_MS) / 50 + 3; i += 1) frame(30);
+  assert.equal(scroller.moving, false);
 });
