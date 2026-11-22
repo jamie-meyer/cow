@@ -60,6 +60,8 @@ import {
   KeyReader,
   activate,
   attachKeys,
+  hostPopupOpen,
+  isEditable,
   takesCaret,
   collectHintTargets,
 } from "./keys.ts";
@@ -112,7 +114,8 @@ import {
 import { OUTSIDE_STATE_TEXT, type OutsideLine, notListedText, outsideArchiveBlocked } from "./outside.ts";
 import { type AutomationGroup, isAutomationRow, lastResultText, nextRunText, olderText, runThreadIds, scriptOutput } from "./automations.ts";
 import { useAutomations } from "./automationsData.ts";
-import { CHAT_STEP_PX, Glide, atEnd, attachWheelEscape, chatScroller, outputBelow } from "./chatScroll.ts";
+import { CHAT_STEP_PX, atEnd, attachWheelEscape, chatScroller, outputBelow, scrollChat as scrollChatBy } from "./chatScroll.ts";
+import { followInto, scrollKey, settleAll } from "./scroll.ts";
 import { useReader } from "./reader/Reader.tsx";
 import { ContextCard, readCardHidden, rememberCardHidden, useCard } from "./ContextCard.tsx";
 import { cardThreadOf } from "./card.ts";
@@ -147,7 +150,70 @@ const FOLDS_KEY = "cow:folds";
 export const pageSignal = {
   mounted: false,
   chooseMain: null as (() => void) | null,
+  /** Give the page the keyboard: the command that opens it, when it is open already. */
+  focus: null as (() => void) | null,
 };
+
+/**
+ * Keep the keyboard with the page. A click, or a text selection, that leaves
+ * focus on something in the page that takes no typing (a message in the
+ * chat, a link, a button, a line, empty space) hands it to the page's root
+ * once the mouse is let go, without scrolling and without touching what was
+ * selected; a menu of bb's that closes and gives focus back to its button in
+ * the page does the same. Opening the page, the window getting the keyboard
+ * back with focus nowhere, and the command that opens the page do too.
+ * Fields keep the caret; nothing outside the page is ever taken from.
+ */
+function useKeyboardHome(rootRef: { current: HTMLElement | null }) {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const home = () => root.focus({ preventScroll: true });
+    const free = (element: Element | null) => element === null || element === document.body || element === document.documentElement;
+    /** Focus is on something in the page that takes no typing: the page has the keyboard. */
+    const settle = () => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || active === root || !root.contains(active) || isEditable(active)) return;
+      home();
+    };
+    let pressed = false;
+    const onPointerDown = (event: PointerEvent) => {
+      pressed = event.target instanceof Node && root.contains(event.target);
+    };
+    const onPointerUp = () => {
+      if (!pressed) return;
+      pressed = false;
+      // After the click the release makes, and whatever it does with focus.
+      setTimeout(settle, 0);
+    };
+    const onFocusIn = () => {
+      if (!pressed) setTimeout(settle, 0);
+    };
+    const onWindowFocus = () => {
+      if (free(document.activeElement) && root.isConnected && root.checkVisibility() && !hostPopupOpen()) home();
+    };
+    window.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
+    window.addEventListener("pointerup", onPointerUp, { capture: true, passive: true });
+    window.addEventListener("pointercancel", onPointerUp, { capture: true, passive: true });
+    window.addEventListener("focus", onWindowFocus);
+    root.addEventListener("focusin", onFocusIn);
+    // Opened: unless something is being typed in, or a menu is open, the page has the keyboard.
+    const active = document.activeElement;
+    if (free(active) || (!isEditable(active!) && !hostPopupOpen())) home();
+    const focus = () => {
+      if (!isEditable(document.activeElement ?? document.body) || !root.contains(document.activeElement)) home();
+    };
+    pageSignal.focus = focus;
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      window.removeEventListener("pointerup", onPointerUp, { capture: true });
+      window.removeEventListener("pointercancel", onPointerUp, { capture: true });
+      window.removeEventListener("focus", onWindowFocus);
+      root.removeEventListener("focusin", onFocusIn);
+      if (pageSignal.focus === focus) pageSignal.focus = null;
+    };
+  }, [rootRef]);
+}
 
 const GLYPH_PATH: Record<LineState, ReactNode> = {
   wants: <circle cx="6" cy="6" r="4.3" fill="currentColor" />,
@@ -1110,14 +1176,7 @@ function Help({ onClose }: { onClose: () => void }) {
 /** The legend's own keys: it closes, and it scrolls when it is taller than the window. Every other key does nothing. */
 function helpKey(key: string, close: () => void): true {
   if (key === "Escape" || key === "?" || key === "q") close();
-  const card = document.querySelector<HTMLElement>("[data-cow-help] .cow-card");
-  if (card) {
-    if (key === "j" || key === "ArrowDown") card.scrollBy({ top: 60 });
-    else if (key === "k" || key === "ArrowUp") card.scrollBy({ top: -60 });
-    else if (key === "G") card.scrollTo({ top: card.scrollHeight });
-    else if (key === "g") card.scrollTo({ top: 0 });
-    else if (key === " ") card.scrollBy({ top: card.clientHeight * 0.8 });
-  }
+  scrollKey(document.querySelector<HTMLElement>("[data-cow-help] .cow-card"), key);
   return true;
 }
 
@@ -1291,6 +1350,8 @@ function usePageKeys(
   const startHints = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
+    // Labels are drawn where things are: what is still scrolling gets there first.
+    settleAll();
     const targets = collectHintTargets(root);
     if (targets.length === 0) return;
     const labels = hintLabels(targets.length);
@@ -1356,6 +1417,7 @@ function Picker({
   now: number;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  useKeyboardHome(rootRef);
   const candidates = useMemo(
     () =>
       threads
@@ -1384,11 +1446,11 @@ function Picker({
     help ? (key) => helpKey(key, () => setHelp(false)) : null,
   );
   useLayoutEffect(() => {
-    rootRef.current?.querySelector(".cow-cur")?.scrollIntoView({ block: "nearest" });
+    followInto(rootRef.current?.querySelector(".cow-cur"));
   }, [selected]);
 
   return (
-    <div className="cow" data-cow-root="" data-cow-screen="picker" ref={rootRef}>
+    <div className="cow" data-cow-root="" data-cow-screen="picker" tabIndex={-1} ref={rootRef}>
       <div className="cow-app">
         <header className="cow-head">
           <h1 className="cow-crumbs">
@@ -1517,6 +1579,7 @@ function OverviewScreen({
 }) {
   const sdk = useSdk();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  useKeyboardHome(rootRef);
   const sayRef = useRef<HTMLInputElement | null>(null);
   // Which groups are folded is this window's own, and outlives a reload.
   const [folded, setFolded] = useState<ReadonlySet<string>>(readFolds);
@@ -1993,7 +2056,16 @@ function OverviewScreen({
               : null;
       if (target === null) return false;
       panelFiles.allowNext();
-      return navigate.experimental_openFilePreview({ target, location: line === null ? null : { kind: "line", line, column: null } });
+      const opened = navigate.experimental_openFilePreview({ target, location: line === null ? null : { kind: "line", line, column: null } });
+      // bb's panel may take focus as it opens: the keyboard stays here, so q still closes it.
+      const back = () => {
+        const root = rootRef.current;
+        const active = document.activeElement;
+        if (!root || (active !== null && (root.contains(active) || isEditable(active))) || hostPopupOpen()) return;
+        root.focus({ preventScroll: true });
+      };
+      for (const ms of [0, 60, 250]) setTimeout(back, ms);
+      return opened;
     },
   });
   const readerRef = useRef(reader);
@@ -2055,8 +2127,6 @@ function OverviewScreen({
   );
 
   // The chat in the pane is scrolled from here, without taking the keyboard.
-  const glide = useRef(new Glide());
-  useEffect(() => () => glide.current.stop(), []);
   // A mouse or trackpad is helped off bb's pin to the newest message while text arrives.
   useEffect(() => attachWheelEscape(() => rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]") ?? null), []);
   // Scrolled away from the newest message, the pane says when more has arrived below.
@@ -2075,10 +2145,10 @@ function OverviewScreen({
     }, 400);
     return () => clearInterval(timer);
   }, [pane]);
-  const scrollChat = (delta: (viewHeight: number) => number | "end") => {
+  const scrollChat = (delta: (viewHeight: number) => number | "end", half = false) => {
     const chat = rootRef.current?.querySelector<HTMLElement>("[data-cow-chat]");
     const scroller = chat ? chatScroller(chat) : null;
-    if (scroller) glide.current.push(scroller, delta(scroller.clientHeight));
+    if (scroller) scrollChatBy(scroller, delta(scroller.clientHeight), half);
   };
 
   // A reply showing in a pane the person opened has been seen. Each is marked
@@ -2151,7 +2221,7 @@ function OverviewScreen({
         panelFiles.closeShown();
         return;
       case "chat-scroll":
-        if (pane !== null) scrollChat((height) => command.by * (command.half ? Math.max(CHAT_STEP_PX, Math.round(height / 2)) : CHAT_STEP_PX));
+        if (pane !== null) scrollChat((height) => command.by * (command.half ? Math.max(CHAT_STEP_PX, Math.round(height / 2)) : CHAT_STEP_PX), command.half);
         return;
       case "chat-end":
         if (pane !== null) scrollChat(() => "end");
@@ -2358,8 +2428,8 @@ function OverviewScreen({
 
   useLayoutEffect(() => {
     const root = rootRef.current;
-    root?.querySelector(".cow-main .cow-cur")?.scrollIntoView({ block: "nearest" });
-    root?.querySelector(".cow-queue .cow-cur")?.scrollIntoView({ block: "nearest" });
+    followInto(root?.querySelector(".cow-main .cow-cur"));
+    followInto(root?.querySelector(".cow-queue .cow-cur"));
   }, [selected]);
 
   const listedCount = listed(overview).length;

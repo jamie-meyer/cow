@@ -1,6 +1,7 @@
 // Keyboard rules: which keys the page owns, what each one means, and which
 // elements on screen can take a hint.
 
+import { keyReleased, whilePressing } from "./scroll.ts";
 import type { Verb } from "./verbs.ts";
 
 /** What a key asks for in normal mode. */
@@ -275,7 +276,7 @@ const NAMED_KEYS = new Set([
   "ArrowRight",
 ]);
 
-function isEditable(el: Element): boolean {
+export function isEditable(el: Element): boolean {
   return (
     el instanceof HTMLElement &&
     (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
@@ -303,7 +304,17 @@ function hostPopups(): HTMLElement[] {
   }
   return open;
 }
-const hostPopupOpen = (): boolean => hostPopups().length > 0;
+export const hostPopupOpen = (): boolean => hostPopups().length > 0;
+
+/** Whether an element is in one of the floating menus, lists or dialogs bb opens over everything. */
+const inPopup = (element: Element): boolean => element.closest(POPUPS) !== null;
+
+/**
+ * Whether focus is nowhere in particular: on the document itself, as it is
+ * after the focused element went away or a click landed on something that
+ * takes no focus.
+ */
+const nowhere = (element: Element | null): boolean => element === null || element === document.body || element === document.documentElement;
 
 export interface KeyOwner {
   /** A key pressed while the cursor is in the overview. */
@@ -321,24 +332,57 @@ export interface KeyOwner {
 
 /**
  * Listen for keys in the capture phase on `window`, so the page hears them
- * before bb does wherever focus has drifted.
+ * before bb does while focus is somewhere on the page.
+ *
+ * Which keys are the page's: those pressed while focus is in it, and while
+ * focus is nowhere, or in a menu or dialog bb opened, after it was last in
+ * the page. A key pressed while focus is anywhere else, in bb's own fields,
+ * panels and sidebar or another plugin's, is left alone, whatever it is.
  *
  * - Modified keys are bb's, except Ctrl with a letter while the reader is
  *   open: its page and half-page keys.
  * - Typing in any field works normally.
- * - Inside the embedded chat every key is the chat's, except Escape, which
- *   returns to the overview, and `f` when focus is on something that is not
- *   a field.
- * - Anywhere else the overview owns every plain key and lets none through,
- *   so a digit can never answer a question in the embedded chat by accident.
+ * - Inside the embedded chat's composer every key is the chat's, except
+ *   Escape, which returns to the overview.
+ * - Anywhere else on the page the overview owns every plain key and lets
+ *   none through, so a digit can never answer a question in the embedded
+ *   chat by accident.
  * - While a menu or dialog of bb's is open the keyboard is its own, except
  *   `f`, which puts hints on what it offers.
  * - In hint mode every key is a hint letter, wherever focus is.
+ *
+ * Each key is handled with the scrollers told which key it is and whether
+ * it is the key's repeat, and its release and the window losing the
+ * keyboard are passed on, so a held key scrolls steadily and stops when let go.
  */
 export function attachKeys(owner: KeyOwner): () => void {
+  // Where focus was last, apart from bb's floating menus and dialogs: in the page, or elsewhere.
+  const initial = document.activeElement;
+  let pageHadFocus = nowhere(initial) || initial?.closest("[data-cow-root]") != null;
+  const onFocusIn = (event: FocusEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null || nowhere(target)) return;
+    if (target.closest("[data-cow-root]")) pageHadFocus = true;
+    else if (!inPopup(target)) pageHadFocus = false;
+  };
+  // A press of the mouse says where the person is, even where it gives nothing focus.
+  const onPointerDown = (event: PointerEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null) return;
+    if (target.closest("[data-cow-root]")) pageHadFocus = true;
+    else if (!inPopup(target) && !target.closest("[data-cow-hints]")) pageHadFocus = false;
+  };
+  /** Whether a key at this target is for the page at all. */
+  const ours = (target: Element | null): boolean => {
+    if (target?.closest("[data-cow-root]")) return true;
+    if (nowhere(target) || (target !== null && inPopup(target))) return pageHadFocus;
+    return false;
+  };
   const onKeyDown = (event: KeyboardEvent) => {
     if (MODIFIER_KEYS.has(event.key)) return;
     const target = event.target instanceof Element ? event.target : null;
+    const capturing = owner.capturing?.() === true;
+    if (!capturing && !ours(target)) return;
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
       const typing = target !== null && isEditable(target);
       if (!typing && !hostPopupOpen() && owner.onCtrl?.(event.key.toLowerCase())) {
@@ -348,7 +392,7 @@ export function attachKeys(owner: KeyOwner): () => void {
       return;
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (!owner.capturing?.()) {
+    if (!capturing) {
       const inPage = target?.closest("[data-cow-root]") != null;
       const typing = target !== null && isEditable(target);
       if (!inPage && hostPopupOpen()) {
@@ -372,10 +416,24 @@ export function attachKeys(owner: KeyOwner): () => void {
     if (event.key.length !== 1 && !NAMED_KEYS.has(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
-    owner.onKey(event.key, event.shiftKey);
+    whilePressing({ code: event.code || event.key, repeat: event.repeat }, () => owner.onKey(event.key, event.shiftKey));
   };
+  // A release is only heard, never taken: it changes nothing for anyone else.
+  const onKeyUp = (event: KeyboardEvent) => keyReleased(event.code || event.key);
+  const onBlur = () => keyReleased(null);
   window.addEventListener("keydown", onKeyDown, { capture: true });
-  return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  window.addEventListener("keyup", onKeyUp, { capture: true, passive: true });
+  window.addEventListener("blur", onBlur);
+  window.addEventListener("focusin", onFocusIn, { capture: true });
+  window.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
+  return () => {
+    window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+    window.removeEventListener("keydown", onKeyDown, { capture: true });
+    window.removeEventListener("keyup", onKeyUp, { capture: true });
+    window.removeEventListener("blur", onBlur);
+    window.removeEventListener("focusin", onFocusIn, { capture: true });
+    keyReleased(null);
+  };
 }
 
 export interface HintTarget {

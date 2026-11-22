@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-cow",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "description": "Run your work through one main thread and supervise it from one keyboard-driven page.",
   "license": "MIT",
   "type": "module",

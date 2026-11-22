@@ -4,6 +4,52 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.24
+
+- **Scrolling by key is smooth.** One scroller now moves everything a key
+  scrolls: the list and the queue following the cursor, the legend, the
+  sheets and cards (`L`, `C`, `W`, a brief's), the reader and the chat in the
+  pane. A press goes a step, eased over 140 ms, and lands exactly on it. A
+  held key glides at a steady 900 pixels a second from the keyboard's first
+  repeat, however fast it repeats, with no steps queued up, and when let go
+  it slows to rest within about 54 pixels; the opposite key turns round at
+  once. Half pages, pages and the ends take 180 ms however far they go. The
+  list follows a held `j` or `k` steadily, keeping the cursor line in view on
+  every frame. It is driven by time, so it is the same at any frame rate, and
+  with the system's "reduce motion" setting every motion is a jump, as before.
+  Hints, the reader's search and its place kept for back and forward read
+  where the scrolling is going, not where it has got to. The `W` sheet now
+  follows its cursor too.
+- **The keyboard stays with cow after a click.** Clicking a message in the
+  chat, selecting text in it, clicking a link, a button, a line, a notice or
+  empty space leaves `j`, `k` and the rest working, without scrolling and
+  without clearing the selection. A field you type in keeps the keys until Esc
+  or sending, as before. Opening the page by its command when it is already
+  open, and bb's window getting the keyboard back with focus nowhere, give the
+  page the keys.
+- **cow leaves other keyboards alone.** While focus is in bb's own fields,
+  menus, sidebar or panels, or in another plugin's, cow's keys do nothing;
+  before, a plain key pressed with focus on a button outside the page was
+  still taken. A click back on the page brings them back.
+- **A deleted thread's usage is kept.** Deleting a thread, or a project with
+  its threads, no longer takes what it used out of the spend under its Main or
+  the usage line: the tokens were spent. A thread's usage record now keeps its
+  parent, project and whether it is a checker run, and is marked when bb
+  deletes the thread (or it is gone from bb's list). `bb cow spend` counts it
+  under its Main when its saved parent chain reaches that Main, in the group it
+  belonged to, and says how many ("8 deleted threads are still counted";
+  `deleted` in `--json`); the usage line counts every one.
+- **Usage lost to an earlier deletion comes back from the ledger.** When cow
+  starts, a worker whose thread is gone and has no usage record gets one from
+  its ledger row: its four counts and model, all on the day it was archived,
+  under its dispatching thread. Safe to repeat.
+- **A usage record is never replaced by less.** One that does not read is kept
+  as it is, named in cow's log and counted in `bb cow spend`'s notes, instead
+  of being replaced by a fresh read of the one event bb still keeps. No read
+  writes a record holding fewer tokens than the stored one.
+- **`bb cow spend forget --deleted [--yes]`** lists the kept usage of deleted
+  threads, and with `--yes` removes it.
+
 ## 0.2.23
 
 - **Tokens and dollars while a turn runs, if you turn it on.** A new setting,

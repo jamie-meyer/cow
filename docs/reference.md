@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Caps and stuck checks](#caps-and-stuck-checks) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [Scrolling and focus](#scrolling-and-focus) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Caps and stuck checks](#caps-and-stuck-checks) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -655,8 +655,9 @@ they were.
 With a chat open in the pane and the cursor in the overview, `;` and `'`
 scroll the chat down and up a few lines, `:` and `"` half a page, and `\`
 goes to its newest message. They are `j` and `k` moved one key to the right.
-A held key keeps scrolling. The cursor does not move and the chat does not
-take the keyboard. With no chat open they do nothing, and in any field they
+A held key keeps scrolling, at the same steady speed as everywhere else on
+the page (see [Scrolling and focus](#scrolling-and-focus)). The cursor does
+not move and the chat does not take the keyboard. With no chat open they do nothing, and in any field they
 are ordinary characters.
 
 bb keeps a chat pinned to its newest message, and pins it again each time
@@ -675,6 +676,37 @@ arrived; `\` goes to it.
 
 cow finds what to scroll without naming anything of bb's: of everything in
 the pane that scrolls up and down, the tallest.
+
+## Scrolling and focus
+
+Every place a key scrolls, or the view follows the cursor, moves the same way:
+the list and the queue, the legend, the sheets and cards, the reader and the
+chat in the pane.
+
+- A press of `j` or `k` (in a card or sheet) goes 60 pixels, eased over
+  140 ms, and lands exactly there; presses in quick succession add up.
+- Held down, from the keyboard's first repeat on, it glides at 900 pixels a
+  second, however fast the keyboard repeats, and when let go it slows to rest
+  over 120 ms, about 54 pixels further. The opposite key turns round at once.
+- Half pages, pages, `gg` and `G` take 180 ms, however far they go.
+- When the cursor leaves the view, the view eases to show it over 100 ms. While
+  `j` or `k` is held, the cursor line is kept three lines from the edge, and it
+  is never let out of view.
+- The motion is a function of time, so it is the same at any frame rate. With
+  the system's "reduce motion" setting, each of these is a jump.
+
+The keyboard stays with the page. A click that leaves focus on something on
+the page that takes no typing (a message in the chat, text selected in it, a
+link, a button, a line, empty space) hands it back to the page once the mouse
+is let go, without scrolling and without clearing the selection; Cmd+C still
+copies it. A field you type in (the filter, a prompt, an answer box, the
+chat's composer once `i` puts the caret there) keeps the keys until Esc or
+sending. Opening the page, by its command or otherwise, and bb's window
+getting the keyboard back with focus nowhere, give the page the keys too.
+
+cow's keys are the page's only while focus is on the page, or nowhere, or in
+a menu or dialog bb opened from it. While focus is in bb's own fields, menus,
+sidebar or panels, or in another plugin's, cow does nothing with a key.
 
 ## The reader
 

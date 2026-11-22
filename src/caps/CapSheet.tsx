@@ -12,6 +12,7 @@ import type { Notice } from "./service.ts";
 import type { EnrolledKey, KeyRequest } from "../signing/envelope.ts";
 import type { Signer } from "../signing/page.ts";
 import { entryThread } from "./log.ts";
+import { followInto } from "../scroll.ts";
 
 export interface CapSheetHost {
   caps: CapsData;
@@ -156,7 +157,7 @@ export function useCapSheet(host: CapSheetHost): CapSheetControl {
   }, [open, openIds, caps.changes]);
 
   useLayoutEffect(() => {
-    bodyRef.current?.querySelector(".cow-cur")?.scrollIntoView({ block: "nearest" });
+    followInto(bodyRef.current?.querySelector(".cow-cur"));
   }, [cursor, logCursor, view, history]);
 
   const close = () => {

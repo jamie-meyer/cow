@@ -12,6 +12,7 @@ import { dollarText } from "./prices.ts";
 import { SPEND_KINDS, SPEND_KIND_TEXT, type Spend, type SpendPart } from "./spend.ts";
 import { tokensLine } from "./usage.ts";
 import { LEDGER_CHANGED } from "./ledger-store.ts";
+import { scrollKey } from "./scroll.ts";
 
 /** The window the sheet reads, as `bb cow ledger` does by default. */
 export const LEDGER_DAYS = 14;
@@ -255,13 +256,6 @@ export function LedgerSheet({
 export function ledgerKey(key: string, close: () => void, nextGrouping: () => void = () => undefined): true {
   if (key === "Escape" || key === "q" || key === "L") close();
   if (key === "b") nextGrouping();
-  const card = document.querySelector<HTMLElement>("[data-cow-ledger] .cow-card");
-  if (card) {
-    if (key === "j" || key === "ArrowDown") card.scrollBy({ top: 60 });
-    else if (key === "k" || key === "ArrowUp") card.scrollBy({ top: -60 });
-    else if (key === "G") card.scrollTo({ top: card.scrollHeight });
-    else if (key === "g") card.scrollTo({ top: 0 });
-    else if (key === " ") card.scrollBy({ top: card.clientHeight * 0.8 });
-  }
+  scrollKey(document.querySelector<HTMLElement>("[data-cow-ledger] .cow-card"), key);
   return true;
 }
