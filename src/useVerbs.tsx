@@ -10,6 +10,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { useSdk } from "@get-bb/plugin-sdk/app";
 import { AnswerCard, type AnswerState } from "./AnswerCard.tsx";
 import { AskCard, type AskState } from "./AskCard.tsx";
+import { asksAboutMerging } from "./merge/text.ts";
 import type { Ask } from "./asks/ask.ts";
 import { backOut, chatDigit, confirmAsk, emptyAskDraft, markChat, markOption, nextAsk, writeAnswer, writeWord } from "./asks/card.ts";
 import type { RaisedData } from "./raisedData.ts";
@@ -73,6 +74,8 @@ type Modal =
   | ({ kind: "blocked" } & BlockedState);
 
 export interface VerbHost {
+  /** When a thread's branch conflicts with its base, what to know before saying merge; null otherwise. */
+  conflictOf?: (threadId: string) => string | null;
   sdk: Sdk;
   overview: Overview;
   main: Line;
@@ -1003,6 +1006,7 @@ export function useVerbs(host: VerbHost): Verbs {
             title={title}
             now={host.now}
             messaged={askMessaged}
+            conflict={currentAsk !== null && asksAboutMerging(currentAsk) ? (host.conflictOf?.(modal.threadId) ?? null) : null}
             textRef={answerRef}
             wordRef={askWordRef}
             onText={(value) => setModal({ ...modal, draft: writeAnswer(modal.draft, value), note: "" })}

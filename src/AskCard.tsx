@@ -45,6 +45,7 @@ export function AskCard({
   title,
   now,
   messaged,
+  conflict = null,
   textRef,
   wordRef,
   onText,
@@ -60,6 +61,8 @@ export function AskCard({
   now: number;
   /** The person has sent the thread a message since it asked this: it may be answered in chat already. */
   messaged: boolean;
+  /** The ask is about merging and the thread's branch conflicts with its base: what to know first. */
+  conflict?: string | null;
   textRef: RefObject<HTMLInputElement | null>;
   wordRef: RefObject<HTMLInputElement | null>;
   onText: (value: string) => void;
@@ -119,6 +122,11 @@ export function AskCard({
           </b>
         ) : null}
       </p>
+      {conflict ? (
+        <p className="cow-merge-bad" data-cow-merge-note={state.threadId}>
+          Before you say merge: {conflict}. cow never merges.
+        </p>
+      ) : null}
       <p className="cow-ans-q" data-cow-answer-prompt="">
         {ask.capability ? (
           <>

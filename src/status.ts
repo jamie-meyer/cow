@@ -7,6 +7,7 @@ import { OUTSIDE_STATE_TEXT, type OutsideState, notListedText } from "./outside.
 import { type LineState, STATE_LABEL, waitingSince } from "./state.ts";
 import { formatAge } from "./text.ts";
 import { type Line, type Overview, ROLLUP_ORDER, asideText, leftBehind, unread } from "./tree.ts";
+import { type StatusMerge, statusMergeText } from "./merge/text.ts";
 
 /** How many lines of each section are given; the rest are counted. */
 export const STATUS_LIMITS = { threads: 80, parked: 30, settle: 40, kept: 30, archived: 20, automations: 40, outside: 40, queue: 20, text: 140 } as const;
@@ -84,6 +85,23 @@ export interface StatusLine {
   outcome?: { outcome: string; by: string };
   /** For a worker over a cap or caught by a stuck check: which, in the mark's words, with the facts. Shown, never enforced. Absent when none. */
   watch?: { reason: string; mark: string; facts: Record<string, string | number | null> }[];
+  /** For a thread that has finished a turn, on a branch with commits of its own: whether it still merges into its base. Absent when there is nothing to say. */
+  merge?: StatusMerge;
+}
+
+/** Which lines' merge-readiness is looked at: open threads that have finished a turn, not Main. */
+export function mergeCandidates(report: StatusReport): string[] {
+  const lines = [...report.queue, ...report.threads, ...report.parked, ...report.settle, ...report.kept];
+  return [...new Set(lines.filter((line) => line.id !== report.main.id && line.state !== "running").map((line) => line.id))];
+}
+
+/** The same report with each line carrying its merge-readiness, where there is any. */
+export function withMerge<T extends StatusReport>(report: T, found: Readonly<Record<string, StatusMerge | null>>): T {
+  const marked = <L extends StatusLine>(line: L): L => {
+    const merge = found[line.id];
+    return merge ? { ...line, merge } : line;
+  };
+  return { ...report, queue: report.queue.map(marked), threads: report.threads.map(marked), parked: report.parked.map(marked), settle: report.settle.map(marked), kept: report.kept.map(marked) };
 }
 
 /** The same report with each worker's line carrying its caps and stuck-check marks. */
@@ -244,6 +262,7 @@ const nextOf = (line: StatusLine): string => (line.note !== null ? ` → next, i
 
 /** The capabilities a line's thread holds, by name. */
 const watched = (line: StatusLine): string => (line.watch && line.watch.length > 0 ? `  [${line.watch.map((w) => w.mark).join("; ")}]` : "");
+const merged = (line: StatusLine): string => (line.merge ? `  [${statusMergeText(line.merge)}]` : "");
 const holds = (line: StatusLine): string => (line.capabilities && line.capabilities.length > 0 ? `  [holds: ${line.capabilities.join(", ")}]` : "");
 
 function row(line: StatusLine, indent: boolean): string[] {
@@ -256,7 +275,7 @@ function row(line: StatusLine, indent: boolean): string[] {
   const behind = line.leftBehind && line.leftBehind.length > 0 ? `  [archiving leaves: ${line.leftBehind.join(", ")}]` : "";
   const outcome = line.outcome ? `  [outcome: ${line.outcome.outcome}, judged by ${line.outcome.by === "person" ? "the person" : line.outcome.by}]` : "";
   return [
-    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${outcome}${watched(line)}${holds(line)}`,
+    `${place}  ${line.state.padEnd(7)} ${line.inState.padStart(4)}  ${pad}${line.title} (${line.id})${line.project ? " [project]" : ""}${unreadMark}  ${line.doing}${nextOf(line)}${under}${behind}${outcome}${watched(line)}${merged(line)}${holds(line)}`,
     ...line.todo.map((title, index) => `${" ".repeat(18)}${pad}  not started ${index + 1}: ${title}`),
   ];
 }
@@ -278,7 +297,7 @@ export function statusText(report: StatusReport): string {
   ];
   if (report.queue.length === 0) out.push("    nothing");
   for (const line of report.queue) {
-    out.push(`${String(line.queue ?? "").padStart(2)}  ${line.title} (${line.id})  ${line.doing} · waiting ${line.waiting}`);
+    out.push(`${String(line.queue ?? "").padStart(2)}  ${line.title} (${line.id})  ${line.doing} · waiting ${line.waiting}${line.merge?.state === "conflict" ? merged(line) : ""}`);
   }
   out.push(...more(omitted.queue));
   if (report.traces && report.traces.length > 0) {

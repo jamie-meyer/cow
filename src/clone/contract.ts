@@ -5,6 +5,7 @@ import { z } from "zod";
 import { checkPattern } from "./glob.ts";
 import type { HoldReason } from "./judge.ts";
 import { folderName, relativePath } from "./names.ts";
+import { mergeFactsSchema } from "../merge/text.ts";
 
 export { folderName };
 
@@ -242,6 +243,16 @@ export const cloneHostContract = defineRpcContract({
    * the clone was made. Reads only; runs git with hooks off. "none" when
    * nothing could be read.
    */
+  /**
+   * Whether a checkout's branch still merges into its base: ahead, behind and
+   * a trial merge, every git command read-only. `known` is the last answer:
+   * it is given back when neither tip has moved. In one of cow's clones the
+   * base is read from the source folder's repository, by cow's own record.
+   */
+  merge_facts: {
+    input: z.object({ path: absolute, baseBranch: z.string().max(300).nullable(), defaultBranch: z.string().max(300).nullable(), known: mergeFactsSchema.nullable() }),
+    output: mergeFactsSchema,
+  },
   brief_diff: {
     input: z.object({ path: absolute, bases: z.array(z.string().min(1).max(300)).max(10) }),
     output: z.discriminatedUnion("status", [

@@ -15,6 +15,8 @@ import type { Spend } from "./src/spend.ts";
 import { type TraceSink, registerAttention } from "./src/raised-backend.ts";
 import { registerAutomations } from "./src/automations-backend.ts";
 import { registerCard } from "./src/card-backend.ts";
+import { registerMerge } from "./src/merge/backend.ts";
+import { statusMerge } from "./src/merge/text.ts";
 import { registerCaps } from "./src/caps/backend.ts";
 import { registerCloneProvider } from "./src/clone/provider.ts";
 import { registerWorkspaces, workspaceCommands } from "./src/workspace/backend.ts";
@@ -151,6 +153,8 @@ export const rpcContract = defineRpcContract({
 });
 
 const STATE_KEY = "main-state";
+/** How long `bb cow status` waits for merge-readiness being worked out; what is not ready by then is left as last known. */
+const MERGE_WAIT_MS = 20_000;
 
 export default async function plugin(bb: BbPluginApi) {
   async function readState(): Promise<MainState> {
@@ -166,7 +170,9 @@ export default async function plugin(bb: BbPluginApi) {
   let started: StartedStore | null = null;
   const automations = registerAutomations(bb, async () => (started ? started.all() : new Map()));
   // The context card: bb's own git and pull-request plugins, and every plugin that offers `cow_card`. Only reads.
-  registerCard(bb);
+  // Whether each finished worker's branch still merges into its base: worked out read-only by the host entry, kept by its two tips.
+  const merge = registerMerge(bb);
+  registerCard(bb, merge);
   // One log for capabilities and keys: one numbering, one chain.
   const log = createLogStore({ kv: bb.storage.kv, now: Date.now, hash: sha256Hex });
   // Which script automation started a thread: cow's record alone, in the log. It changes only where a thread is listed.
@@ -332,7 +338,10 @@ export default async function plugin(bb: BbPluginApi) {
     cowCli({ ...actions, spend: async (mainId, projectId, month) => {
       const main = await actions.mainFor(mainId, projectId);
       return { ...(await ledgers.spend(main, month)), mainTitle: await titleOf(main) };
-    }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
+    }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks, mergeFacts: async (ids) => {
+      const found = await merge.settled(ids, MERGE_WAIT_MS);
+      return Object.fromEntries(Object.entries(found).map(([threadId, facts]) => [threadId, statusMerge(facts)]));
+    } }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was

@@ -2129,6 +2129,19 @@
   color: var(--cow-needs);
 }
 
+/* Whether a finished worker's branch still merges into its base: quiet, loud only for a conflict. */
+.cow-merge {
+  color: var(--cow-muted);
+}
+.cow-merge-bad {
+  font-weight: 600;
+  color: var(--cow-needs);
+}
+small.cow-merge-bad,
+p.cow-merge-bad {
+  display: block;
+}
+
 /* A worker over its cap or caught by a stuck check: shown, never enforced. */
 .cow-watch {
   font-weight: 600;

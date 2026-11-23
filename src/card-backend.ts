@@ -24,6 +24,8 @@ import {
   pullRequestSection,
   readCardAnswer,
 } from "./card.ts";
+import type { MergeWatch } from "./merge/backend.ts";
+import { type MergeFacts, mergeSection } from "./merge/text.ts";
 
 /** How long another plugin's `cow_card` may take, and bb's own reads. */
 export const PLUGIN_MS = 2000;
@@ -54,6 +56,9 @@ export interface CardDeps {
   call(pluginId: string, method: string, input: unknown, signal: AbortSignal): Promise<unknown>;
   /** The plugins that registered `cow_card`, with their names. */
   providers(signal: AbortSignal): Promise<{ pluginId: string; name: string }[]>;
+  /** cow's own: whether the thread's branch merges into its base, as last worked out; null when nothing is known. */
+  merge?(threadId: string): MergeFacts | null;
+  now?(): number;
 }
 
 /** One thread's card. Never throws. */
@@ -80,7 +85,9 @@ export async function readCard(deps: CardDeps, threadId: string, limits = { plug
     );
   };
   const [bb, rest] = await Promise.all([own(), others()]);
-  return { threadId, environmentId, sources: orderSources([bb, ...rest]) };
+  const merge = mergeSection(deps.merge?.(threadId) ?? null, deps.now?.() ?? Date.now());
+  const cow: CardSource = { pluginId: deps.ownPluginId, name: "cow", sections: merge ? [merge] : [] };
+  return { threadId, environmentId, sources: orderSources([bb, cow, ...rest]) };
 }
 
 const rowSchema = z.object({
@@ -103,10 +110,11 @@ export const cardRpcContract = defineRpcContract({
   card_read: { input: z.object({ threadId: z.string().min(1).max(200) }), output: cardSchema },
 });
 
-export function registerCard(bb: BbPluginApi): void {
+export function registerCard(bb: BbPluginApi, merge?: MergeWatch): void {
   let discovered: { at: number; list: Promise<{ pluginId: string; name: string }[]> } | null = null;
   const deps: CardDeps = {
     ownPluginId: bb.pluginId,
+    merge: merge ? (threadId) => merge.peek([threadId])[threadId] ?? null : undefined,
     environmentOf: async (threadId, signal) => {
       const thread = await bb.sdk.threads.get({ threadId, signal });
       return thread.environmentId ?? null;

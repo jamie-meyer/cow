@@ -11,8 +11,12 @@ import { parseWorkspaceFile } from "../workspace/file.ts";
 import { type CommandDeps, backCandidates, backFromClone, approvedFile, lastRun, readFolder, repoStatuses, syncWorkspace } from "../workspace/ops.ts";
 import { RepoLocks, RunStore } from "../workspace/run.ts";
 import { readTranscriptUsage } from "../transcript/read.ts";
+import { mergeInput } from "../merge/host.ts";
+import { RepoLocks as MergeLocks, defaultDeps as mergeDeps, workOutBounded } from "../merge/facts.ts";
 
 const locks = new RepoLocks();
+/** One git process per repository at a time for merge-readiness, across every call. */
+const mergeLocks = new MergeLocks();
 const commandDeps = (dataDir: string): CommandDeps => ({ store: new RunStore(dataDir), locks });
 const macOnly = () => {
   if (process.platform !== "darwin") throw new Error("cow's workspaces need macOS");
@@ -151,6 +155,7 @@ export default experimental_defineHostEntry({
           return { status: "failed" as const, message: message(error) };
         }
       }),
+    merge_facts: async (input, context) => workOutBounded(mergeLocks, mergeInput(context.experimental_paths.dataDir, input), input.known, mergeDeps()),
     brief_diff: async (input, context) => {
       try {
         // In one of cow's clones, every repository it brought is read too, from cow's own record of the clone.

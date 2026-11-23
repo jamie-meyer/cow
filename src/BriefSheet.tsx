@@ -42,6 +42,8 @@ export interface SheetHost {
   askCard: (askId: string) => ReactNode;
   /** The sheet closed: the cursor goes back to its line. */
   onClose: (threadId: string) => void;
+  /** When the thread's branch conflicts with its base, what to know before saying merge; null otherwise. */
+  conflictOf?: (threadId: string) => string | null;
 }
 
 export interface BriefSheetControl {
@@ -302,6 +304,11 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <p className={`cow-bf-check cow-bf-check-${check.tone}`} data-cow-brief-check={seen.state} data-cow-brief-runs={seen.runs.done}>
           {check.text}
         </p>
+        {host.conflictOf?.(open.threadId) ? (
+          <p className="cow-bf-check cow-bf-check-bad" data-cow-merge-note={open.threadId}>
+            Before you merge: {host.conflictOf(open.threadId)}. cow never merges.
+          </p>
+        ) : null}
         {record.failedRecheck ? (
           <p className="cow-bf-check" data-cow-brief-recheck-failed="">
             {upper(failedRecheckText(record.failedRecheck, seen.checkedAt))}.

@@ -35,6 +35,8 @@ import type { Refusal } from "./refusal.ts";
 import { type Signer, useSigner } from "./signing/page.ts";
 import { UsageLine, UsageNotice, useLimits } from "./UsageLine.tsx";
 import { LiveDollars, WatchMark, WatchNoticeItem, useWatch } from "./WatchMarks.tsx";
+import { MergeMark, useMerge } from "./MergeMarks.tsx";
+import { type MergeFacts, asksAboutMerging, conflictNote } from "./merge/text.ts";
 import type { LiveFigure } from "./watch-backend.ts";
 import type { Finding } from "./progress.ts";
 import { type RaisedData, useRaised } from "./raisedData.ts";
@@ -510,8 +512,11 @@ function LineRow({
   outcome,
   watch,
   live,
+  merge,
 }: {
   line: Line;
+  /** Whether its branch still merges into its base, for a thread that has finished a turn. Shown only. */
+  merge?: MergeFacts;
   /** What the worker is over or caught by now (caps and stuck checks): shown, never enforced. */
   watch?: readonly Finding[];
   /** Its running turn read from Claude Code's transcript (the liveUsage setting): dollars so far. */
@@ -688,6 +693,7 @@ function LineRow({
           </b>
         ) : null}
         {watch && watch.length > 0 ? <WatchMark found={watch} /> : null}
+        {merge ? <MergeMark facts={merge} /> : null}
         {live ? <LiveDollars live={live} /> : null}
         {derived.archivedWhy ? (
           <b className="cow-why" data-cow-archive-reason="">
@@ -1734,6 +1740,24 @@ function OverviewScreen({
   const limits = useLimits(signer);
   // Caps and stuck checks on workers: marks and notices, read from cow's server. Shown only.
   const watch = useWatch(signer);
+  // Whether each finished worker's branch still merges into its base: worked out by cow's server, read-only. Shown only.
+  const mergeIds = useMemo(
+    () =>
+      overview.main
+        ? listed(overview)
+            .filter((line) => line.thread.archivedAt === null && line.thread.id !== overview.main!.thread.id && line.derived.state !== "running")
+            .map((line) => line.thread.id)
+        : [],
+    [overview],
+  );
+  const merge = useMerge(mergeIds);
+  /** A conflict the person should know of before they say merge: beside a brief waiting for them, or an ask about merging. */
+  const conflictFor = (line: Line): string | null => {
+    const note = conflictNote(merge[line.thread.id]);
+    if (note === null) return null;
+    const briefWaiting = line.derived.brief !== undefined && !line.derived.brief.read;
+    return briefWaiting || (line.derived.asks ?? []).some(asksAboutMerging) ? note : null;
+  };
   const ackWatch = (noticeId: string) =>
     void watch.acknowledge(noticeId).then(
       () => setMessage("worker notice acknowledged"),
@@ -1981,6 +2005,7 @@ function OverviewScreen({
   const judgedHere = (line: Line): boolean => [...overview.archived, ...overview.settle].some((other) => other.thread.id === line.thread.id);
 
   const verbs = useVerbs({
+    conflictOf: (id) => conflictNote(merge[id]),
     sdk,
     overview,
     main,
@@ -2016,6 +2041,7 @@ function OverviewScreen({
 
   const sheet = useBriefSheet({
     raised,
+    conflictOf: (id) => conflictNote(merge[id]),
     titleOf: (id) => titles.get(id) ?? "a thread that is no longer listed",
     now,
     say: setMessage,
@@ -2508,6 +2534,7 @@ function OverviewScreen({
         outcome={judgedHere(line) ? ledger.outcomes.get(line.thread.id) : undefined}
         watch={line.thread.archivedAt === null ? watch.marks[line.thread.id] : undefined}
         live={line.thread.archivedAt === null ? watch.live[line.thread.id] : undefined}
+        merge={line.thread.archivedAt === null ? merge[line.thread.id] : undefined}
       />
       {card(line.thread.id)}
     </Fragment>
@@ -2880,6 +2907,11 @@ function OverviewScreen({
                         <small>
                           {line.thread.title} · {formatAge(Math.max(0, now - waitingSince(line.derived)))}
                         </small>
+                        {conflictFor(line) ? (
+                          <small className="cow-merge-bad" data-cow-merge-note={line.thread.id}>
+                            {conflictFor(line)}
+                          </small>
+                        ) : null}
                       </div>
                     </li>
                   ))
