@@ -4,6 +4,32 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.26
+
+- **A finished worker's line says whether its branch still merges.** On
+  each finished worker's line with commits of its own: how many commits it
+  is behind the branch it would merge into and whether a trial merge is
+  clean (`3 behind · merges cleanly`, quiet), or which files conflict
+  (`conflicts in 2 files`, loud). The context card has a "Merge into
+  <base>" section with ahead, behind, the base, the conflicting files (the
+  first 5, each opening in the reader) and when it was worked out, and
+  `bb cow status` and its `--json` (`merge`) say the same. A conflict also
+  shows beside a brief waiting for you and in an ask about merging; it never
+  makes an ask, a notification or a queue entry by itself. Nothing shows
+  for a thread with no commits of its own, a branch already merged, a
+  detached head or a folder that is not a git checkout.
+- The base is the local branch bb says the worktree was made from,
+  otherwise the default branch as found locally. The trial merge is `git
+  merge-tree --write-tree` (git 2.38 or later; older reads "not known"): it
+  changes no working tree, index, ref, stash or config, its objects go to a
+  temporary folder of cow's own, and nothing is fetched. It is worked out
+  again only when the branch's tip or the base's moves, one git process per
+  repository at a time, 15 seconds at most; a failure or a timeout reads
+  "not known" with the reason, never "clean". Uncommitted changes are not
+  counted, and the line says when there are some. In one of cow's clones
+  the base is read from the source folder's repository, also without
+  writing to either. cow never merges anything.
+
 ## 0.2.25
 
 - **A script automation's run can say which thread it started.** A script

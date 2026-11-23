@@ -611,6 +611,106 @@ export default async function plugin(bb: BbPluginApi) {
 }
 ```
 
+## Merge-readiness
+
+Workers on branches of their own pass alone and can break together: each
+finished worker's line says whether its branch still fits the branch it
+will be merged into. cow shows it; it never merges, rebases, updates or
+fetches anything.
+
+**Which threads.** A thread that has finished a turn (any state but
+running), is not archived and is not Main, in an environment that is a git
+checkout on a branch with commits its base does not have. Nothing at all
+shows for a thread with no commits of its own, for a branch already merged
+into its base (by its commits, or by a squash: the trial merge's result is
+the base's own tree), for a detached head, for a checkout on the base
+branch itself, and for a folder that is not a git checkout.
+
+**The base.** The local branch bb says the worktree was made from (the
+environment's base branch), when it is there; otherwise the repository's
+default branch as bb names it; otherwise the branch `origin/HEAD` points to;
+otherwise `main`, then `master`. Each must exist as a local branch
+(`refs/heads/…`): a remote-tracking branch is never used as the base, so
+what is compared is what you would merge into here, without a fetch. When
+none is found it reads "not known".
+
+**What it says.**
+
+| Where | Clean | Conflict | Not known |
+| --- | --- | --- | --- |
+| the line, beside what it is doing | `3 behind · merges cleanly`, quiet (`merges cleanly` when not behind; `· uncommitted aside` when there are uncommitted changes) | `conflicts in 2 files`, loud, the files in its tooltip | `merge not known`, quiet, the reason in its tooltip |
+| the context card, a section "Merge into <base>" under cow | `merges cleanly`, then ahead and behind with `<branch> → <base>`, uncommitted changes if any, and when it was worked out | the same with `conflicts in N files` and the first 5 files, each opening in the reader, and `and N more` | `not known` and why, and when |
+| `bb cow status` | `[2 ahead, 3 behind main · merges cleanly]` | `[2 ahead, 1 behind main · conflicts in 2 files: a.ts, b.ts]` (the first 3 named) | `[merge into main not known: …]` |
+
+In `bb cow status --json` a line has `merge`: `state` (`clean`,
+`conflict` or `unknown`), `base`, `branch`, `ahead`, `behind`, `conflicts`
+(at most 20 paths) and `conflictCount`, `uncommitted`, `why` (for not
+known), `clone`, and `at`, when it was worked out. A line with nothing to
+say has no `merge`. `status` waits up to 20 seconds for answers being
+worked out; what is not ready by then is left as it was last known.
+
+A conflict is something to know before saying "merge". When the thread has
+a brief you have not read, or an open ask about merging (its question or an
+option says "merge"), the conflict is said there too: under its entry in
+the queue, at the top of the brief, and in the ask's card. It never makes an
+ask, a notification or a queue entry of its own.
+
+**Uncommitted changes** in the worktree are not part of the trial merge,
+which compares commits. When there are any, the line, the card and
+`status` say so instead of counting them.
+
+**When it is worked out.** The page asks for the finished workers it shows,
+every 30 seconds and when the server says an answer changed. cow's server
+looks at one environment at most every 30 seconds, and only while a page or
+`bb cow status` asks. A look first reads the two tips (the branch's and the
+base's); when neither has moved since the last answer, that answer stands
+and only whether there are uncommitted changes is read again. The counts
+and the trial merge are worked out again only when one of the tips has
+moved. Each look runs in cow's host entry, on the machine the checkout is
+on, holding that repository: never more than one git process per
+repository at a time (worktrees of one repository count as one), at most
+three repositories at once, and at most 15 seconds per repository, after
+which the process is killed. A failure, a timeout, a host that does not
+answer, a checkout that has gone or a git older than 2.38 read as "not
+known", with the reason, and never as clean.
+
+**The git commands, all read-only.** Each runs without a shell, with hooks,
+fsmonitor and the untracked cache off, without optional locks, with no
+prompt and no lazy fetch of a partial clone's objects, and with none of the
+environment's own `GIT_` variables:
+
+- once per host entry: `git version`;
+- every look: `git rev-parse --path-format=absolute --git-common-dir HEAD
+  --symbolic-full-name HEAD` in the checkout, and `git for-each-ref
+  refs/heads refs/remotes/origin/HEAD` where the base is;
+- every look with commits ahead: `git status --porcelain=v1 -z
+  --untracked-files=normal`;
+- only when a tip moved: `git rev-list --left-right --count <base>...<head>`,
+  then, with commits ahead, `git merge-tree --write-tree --name-only
+  --no-messages -z <base> <head>` and, when it is clean, `git rev-parse
+  <base>^{tree}`.
+
+`git merge-tree --write-tree` changes no working tree, index or ref. The
+objects it makes are written to a temporary folder of cow's own
+(`GIT_OBJECT_DIRECTORY`), with the repository's objects borrowed read-only
+(`GIT_ALTERNATE_OBJECT_DIRECTORIES`), and the folder is removed after: not
+even an object is added to the repository. It is safe while the worker is
+still writing files, and leaves no lock. Nothing is fetched.
+
+**A copy-on-write clone.** A thread in one of cow's clones has its branch
+in the clone's own repository, and the base it goes back to is in the
+source folder's repository, which cow finds from its own record of the
+clone. The base is chosen there, the base's tip is read there, and the
+commands that compare run in the clone with the source's objects borrowed
+read-only too; nothing is written to either repository, no remote is added
+and nothing is fetched. The line and card say the base is in the source
+folder. Only the clone's top folder is looked at, not the repositories it
+brought. When cow's record of the clone cannot be read, it reads "not known
+for a clone".
+
+**Not shown.** Whether two unmerged branches conflict with each other,
+checks, pull requests, and anything about merging itself.
+
 ## What is next
 
 The page shows what exists. A thread can also say what it intends:
@@ -2392,7 +2492,7 @@ agent and stop no other.
 
 | Method | What it does | Meant for an agent? | What an agent calling it could hide from you or change |
 | --- | --- | --- | --- |
-| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read`, `ledger_read`, `watch_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card, the ledger, the caps and stuck-check marks and notices | yes: `bb cow status`, `asks`, `brief show`, `caps`, `ledger` read the same | nothing. They change nothing |
+| `main_state`, `notes_list`, `asks_list`, `brief_get`, `brief_marks`, `caps_state`, `caps_log`, `keys_state`, `automations_read`, `card_read`, `merge_read`, `ledger_read`, `watch_read` | read: the recorded Mains, cow's notes on threads (parks, archive reasons, dismissals, what is next, work not started, replies seen, project marks, waits, keeps), asks, briefs, capabilities, the log, the keys, bb's automations, a thread's context card, merge-readiness (it may start the read-only git commands of [Merge-readiness](#merge-readiness), at most once per environment every 30 seconds), the ledger, the caps and stuck-check marks and notices | yes: `bb cow status`, `asks`, `brief show`, `caps`, `ledger` read the same | nothing. They change nothing |
 | `signed` | carries out one of your actions when the call is signed by an enrolled key | no | nothing without a signature: an unsigned or forged call is refused and changes nothing |
 | `key_enrol` | presents a key. With none enrolled it is enrolled; otherwise it becomes a request | no, but any caller can | on a cow with no key enrolled, it becomes the enrolled key, and your page then says in red that it is not: see "If something else enrolled first". Otherwise it adds a request to your queue under a name of its choosing, at most 8 at a time, and can do nothing until you approve it |
 | `park_set` | writes or removes a thread's park note, with none of the CLI's checks | the page's `p` and `r`; an agent uses `bb cow park` and `resume` | **parking takes a line out of your queue.** The thread leaves the tree with every thread under it. What it waited on you for (a reply, a failure, a refusal, a brief, a decision made outside cow) stops waiting, and so does everything that threads under it waited on you for, except their open asks. Still visible: the line is on the Parked shelf with the reason given, how long, and how many threads went with it; its own open ask, and those of threads under it, stay in the queue; and it returns to the queue on its pick-up date, or every four weeks without one. A caller can set that date far ahead, and can change the reason or the date of a park you made. This method leaves no trace in the queue or the log, unlike `bb cow park`. Removing a note only puts a line back |

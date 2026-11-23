@@ -142,6 +142,18 @@
 //                       and three actions only on "cow test" threads; the
 //                       actions write to its own metadata on the fixture,
 //                       which the run clears
+//   --only-merge        only merge-readiness on a finished worker's line: four
+//                       fixtures, a stand-in Main and three workers under it,
+//                       each in a throwaway git repository of its own under
+//                       the system temp folder, on a branch "work": one with a
+//                       commit that conflicts with main, which asks whether to
+//                       merge; one with a commit that merges cleanly and one
+//                       commit behind main; one with no commits of its own.
+//                       The line, the context card and bb cow status --json
+//                       are checked, and the conflicting repository's refs,
+//                       stash and status are the same after. The folders,
+//                       and the environments bb makes for them, are removed
+//                       after, and the ask is withdrawn
 //   --only-open         only the command that opens cow's page from anywhere:
 //                       one fixture, a stand-in Main. The shortcut is pressed
 //                       from the fixture's chat in bb, from bb's settings and
@@ -338,6 +350,40 @@ const PLUGGED = ["bmain", "bkid"];
 const TRACING = ["tmain", "tpark", "tidle", "task", "thead", "tkid"];
 /** The fixtures of the context card checks: a Main of their own, two threads under it, and a thread under no Main in a folder that is not a git checkout, which has nothing to show. */
 const CARDED = ["kmain", "kone", "ktwo", "knone"];
+/** The fixtures of the merge-readiness checks: a Main of their own and three workers, each in a throwaway repository. */
+const MERGING = ["gmain", "gclash", "gclean", "gnone"];
+/** Those repositories, made for the run and removed after it. */
+const mergeFolders = {};
+/** A worker that asks whether to merge, then rests. */
+const MERGE_ASKER = `You are a test fixture for a bb plugin. Run this shell command once, exactly as written, then reply with exactly: ok
+  bb ${PLUGIN} ask --question "Shall I merge work into main?" --option yes --option no
+Never run anything else, and reply to every later message with exactly: ok`;
+
+/** A throwaway repository on "work", made from main: "clash" commits a change main also made, "clean" one main does not touch while main moves on, "none" nothing. */
+function makeMergeRepo(kind) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `cow-e2e-merge-${kind}-`)));
+  const git = (...argv) => execFileSync("git", ["-c", "user.name=cow test", "-c", "user.email=cow-test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...argv], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "README.md"), "# limiter\n");
+  writeFileSync(join(dir, "src", "limit.js"), "export const LIMIT = 10;\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  git("branch", "work");
+  if (kind !== "none") {
+    writeFileSync(join(dir, kind === "clash" ? join("src", "limit.js") : "NOTES.md"), kind === "clash" ? "export const LIMIT = 20;\n" : "notes\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "main moves on");
+  }
+  git("checkout", "-q", "work");
+  if (kind !== "none") {
+    writeFileSync(join(dir, "src", kind === "clash" ? "limit.js" : "reset.js"), kind === "clash" ? "export const LIMIT = 5;\n" : "export function reset() {}\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "work");
+  }
+  return dir;
+}
+
 /** The fixture of the checks of the command that opens the page: a Main of its own. */
 const OPENING = ["xmain"];
 /** That folder, made for the run and removed after it. */
@@ -405,7 +451,7 @@ const inUse = {};
  */
 async function fixtures() {
   const ids = STATE && existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-  const wanted = flag("only-open") ? OPENING : flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-workspace") ? WORKSPACING : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
+  const wanted = flag("only-merge") ? MERGING : flag("only-open") ? OPENING : flag("only-card") ? CARDED : flag("only-traces") ? TRACING : flag("only-history") ? HISTORY : flag("only-plugins") ? PLUGGED : flag("only-automations") ? AUTOMATING : flag("only-outside") ? OUTSIDE : flag("only-ledger") ? LEDGER : flag("only-workspace") ? WORKSPACING : flag("only-settle") ? SETTLING : flag("only-waiting") ? WAITING : flag("only-reader") ? READING : flag("only-caps") ? CAPPED : FIXTURES;
   const missing = wanted.filter((name) => !ids[name]);
   if (missing.length > 0 && (!PROJECT || !ENVIRONMENT)) throw new Error("--project and --environment are required");
   const make = async (name, options) => {
@@ -478,6 +524,13 @@ async function fixtures() {
     if (!ids.knone) cardFolder = mkdtempSync(join(tmpdir(), "cow-card-none-"));
     await make("knone", { prompt: QUIET, environment: cardFolder ?? ENVIRONMENT });
   }
+  if (wanted.includes("gmain")) {
+    await make("gmain", { prompt: QUIET });
+    for (const [name, kind] of [["gclash", "clash"], ["gclean", "clean"], ["gnone", "none"]]) {
+      if (!ids[name]) mergeFolders[name] = makeMergeRepo(kind);
+      await make(name, { prompt: name === "gclash" ? MERGE_ASKER : QUIET, parent: ids.gmain, environment: mergeFolders[name] ?? ENVIRONMENT });
+    }
+  }
   // Only the fixtures this run uses are acted on.
   return Object.fromEntries(Object.entries(ids).filter(([name]) => wanted.includes(name)));
 }
@@ -496,7 +549,7 @@ async function reset(ids) {
     await cow("wait", id, "--clear");
     while ((await cow("todo", "rm", id, "1")).code === 0);
   }
-  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open")) return;
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open") || flag("only-merge")) return;
   for (const interaction of await api(`/threads/${ids.perms}/interactions`)) {
     if (interaction.status === "pending") await bb("thread", "interactions", "deny", interaction.id, ids.perms);
   }
@@ -2606,23 +2659,101 @@ async function cardChecks(page, ids, shot, chooseMain) {
   await page.eval(`${lineEl(kone)}.click(); true`);
   await sleep(4000);
   check(
-    "with the test plugin removed, only bb's own sections remain, or nothing",
-    await page.eval(`[...document.querySelectorAll("[data-cow-ctx-source]")].every((el) => el.dataset.cowCtxSource === "bb")`),
+    "with the test plugin removed, only bb's own sections and cow's remain, or nothing",
+    await page.eval(`[...document.querySelectorAll("[data-cow-ctx-source]")].every((el) => el.dataset.cowCtxSource === "bb" || el.dataset.cowCtxSource === "${PLUGIN}")`),
     await page.eval(`[...document.querySelectorAll("[data-cow-ctx-source]")].map((el) => el.dataset.cowCtxSource).join(",") || "no card"`),
   );
   await page.eval(`sessionStorage.removeItem("cow:card-hidden"); true`);
 }
 
+// ---- Merge-readiness ---------------------------------------------------------
+
+async function mergeChecks(page, ids, shot, chooseMain) {
+  const { gmain, gclash, gclean, gnone } = ids;
+  for (const name of MERGING) await waitForThread(ids[name], (t) => t.status === "idle", `${name} idle`);
+  const folder = (id) => Object.entries(mergeFolders).find(([name]) => ids[name] === id)?.[1] ?? null;
+  const readOnly = (dir) =>
+    dir === null
+      ? null
+      : ["for-each-ref", "stash list", "status --porcelain=v2 --branch --untracked-files=all"].map((command) => execFileSync("git", ["-c", "core.fsmonitor=false", "--no-optional-locks", ...command.split(" ")], { cwd: dir, encoding: "utf8" })).join("\n---\n");
+  const before = readOnly(folder(gclash));
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.eval(`sessionStorage.removeItem("cow:card-hidden"); sessionStorage.removeItem("cow:folds"); true`);
+  await page.goto(`${BB}/plugins/${PLUGIN}/main`);
+  await page.waitFor(`["picker", "overview"].includes(${screen})`, { label: "the page", timeout: 60_000 });
+  await chooseMain(page, gmain);
+  await page.send("Page.bringToFront");
+  const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
+  const mark = (id) => `${lineEl(id)}?.querySelector("[data-cow-merge]")`;
+
+  // -- the line --
+  await page.waitFor(`${mark(gclash)}?.dataset.cowMerge === "conflict" && ${mark(gclean)}?.dataset.cowMerge === "clean"`, { label: "the merge marks on the lines", timeout: 90_000 });
+  await shot("merge-lines");
+  const clash = await page.eval(`(() => { const el = ${mark(gclash)}; return { text: el.textContent, files: el.dataset.cowMergeFiles ?? "", loud: el.tagName === "B", title: el.title }; })()`);
+  check("a conflicting worker's line says so, loud, and names the file", clash.text.includes("conflicts in 1 file") && clash.loud && clash.files === "src/limit.js" && clash.title.includes("src/limit.js"), JSON.stringify(clash));
+  const clean = await page.eval(`(() => { const el = ${mark(gclean)}; return { text: el.textContent, quiet: el.tagName === "SMALL" }; })()`);
+  check("a clean worker's line says how far behind and that it merges cleanly, quietly", clean.text.includes("1 behind · merges cleanly") && clean.quiet, JSON.stringify(clean));
+  await sleep(3000);
+  check("a worker with no commits of its own has nothing on its line", !(await page.eval(`!!${mark(gnone)}`)));
+  check("the mark sits in the line's existing column: no column of its own", await page.eval(`${mark(gclash)}.closest(".cow-wh") !== null`));
+
+  // -- beside the ask about merging, in the queue --
+  await page.waitFor(`!!document.querySelector('[data-cow-queue="${gclash}"] [data-cow-merge-note]')`, { label: "the conflict beside the ask", timeout: 30_000 }).catch(() => undefined);
+  const note = await page.eval(`document.querySelector('[data-cow-queue="${gclash}"] [data-cow-merge-note]')?.textContent ?? ""`);
+  check("its ask about merging, in the queue, says the branch conflicts and names the file", note.includes("conflicts with main") && note.includes("src/limit.js"), note || "no note");
+  check("the clean worker is not put in the queue by merge-readiness", !(await page.eval(`!!document.querySelector('[data-cow-queue="${gclean}"]')`)));
+
+  // -- the context card --
+  const card = `document.querySelector(".cow-side [data-cow-ctx]")`;
+  const section = `${card}?.querySelector('[data-cow-ctx-source="${PLUGIN}"] [data-cow-ctx-section="Merge into main"]')`;
+  const rows = `[...(${section}?.querySelectorAll("[data-cow-ctx-row]") ?? [])].map((row) => row.dataset.cowCtxRow)`;
+  await page.eval(`${lineEl(gclash)}.click(); true`);
+  await page.waitFor(`${card}?.dataset.cowCtx === "${gclash}" && !!${section}`, { label: "the conflicting worker's card", timeout: 40_000 });
+  await shot("merge-card-clash");
+  const clashRows = await page.eval(rows);
+  check(
+    "its card: the conflict, the file, ahead and behind, and when it was worked out",
+    clashRows[0] === "conflicts in 1 file" && clashRows.includes("src/limit.js") && clashRows.includes("1 ahead · 1 behind") && clashRows.some((row) => row.startsWith("worked out")),
+    clashRows.join(" | "),
+  );
+  check("the conflicting file opens in the reader", await page.eval(`${section}.querySelector('[data-cow-ctx-file="src/limit.js"]')?.hasAttribute("data-cow-hint") === true`));
+  await page.eval(`${lineEl(gclean)}.click(); true`);
+  await page.waitFor(`${card}?.dataset.cowCtx === "${gclean}" && !!${section}`, { label: "the clean worker's card", timeout: 40_000 });
+  const cleanRows = await page.eval(rows);
+  check("the clean worker's card says it merges cleanly, 1 ahead and 1 behind", cleanRows[0] === "merges cleanly" && cleanRows.includes("1 ahead · 1 behind"), cleanRows.join(" | "));
+  await page.eval(`${lineEl(gnone)}.click(); true`);
+  await sleep(4000);
+  check("the card of a worker with no commits of its own has no merge section", !(await page.eval(`${card}?.dataset.cowCtx === "${gnone}" && !!${section}`)));
+
+  // -- bb cow status --
+  const status = await cow("status", "--main", gmain, "--json");
+  const report = JSON.parse(status.stdout);
+  const everyLine = [...report.queue, ...report.threads, ...report.settle];
+  const of = (id) => everyLine.find((line) => line.id === id && line.merge)?.merge ?? everyLine.find((line) => line.id === id)?.merge ?? null;
+  const sClash = of(gclash);
+  const sClean = of(gclean);
+  check("status --json: the conflicting worker's merge names the base and the file", sClash?.state === "conflict" && sClash.base === "main" && sClash.conflicts.includes("src/limit.js") && sClash.ahead === 1 && sClash.behind === 1, JSON.stringify(sClash));
+  check("status --json: the clean worker merges cleanly, 1 behind", sClean?.state === "clean" && sClean.behind === 1 && sClean.ahead === 1, JSON.stringify(sClean));
+  check("status --json: nothing for a worker with no commits of its own", of(gnone) === null);
+  const text = (await cow("status", "--main", gmain)).stdout;
+  check("status: the lines say so in words", /conflicts in 1 file: src\/limit\.js/.test(text) && /1 ahead, 1 behind main · merges cleanly/.test(text), text.split("\n").filter((line) => /merge/.test(line)).join(" / "));
+
+  // -- read-only --
+  check("the conflicting repository's refs, stash and status are the same after", readOnly(folder(gclash)) === before);
+  for (const ask of await openAsksOf(gclash)) await cow("ask", "withdraw", ask.id);
+}
+
 /** The folder the thread with nothing was made in, and the environment bb made for it; and the folders of the asks and briefs fixtures and theirs. */
 async function removeCardFolder(ids) {
   const environments = new Set();
-  for (const name of ["knone", ...(raisedFolder || diffFolder ? ["amain", "asker", "briefer", "bdiff"] : [])]) {
+  for (const name of ["knone", ...Object.keys(mergeFolders), ...(raisedFolder || diffFolder ? ["amain", "asker", "briefer", "bdiff"] : [])]) {
     if (!ids?.[name]) continue;
     const [thread] = await api(`/threads?threadIds=${ids[name]}&limit=1`).catch(() => []);
     if (thread?.environmentId) environments.add(thread.environmentId);
   }
   for (const id of environments) await bb("environment", "delete", id).catch((cause) => console.error(`could not delete the environment ${id}`, cause.stderr ?? cause));
-  for (const folder of [cardFolder, raisedFolder, diffFolder]) if (folder) rmSync(folder, { recursive: true, force: true });
+  for (const folder of [cardFolder, raisedFolder, diffFolder, ...Object.values(mergeFolders)]) if (folder) rmSync(folder, { recursive: true, force: true });
+  for (const name of Object.keys(mergeFolders)) delete mergeFolders[name];
   cardFolder = null;
   raisedFolder = null;
   diffFolder = null;
@@ -5365,7 +5496,7 @@ async function main() {
     }
   };
 
-  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open")) {
+  if (flag("only-reader") || flag("only-workspace") || flag("only-caps") || flag("only-waiting") || flag("only-settle") || flag("only-ledger") || flag("only-outside") || flag("only-automations") || flag("only-plugins") || flag("only-history") || flag("only-traces") || flag("only-card") || flag("only-open") || flag("only-merge")) {
     const page = await connect(PORT, "");
     const shot = async (name, from = page) => {
       if (SHOTS) await from.shot(join(SHOTS, `${name}.png`));
@@ -5396,6 +5527,7 @@ async function main() {
     else if (flag("only-traces")) await traceChecks(page, ids, shot, chooseMain);
     else if (flag("only-card")) await cardChecks(page, ids, shot, chooseMain);
     else if (flag("only-open")) await openChecks(page, ids, shot, chooseMain);
+    else if (flag("only-merge")) await mergeChecks(page, ids, shot, chooseMain);
     else await readingChecks(page, ids, shot, chooseMain);
     return finish(page);
   }

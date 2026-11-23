@@ -217,6 +217,21 @@ applies during the turn and its line shows `$0.42 so far`; bb's own figure
 replaces the reading when the turn ends. Details are under
 [Caps and stuck checks](docs/reference.md#caps-and-stuck-checks).
 
+**Merge-readiness, shown only.** A finished worker on a branch with commits
+of its own says, beside what it is doing, whether that branch still fits
+the branch it will be merged into: `3 behind · merges cleanly`, quietly, or
+`conflicts in 2 files`, loudly, the files named in its tooltip, in its
+context card and in `bb cow status`. The base is the local branch bb says
+the worktree was made from, otherwise the repository's default branch as
+found locally. It is worked out read-only by a trial merge (`git merge-tree
+--write-tree`, git 2.38 or later) that writes nothing into the repository
+and fetches nothing, again only when the branch's tip or the base's moves,
+and anything that fails reads "not known", never "clean". Uncommitted
+changes are not in the trial merge, and the line says when there are some.
+A conflict also shows beside a brief you have not read or an ask about
+merging, and never queues anything by itself. **cow never merges.**
+Details are under [Merge-readiness](docs/reference.md#merge-readiness).
+
 **Kept.** For a thread you want around without it asking for anything, an
 idea you are sitting on, say: `z` keeps it, with a few words or none. It
 goes to the Kept section, folded by default, never coloured, with no
@@ -648,6 +663,12 @@ Code, the one transcript file Claude Code writes for that worker's session
 under `~/.claude/projects/`, and takes from it only token counts, model ids,
 times and message ids (kept as hashes): no text, tool input or file name.
 Details are under [Tokens during a turn](docs/reference.md#tokens-during-a-turn-liveusage).
+
+For merge-readiness, cow's host entry runs read-only git commands in each
+finished worker's checkout, and in the source folder of one of cow's clones,
+on that machine; the trial merge's objects go to a temporary folder of
+cow's own that is removed after. The commands are listed under
+[Merge-readiness](docs/reference.md#merge-readiness).
 
 For the context card, cow's server asks bb's own git and pull-request
 plugins about the selected thread's environment, and asks each plugin that

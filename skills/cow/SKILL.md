@@ -212,6 +212,12 @@ which with `bb cow automation started "$id" --automation "$BB_AUTOMATION_ID"
 --run "$BB_AUTOMATION_RUN_ID"`, and cow lists that thread under the
 automation instead of Outside Main; it changes only where the thread is
 listed, any thread or script may call it, and `--clear` undoes a wrong one.
+A thread that has finished a turn on a branch with commits of its own also
+says how far it is ahead and behind its base and whether a trial merge into
+it is clean or which files conflict (`merge` in `--json`; not known is
+never clean). cow works it out read-only and never merges: check it before
+you tell the user a branch is ready to merge, and do not merge, rebase or
+update a branch because of it unless the user asks.
 
 - Main defaults to the one last chosen on cow's page for the project you are
   in. Pass `--main <thread>` (your own id is in `$BB_THREAD_ID`) when that is

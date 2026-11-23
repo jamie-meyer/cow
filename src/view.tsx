@@ -2908,7 +2908,7 @@ function OverviewScreen({
                           {line.thread.title} · {formatAge(Math.max(0, now - waitingSince(line.derived)))}
                         </small>
                         {conflictFor(line) ? (
-                          <small className="cow-merge-bad" data-cow-merge-note={line.thread.id}>
+                          <small className="cow-merge-bad" data-cow-merge-note={line.thread.id} title={conflictFor(line) ?? undefined}>
                             {conflictFor(line)}
                           </small>
                         ) : null}
