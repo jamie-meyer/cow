@@ -24,6 +24,7 @@ import { createLogStore } from "./src/caps/logstore.ts";
 import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
 import { automationRunCommands, cowCli } from "./src/cli.ts";
+import { createWorkerRules, createWorkerStore, readRules } from "./src/worker-rules.ts";
 import { AUTOMATION_RUNS_CHANGED, type StartedStore, createStartedStore } from "./src/automation-runs.ts";
 import {
   archiveNoteSchema,
@@ -161,6 +162,54 @@ export default async function plugin(bb: BbPluginApi) {
     const stored = mainStateSchema.safeParse(await bb.storage.kv.get(STATE_KEY));
     return stored.success ? stored.data : { mains: {}, currentProjectId: null };
   }
+
+  // Worker rules: a thread whose first message begins with the line WORKER BRIEF is given rules/worker.md
+  // as part of its instructions. Recognised when that message is dispatched; it gives text and enforces nothing.
+  const workerSettings = bb.settings.define({
+    workerRules: {
+      type: "boolean",
+      label: "Give workers their rules",
+      description:
+        "A thread whose first message begins with the line WORKER BRIEF is a worker; its agent is given cow's worker rules (rules/worker.md) as part of its instructions from its first turn on. Off: no thread is given them, and no thread is recorded as a worker.",
+      default: true,
+    },
+    workerRulesExtra: {
+      type: "string",
+      label: "Worker rules on this machine",
+      description: "Text added after the worker rules on this machine only, for what differs between machines. Empty: the rules alone.",
+      default: "",
+    },
+  });
+  const workerNow = (values: { workerRules: boolean; workerRulesExtra: string }) => ({ enabled: values.workerRules, extra: values.workerRulesExtra });
+  let workerSettingsNow = workerNow(await workerSettings.get());
+  workerSettings.onChange((next) => {
+    workerSettingsNow = workerNow(next);
+  });
+  const workerStore = createWorkerStore(bb.storage.kv);
+  await workerStore.load().catch((cause: unknown) => bb.log.warn(`could not read which threads are workers: ${String(cause)}`));
+  const workerRulesText = readRules(new URL("./rules/worker.md", import.meta.url));
+  if (workerRulesText === null) bb.log.warn("could not read rules/worker.md: no worker is given its rules");
+  const workerRules = createWorkerRules({
+    store: workerStore,
+    rules: workerRulesText,
+    settings: () => workerSettingsNow,
+    now: Date.now,
+    warn: (text) => bb.log.warn(text),
+  });
+  bb.agents.contributeInstructions(({ threadId }) => workerRules.instructions(threadId));
+  bb.experimental_hooks.on("message.dispatch", async (context) => {
+    try {
+      return await workerRules.dispatch({
+        threadId: context.thread.id,
+        status: context.thread.status,
+        attempt: context.attempt,
+        initiator: context.initiator,
+        text: context.input.text,
+      });
+    } catch {
+      return { action: "proceed" };
+    }
+  });
 
   // What an agent takes out of the person's queue is traced in the log, once the log's owner is registered.
   const traces: TraceSink = { record: null };
@@ -341,13 +390,14 @@ export default async function plugin(bb: BbPluginApi) {
     }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks, mergeFacts: async (ids) => {
       const found = await merge.settled(ids, MERGE_WAIT_MS);
       return Object.fromEntries(Object.entries(found).map(([threadId, facts]) => [threadId, statusMerge(facts)]));
-    } }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
+    }, workerRules: (threadId) => workerRules.gave(threadId) }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
   // deleted while cow was not running is found when it loads.
   bb.events.on("thread.deleted", ({ thread }) => {
     void startedStore.forget(thread.id).catch(() => undefined);
+    void workerStore.forget(thread.id).catch(() => undefined);
     void actions.forget(thread.id).catch((cause: unknown) => bb.log.warn(`could not forget the deleted thread ${thread.id}: ${String(cause)}`));
   });
   const sweep = setTimeout(() => {

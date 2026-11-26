@@ -154,6 +154,18 @@
 //                       stash and status are the same after. The folders,
 //                       and the environments bb makes for them, are removed
 //                       after, and the ask is withdrawn
+//   --only-rules        only the worker rules, and no browser: a stand-in Main
+//                       and, under it, fixtures in throwaway folders of their
+//                       own under the system temp folder with no agent
+//                       instructions file, and one whose folder's CLAUDE.md
+//                       has worker rules of its own. A thread whose first
+//                       line is WORKER BRIEF quotes the rules, one without it
+//                       cannot, a fork of the worker is asked too, then with
+//                       the copy's workerRules setting off (put back after)
+//                       a new worker cannot. Each says which skills named
+//                       cow it sees, and bb cow status --json is compared.
+//                       --environment is not used. The folders, and the
+//                       environments bb makes for them, are removed after
 //   --only-open         only the command that opens cow's page from anywhere:
 //                       one fixture, a stand-in Main. The shortcut is pressed
 //                       from the fixture's chat in bb, from bb's settings and
@@ -2757,6 +2769,145 @@ async function removeCardFolder(ids) {
   cardFolder = null;
   raisedFolder = null;
   diffFolder = null;
+}
+
+// ---- Worker rules -------------------------------------------------------------
+
+/** The throwaway folders the worker-rules fixtures run in. */
+const rulesFolders = [];
+/** A sentence only the shipped rules have, and one only the throwaway repository's own instructions have. */
+const RULES_SENTENCE = /they win/i;
+const OWN_SENTENCE = /MOOSE/;
+const QUOTE = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these two lines and nothing else:
+RULES: <the last sentence of any section titled "Worker rules" in your instructions, word for word, or NONE if you were given no such section>
+SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
+const QUOTE_OWN = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these four lines and nothing else:
+RULES: <the last sentence of the section whose heading is exactly "# Worker rules", word for word, or NONE if you were given no section with that heading>
+OWN: <the sentence from this repository's own instructions that mentions MOOSE, word for word, or NONE>
+ORDER: <COW-FIRST if the section quoted on the RULES line comes before the repository's own instructions in what you were given, REPO-FIRST if it comes after, UNKNOWN if you cannot tell or either is missing>
+SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
+const FORK_QUOTE = `Use no tools at all. Do not use anything said earlier in this conversation: look only at the instructions you were given for this session. Reply with exactly these two lines and nothing else:
+RULES: <the whole sentence of any section titled "Worker rules" in your instructions that begins "Stop when you reach a cap", word for word, or NONE if your instructions have no such section>
+SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
+
+function rulesFolder(own) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), own ? "cow-e2e-rules-own-" : "cow-e2e-rules-")));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  writeFileSync(join(dir, "README.md"), "# scratch\n");
+  if (own) {
+    writeFileSync(join(dir, "CLAUDE.md"), "# Rules for workers in this repository\n\nWorkers in this repository end every report with the word MOOSE.\n");
+  }
+  rulesFolders.push(dir);
+  return dir;
+}
+
+/** Wait for a fixture's first turn to end, and read what it said. */
+async function finalWords(id) {
+  const deadline = Date.now() + 180_000;
+  for (;;) {
+    const [thread] = await api(`/threads?threadIds=${id}&limit=1`);
+    const ended = (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0];
+    if (thread && ended && thread.status !== "active" && thread.status !== "starting" && thread.status !== "pending") break;
+    if (Date.now() > deadline) throw new Error(`${id} never finished its turn`);
+    await sleep(1500);
+  }
+  return (await bb("thread", "output", id)).output ?? "";
+}
+
+const lineOf = (text, key) => new RegExp(`^\\s*\\**${key}\\**:\\s*(.*)$`, "mi").exec(text)?.[1]?.trim() ?? "";
+const sawCow = (text) => /\bcow\b/i.test(lineOf(text, "SKILLS")) && !/^NONE$/i.test(lineOf(text, "SKILLS"));
+
+async function rulesChecks() {
+  if (!PROJECT) throw new Error("--project is required");
+  const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
+  const setRules = async (on) => plain("plugin", "config", PLUGIN, "set", "workerRules", String(on));
+  const putBack = async () => {
+    if (before.workerRules === undefined) await plain("plugin", "config", PLUGIN, "unset", "workerRules");
+    else await setRules(before.workerRules);
+  };
+  const ids = {};
+  const make = async (name, options) => {
+    ids[name] = await spawn(options);
+    inUse[name] = ids[name];
+  };
+  try {
+    if (before.workerRules === false) await setRules(true);
+    const plainDir = rulesFolder(false);
+    const ownDir = rulesFolder(true);
+    await make("rmain", { prompt: QUIET, environment: plainDir });
+    await make("rworker", { prompt: `WORKER BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
+    await make("rplain", { prompt: QUOTE, parent: ids.rmain, environment: plainDir });
+    await make("rlater", { prompt: `Here is your task.\nWORKER BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
+    await make("rown", { prompt: `WORKER BRIEF\n\n${QUOTE_OWN}`, parent: ids.rmain, environment: ownDir });
+    const said = {};
+    for (const name of ["rworker", "rplain", "rlater", "rown"]) said[name] = await finalWords(ids[name]);
+    for (const [name, text] of Object.entries(said)) console.log(`  ${name} said: ${JSON.stringify(text)}`);
+    check("a thread whose first line is WORKER BRIEF quotes the worker rules it was given", RULES_SENTENCE.test(lineOf(said.rworker, "RULES")), lineOf(said.rworker, "RULES"));
+    check("a thread spawned the same way without that line has no worker rules", /^NONE\.?$/i.test(lineOf(said.rplain, "RULES")), lineOf(said.rplain, "RULES"));
+    check("a thread with that line further down has no worker rules", /^NONE\.?$/i.test(lineOf(said.rlater, "RULES")), lineOf(said.rlater, "RULES"));
+    check("cow's skill is offered to a worker, setting on", sawCow(said.rworker), lineOf(said.rworker, "SKILLS"));
+    check("cow's skill is offered to a thread that is not a worker, setting on", sawCow(said.rplain), lineOf(said.rplain, "SKILLS"));
+    check("a worker in a repository with worker rules of its own quotes cow's rules", RULES_SENTENCE.test(lineOf(said.rown, "RULES")), lineOf(said.rown, "RULES"));
+    check("and the repository's own", OWN_SENTENCE.test(lineOf(said.rown, "OWN")), lineOf(said.rown, "OWN"));
+    console.log(`  note: the worker in a repository with rules of its own says the order is ${lineOf(said.rown, "ORDER") || "(not said)"}`);
+
+    const statusLines = async () => {
+      const report = JSON.parse((await cow("status", "--main", ids.rmain, "--json")).stdout);
+      const lines = [report.main, ...report.queue, ...report.threads, ...report.parked, ...report.settle, ...report.kept, ...report.archived, ...report.outside];
+      return Object.fromEntries(lines.map((line) => [line.id, line.workerRules]));
+    };
+    let status = await statusLines();
+    check(
+      "bb cow status --json says which threads cow gave the worker rules",
+      status[ids.rworker] === true && status[ids.rown] === true && status[ids.rplain] === false && status[ids.rlater] === false && status[ids.rmain] === false,
+      JSON.stringify(Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, status[id]]))),
+    );
+
+    // A fork of the worker: its own first message is not a brief.
+    const fork = await bb("thread", "fork", ids.rworker, "--prompt", FORK_QUOTE, "--title", TITLE);
+    ids.rfork = fork.id ?? fork.thread?.id;
+    inUse.rfork = ids.rfork;
+    said.rfork = await finalWords(ids.rfork);
+    console.log(`  rfork said: ${JSON.stringify(said.rfork)}`);
+    console.log(`  note: a fork of a worker ${/work left/i.test(lineOf(said.rfork, "RULES")) ? "has" : "does not have"} the worker rules (it quotes ${lineOf(said.rfork, "RULES") || "nothing"}); cow's status for it: ${JSON.stringify((await statusLines())[ids.rfork] ?? "(not listed)")}`);
+    const [forked] = await api(`/threads?threadIds=${ids.rfork}&limit=1`);
+    console.log(`  note: the fork's originKind is ${forked?.originKind}, its parent ${forked?.parentThreadId === ids.rworker ? "the worker" : forked?.parentThreadId}`);
+
+    // The setting off: a new worker is given nothing, and is not recorded.
+    await setRules(false);
+    await make("roff", { prompt: `WORKER BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
+    await make("rplainoff", { prompt: QUOTE, parent: ids.rmain, environment: plainDir });
+    said.roff = await finalWords(ids.roff);
+    said.rplainoff = await finalWords(ids.rplainoff);
+    for (const name of ["roff", "rplainoff"]) console.log(`  ${name} said: ${JSON.stringify(said[name])}`);
+    check("with the setting off a new WORKER BRIEF thread has no worker rules", /^NONE\.?$/i.test(lineOf(said.roff, "RULES")), lineOf(said.roff, "RULES"));
+    check("cow's skill is offered to a worker, setting off", sawCow(said.roff), lineOf(said.roff, "SKILLS"));
+    check("cow's skill is offered to a thread that is not a worker, setting off", sawCow(said.rplainoff), lineOf(said.rplainoff, "SKILLS"));
+    status = await statusLines();
+    check("with the setting off bb cow status --json says no thread is given the rules", Object.values(ids).every((id) => status[id] !== true), JSON.stringify(Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, status[id]]))));
+    await setRules(true);
+    status = await statusLines();
+    check("a worker started while the setting was off was not recorded: on again, it is still given nothing", status[ids.roff] === false && status[ids.rworker] === true, `roff ${status[ids.roff]}, rworker ${status[ids.rworker]}`);
+  } finally {
+    await putBack().catch((cause) => console.error("could not put back the workerRules setting", cause));
+    if (!flag("keep")) {
+      await archiveFixtures(Object.values(ids));
+      await removeRulesFolders(ids);
+    }
+  }
+  const failed = results.filter((result) => !result.ok);
+  console.log(`\n${results.length - failed.length} of ${results.length} checks passed`);
+  process.exit(failed.length ? 1 : 0);
+}
+
+async function removeRulesFolders(ids) {
+  const environments = new Set();
+  for (const id of Object.values(ids)) {
+    const [thread] = await api(`/threads?threadIds=${id}&limit=1`).catch(() => []);
+    if (thread?.environmentId) environments.add(thread.environmentId);
+  }
+  for (const id of environments) await bb("environment", "delete", id).catch((cause) => console.error(`could not delete the environment ${id}`, cause.stderr ?? cause));
+  for (const folder of rulesFolders.splice(0)) rmSync(folder, { recursive: true, force: true });
 }
 
 // ---- Other plugins' badges and actions ---------------------------------------
@@ -5458,6 +5609,8 @@ let restoreStored = async () => undefined;
 
 async function main() {
   await guardPlugin(BB, PLUGIN, args);
+  // The worker rules need no page: their own fixtures, and bb cow status.
+  if (flag("only-rules")) return rulesChecks();
   const ids = await fixtures();
   await assertOurs(ids);
   Object.assign(inUse, ids);

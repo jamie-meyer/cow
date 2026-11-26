@@ -38,6 +38,8 @@ export interface AutomationStatusRow {
 /** An open thread that is not under Main: from the thread list alone. */
 export interface OutsideStatusLine {
   id: string;
+  /** Whether cow gives this thread the worker rules; absent when not looked up. */
+  workerRules?: boolean;
   title: string;
   /** Its bb project's name, when that is not Main's project; null when it is. */
   project: string | null;
@@ -87,6 +89,8 @@ export interface StatusLine {
   watch?: { reason: string; mark: string; facts: Record<string, string | number | null> }[];
   /** For a thread that has finished a turn, on a branch with commits of its own: whether it still merges into its base. Absent when there is nothing to say. */
   merge?: StatusMerge;
+  /** Whether cow gives this thread the worker rules: its first message began with the line WORKER BRIEF, and the setting is on. Absent when not looked up. */
+  workerRules?: boolean;
 }
 
 /** Which lines' merge-readiness is looked at: open threads that have finished a turn, not Main. */
@@ -111,6 +115,12 @@ export function withWatch<T extends StatusReport>(report: T, marks: Readonly<Rec
     return found && found.length > 0 ? { ...line, watch: found.map(({ reason, mark, facts }) => ({ reason, mark, facts })) } : line;
   };
   return { ...report, main: marked(report.main), queue: report.queue.map(marked), threads: report.threads.map(marked), parked: report.parked.map(marked), settle: report.settle.map(marked), kept: report.kept.map(marked), archived: report.archived.map(marked) };
+}
+
+/** The same report with each line, Outside Main's too, saying whether cow gives its thread the worker rules. */
+export function withWorkerRules<T extends StatusReport>(report: T, gave: (threadId: string) => boolean): T {
+  const told = <L extends { id: string }>(line: L): L => ({ ...line, workerRules: gave(line.id) });
+  return { ...report, main: told(report.main), queue: report.queue.map(told), threads: report.threads.map(told), parked: report.parked.map(told), settle: report.settle.map(told), kept: report.kept.map(told), archived: report.archived.map(told), outside: report.outside.map(told) };
 }
 
 /** The same report with each line saying which capabilities its thread holds. */

@@ -4,6 +4,26 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.27
+
+- **Workers get their rules from cow.** A thread whose first message
+  begins with the line `WORKER BRIEF` is a worker, and its agent is given
+  the rules in `rules/worker.md` as part of its instructions from its first
+  turn on: stay in the workspace and the brief's scope, report to whoever
+  dispatched it, never address the user, ship by committing on its own
+  branch, ask for a capability instead of getting round the sandbox, and
+  how to end. So a brief need not carry them, and they come to every
+  machine with cow. Every other thread gets nothing from this; it gives
+  text and enforces nothing.
+- Two settings: `workerRules` (on) turns it off, and then no thread is
+  given the rules or recorded as a worker; `workerRulesExtra` (empty) adds
+  a machine's own text after the rules.
+- `bb cow status --json` says for each line whether cow gives that thread
+  the rules (`workerRules`). The page is unchanged.
+- cow's skill is offered to every thread as before. A fork of a worker
+  carries on with the rules its source was given, though cow does not
+  count it as a worker.
+
 ## 0.2.26
 
 - **A finished worker's line says whether its branch still merges.** On

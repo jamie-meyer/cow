@@ -4,7 +4,7 @@ The [README](../README.md) says what cow is, how to install it and what it
 stores and sends. This is the detail behind each idea: every rule the page
 and the `bb cow` commands follow. Sections refer to each other by name.
 
-Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [Scrolling and focus](#scrolling-and-focus) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Caps and stuck checks](#caps-and-stuck-checks) · [Undo](#undo) · [Capabilities](#capabilities) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
+Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Replies addressed to you](#replies-addressed-to-you) · [To settle](#to-settle) · [Keeping](#keeping) · [Automations](#automations) · [Outside Main](#outside-main) · [Other plugins on a line](#other-plugins-on-a-line) · [What is next](#what-is-next) · [Filtering](#filtering) · [Scrolling the chat](#scrolling-the-chat) · [Scrolling and focus](#scrolling-and-focus) · [The reader](#the-reader) · [Answering](#answering) · [Permission requests](#permission-requests) · [Blocked on a permission](#blocked-on-a-permission) · [Asks](#asks) · [Briefs and the checker](#briefs-and-the-checker) · [Parking](#parking) · [Waiting on someone else](#waiting-on-someone-else) · [Archiving, with a reason](#archiving-with-a-reason) · [The ledger](#the-ledger) · [Caps and stuck checks](#caps-and-stuck-checks) · [Undo](#undo) · [Capabilities](#capabilities) · [Worker rules](#worker-rules) · [The CLI, for agents](#the-cli-for-agents) · [Theme](#theme)
 
 ## States
 
@@ -2622,6 +2622,64 @@ So, plainly:
 
 Capabilities, the log and the notices are for control and for noticing. What
 you allow is still decided by what you put in a rule and who you give it to.
+
+## Worker rules
+
+A **worker** here is a thread whose first message has, as its first
+non-empty line, exactly `WORKER BRIEF` (spaces around it aside, nothing
+else on the line). Nothing else makes one: not its parent, not its title,
+not a later message, and not the line further down the first message.
+
+**What it is given.** Its agent gets the text of
+[rules/worker.md](../rules/worker.md), shipped with cow, as part of its
+instructions from its first turn on, then the text of the setting
+`workerRulesExtra` when that is not empty. Change the file to change the
+rules; cow reads it when it loads. Every other thread gets nothing from
+this. The rules are text: nothing here enforces any of them, stops a
+thread, or changes a brief.
+
+cow adds them through bb's instruction contributions, which bb appends to a
+thread's instructions. In a check on bb 0.50 with the Claude Code provider,
+a worker in a repository whose `CLAUDE.md` had worker rules of its own was
+given both, and said cow's came first; a worker that another plugin also
+gave instructions to was given both, cow's first. Where the rules say so
+themselves, the brief and the repository's own instructions win on any
+point they disagree on.
+
+**Forks and side chats.** A fork's own first message is not a brief, so cow
+does not record it as a worker, and `bb cow status --json` says `false` for
+it. But a fork of a worker made with `bb thread fork` was found to have the
+rules all the same: it carries on its source's session. bb's SDK says a side
+chat is an ordinary fork, so expect the same of one; that was not run.
+
+**How it is recognised.** When a thread's first message is about to reach its
+agent, cow reads it and, for a worker, records the thread's id in its own
+storage (bb's `plugin_kv`, keys `worker-rules:<thread id>`) and in memory,
+where the instructions are read from. This check never rejects, changes or
+holds a message: it lets every message through at once, and when recording
+fails, the thread just gets no rules. A thread already started before this
+version is not recorded. When bb deletes a thread, its record goes.
+
+**Settings** (bb's settings for the plugin, or `bb plugin config cow`):
+
+| Setting | Default | Means |
+| --- | --- | --- |
+| `workerRules` | on | give workers their rules. Off: no thread is given them, and no thread is recorded as a worker, as before 0.2.27. A worker started while it was off stays unrecorded when it is turned on again |
+| `workerRulesExtra` | empty | text added after the rules on this machine only, for what differs between machines |
+
+A thread's agent takes in its instructions when its session starts, so a
+change to the file or the settings reaches a running worker only when bb
+next starts its session.
+
+**Seeing it.** `bb cow status --json` gives every line, Outside Main's too,
+`workerRules`: true when cow gives that thread the rules now. The page shows
+nothing for it.
+
+**Not a security boundary.** Anyone who can start a thread can begin its
+first message with the line, an agent included, so being a worker proves
+nothing about who dispatched it. The record is in cow's own storage, not in
+the thread's metadata, so a thread cannot rewrite it through bb's metadata
+calls; any plugin, and anyone who can write bb's database, can.
 
 ## The CLI, for agents
 

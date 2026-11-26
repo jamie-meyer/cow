@@ -26,6 +26,7 @@ export const EXPERIMENTAL_SURFACES: readonly { name: string; from: "backend" | "
   { name: "experimental_discoverRpc", from: "backend", for: "the context card: finding the plugins that offer cow_card" },
   { name: "experimental_schema", from: "backend", for: "the checkerRuns setting as a number from 1 to 5" },
   { name: "experimental_environments", from: "backend", for: "registering the copy-on-write workspace as an environment provider" },
+  { name: "experimental_hooks", from: "backend", for: "the `message.dispatch` hook: seeing a thread's first message, to tell a worker; it always lets the message through" },
   { name: "experimental_client", from: "backend", for: "the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed" },
   { name: "experimental_defineHostEntry", from: "backend", for: "the copy-on-write workspace: the host entry that clones and removes a workspace" },
   { name: "experimental_paths", from: "backend", for: "the copy-on-write workspace: the plugin's own data folder on the host, where clones live" },

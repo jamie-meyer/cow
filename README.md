@@ -284,6 +284,14 @@ command or the file and its diff, and bb's choices. When bb refused something
 without asking (it does that on a turn another thread started), `a` offers to
 ask again as you, after which bb does ask.
 
+**Worker rules.** A thread whose first message begins with the line
+`WORKER BRIEF` is a worker, and cow gives its agent the rules in
+[rules/worker.md](rules/worker.md) as part of its instructions: stay in
+scope, report to whoever dispatched you, do not merge, how to end. So
+briefs need not carry them, and they come to any machine with cow. The
+setting `workerRules` turns this off; `workerRulesExtra` adds a machine's
+own lines. It gives text and enforces nothing.
+
 **Asks.** A question an agent writes in prose scrolls away. `bb cow ask`
 records one question that stays in your queue until you answer it on the page
 or the thread withdraws it. The agent can give options and say how much is at
@@ -537,7 +545,7 @@ no storage of its own outside bb.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, in a copy-on-write workspace each repository's folder name and base or why it was not read, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, which provider sessions started a new process since, its parent thread's id, its project's id, whether it is one of cow's checker runs or a project thread, and, once bb deletes it, when cow found that out (no title, no text). A deleted thread's token counts are kept until you forget them (`bb cow spend forget --deleted --yes`); a worker deleted before 0.2.24 gets them back from its ledger row. The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or when. No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, in a copy-on-write workspace each repository's folder name and base or why it was not read, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, which provider sessions started a new process since, its parent thread's id, its project's id, whether it is one of cow's checker runs or a project thread, and, once bb deletes it, when cow found that out (no title, no text). A deleted thread's token counts are kept until you forget them (`bb cow spend forget --deleted --yes`); a worker deleted before 0.2.24 gets them back from its ledger row. The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or when. Which threads are workers given the worker rules: each one's id and when it was recorded. No title, prompt, message text or reason |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
 | the same database, table `plugin_settings` | the five settings of the checker, below |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
@@ -569,7 +577,7 @@ only to the bb server they run in, through bb's plugin SDK. There is no
 telemetry, no update check, no font or script fetched from anywhere, and no
 address in the code but bb's own.
 
-Two things cow does cause to be sent, both by bb, to a model provider:
+Three things cow does cause to be sent, all by bb, to a model provider:
 
 - **The checker.** When a brief is submitted, cow starts a hidden thread
   whose one message holds: the brief's claims (not its summary, and not the
@@ -619,6 +627,9 @@ Two things cow does cause to be sent, both by bb, to a model provider:
   me", a reason for a denial, and what you type with `i` and `I` are sent to
   the thread as a message from you, and reach that thread's provider as any
   message does.
+- **Worker rules.** A worker's instructions carry the text of
+  `rules/worker.md` and of the setting `workerRulesExtra`, so they reach
+  that worker's provider with the rest of its instructions.
 
 Installing and updating fetch from GitHub and the npm registry; bb does that,
 at your command, and cow's code is not running while it happens. On a bb that
@@ -892,6 +903,7 @@ uses one that is not listed.
 | `experimental_discoverRpc` (backend) | the context card: finding the plugins that offer `cow_card` |
 | `experimental_schema` (backend) | the checkerRuns setting as a number from 1 to 5, usageWindowPercent from 1 to 100, and the stuck checks' settings as numbers of 0 or more |
 | `experimental_environments` (backend) | registering the copy-on-write workspace as an environment provider |
+| `experimental_hooks` (backend) | the `message.dispatch` hook: seeing a thread's first message, to tell a worker; it always lets the message through |
 | `experimental_client` (backend) | the copy-on-write workspace: calling cow's own host entry, where the files are cloned and removed |
 | `experimental_defineHostEntry` (backend) | the copy-on-write workspace: the host entry that clones and removes a workspace |
 | `experimental_paths` (backend) | the copy-on-write workspace: the plugin's own data folder on the host, where clones live |

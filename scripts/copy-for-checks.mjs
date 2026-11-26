@@ -47,7 +47,7 @@ if (existsSync(to) && readdirSync(to).length > 0) {
 }
 mkdirSync(to, { recursive: true });
 // The skill is left out: two plugins would otherwise both tell agents about `bb cow`.
-for (const name of ["app.tsx", "server.ts", "src", "assets", "themes", "tsconfig.json", "package-lock.json", ".gitignore", "node_modules"]) {
+for (const name of ["app.tsx", "server.ts", "src", "rules", "assets", "themes", "tsconfig.json", "package-lock.json", ".gitignore", "node_modules"]) {
   if (existsSync(join(from, name))) cpSync(join(from, name), join(to, name), { recursive: true });
 }
 const manifest = JSON.parse(readFileSync(join(from, "package.json"), "utf8"));
