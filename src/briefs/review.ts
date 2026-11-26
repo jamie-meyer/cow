@@ -341,7 +341,8 @@ export function failureReasonOf(error: string): string {
   }
   if (/^the checker could not be started: bb would not make it a personal workspace/.test(text)) return "bb would not make the checker a workspace of its own";
   const start = /^the checker could not be started on [^:]*: (.*)$/s.exec(text);
-  if (start) return clipReason(`the checker could not be started: ${start[1]!.replace(/ To check it on another provider: .*$/s, "")}`);
+  // bb's words, up to the end of their first sentence: "HTTP 400: Unknown provider "x"", not the list that follows.
+  if (start) return clipReason(`the checker could not be started: ${start[1]!.replace(/ To check it on another provider: .*$/s, "").split(/\.\s/)[0]}`);
   if (/^the checker used /.test(text)) return clipReason(text.slice(0, text.indexOf(". ") < 0 ? text.length : text.indexOf(". ")));
   if (/^the checker (gave no|judged|said cannot-tell)|^the checker's answer /.test(text)) return "the checker gave no usable answer";
   return clipReason(text.split(/\.\s/)[0] ?? text);
@@ -655,16 +656,17 @@ export function reviewText(
 
   const gate = seen.flagged.length > 0 ? 1 : 0;
   const count = seen.disputes.length + seen.taskDisputes.length + gate;
-  out.push("", `Disputes (${count})`);
+  // Under "Needs you", only the detail of what is in it: no empty sections.
+  if (needs.length === 0 || count > 0) out.push("", `Disputes (${count})`);
   if (gate > 0) out.push(`  ${GATE_TEXT.toUpperCase()}  (found by cow from the file list, with no model)`, `      ${names(seen.flagged, 30)}`);
-  if (count === 0) out.push(seen.state === "checked" ? "    none" : "    unknown: there is no check to dispute anything");
+  if (count === 0 && needs.length === 0) out.push(seen.state === "checked" ? "    none" : "    unknown: there is no check to dispute anything");
   else if (gate > 0 && seen.state !== "checked") out.push("    the claims: unknown, there is no check to dispute them");
   for (const entry of seen.disputes.slice(0, SHOW_LIMITS.disputes)) out.push(...claimLines(entry));
   if (seen.disputes.length > SHOW_LIMITS.disputes) out.push(`    … and ${seen.disputes.length - SHOW_LIMITS.disputes} more, not listed`);
   for (const entry of seen.taskDisputes) out.push(...taskLines(entry));
 
-  out.push("", `Judgement calls for you (${seen.judgementCalls.length})`);
-  if (seen.judgementCalls.length === 0) out.push("    none");
+  if (needs.length === 0 || seen.judgementCalls.length > 0) out.push("", `Judgement calls for you (${seen.judgementCalls.length})`);
+  if (seen.judgementCalls.length === 0 && needs.length === 0) out.push("    none");
   for (const call of seen.judgementCalls) out.push(`  - ${cut(call.text, SHOW_LIMITS.text)}${call.askId ? `  (${call.askId})` : ""}`);
 
   if (needs.length > 0) out.push("", upper(restText(seen)), "", "The agent's summary", `  ${cut(head.summary, 1200)}`);

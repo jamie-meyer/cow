@@ -113,6 +113,10 @@ test("a failure is said in a few words: the cause, not where it ran or the way o
   assert.equal(failureReasonOf(turn), "the provider is not signed in");
   assert.equal(failureReasonOf(turnFailedText({ provider: null, model: null, failure: null, threadId: "child" })), "the checker's turn failed");
   assert.equal(failureReasonOf("the checker could not be started on nope, its default model: no such provider: nope. To check it on another provider: bb cow brief check child --provider <provider> --model <model>"), "the checker could not be started: no such provider: nope");
+  assert.equal(
+    failureReasonOf('the checker could not be started on x, model m: HTTP 400: Unknown provider "x". Registered provider ids: codex, claude-code, pi. To check it on another provider: bb cow brief check child --provider <provider> --model <model>'),
+    'the checker could not be started: HTTP 400: Unknown provider "x"',
+  );
   assert.equal(failureReasonOf("the checker could not be started: bb would not make it a personal workspace (on bb's primary machine: x). A checker runs only…"), "bb would not make the checker a workspace of its own");
   assert.equal(failureReasonOf("the checker used a tool: Read. It was told to use none, so its answer is discarded. What it did is in its thread: bb thread log chk"), "the checker used a tool: Read");
   assert.equal(failureReasonOf("the checker's answer is not valid JSON; and it could not be run again: bb is away"), "the checker gave no usable answer");
@@ -266,6 +270,9 @@ test("brief show's text: the block first, then the detail, then the rest under a
   const failed = review(BRIEF, FAILED, null);
   const failedText = reviewText({ threadId: "child", version: 1, summary: "s" }, failed, markOf(1, failed), open);
   assert.match(failedText, /CHECK FAILED[^\n]*\n {2}failed run: [^\n]*\n\nNeeds you \(3\)\n {2}- the check could not run \(the provider is not signed in\): [^\n]*  → bb cow brief check child\n/);
+  // No empty sections under the block: a failed check has no disputes to detail.
+  assert.doesNotMatch(failedText, /Disputes \(0\)/);
+  assert.match(failedText, /\n\nJudgement calls for you \(2\)\n/);
 });
 
 test("--json keeps every field it had, and adds whether it waits, what needs you and the rest", async () => {
