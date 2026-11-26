@@ -10,7 +10,7 @@ Contents: [States](#states) · [Groups](#groups) · [Projects](#projects) · [Re
 
 | Mark | State | Means |
 | --- | --- | --- |
-| ● | wants you | it has an ask open for you, it asked a question or for permission, one of its permission requests was decided outside cow, its brief has disputes or judgement calls you have not read, or it finished with a reply addressed to you that you have not seen |
+| ● | wants you | it has an ask open for you, it asked a question or for permission, one of its permission requests was decided outside cow, its brief has disputes or judgement calls, or a check that could not run, and you have not opened it, or it finished with a reply addressed to you that you have not seen |
 | ⊘ | blocked on a permission | bb refused it a command or a file change without asking you; `a` asks again as you |
 | ▶ | running | a turn is in progress |
 | ◷ | waiting | its next move is someone else's, not yours: said with `bb cow wait` or `w`; see "Waiting on someone else" |
@@ -33,7 +33,8 @@ Two more marks sit beside a title, and say nothing about the thread's state:
 When several things wait on you at once, a line shows the first of: a
 failure; a question or permission request raised in its chat, which holds a
 running turn; an open ask; a request of its own that was decided outside cow;
-a permission bb refused; a brief with disputes or judgement calls. With none
+a permission bb refused; a brief with disputes or judgement calls, or whose
+check could not run. With none
 of those, it shows the first of: a running turn; waiting on someone else; a
 reply addressed to you; idle or done. So waiting gives way to everything that
 needs you, and a thread that has said it is waiting does not read "replied
@@ -1270,6 +1271,18 @@ changed files that no claim accounts for.
   The sheet and `bb cow brief show` print both, so that you can see whether
   it was the checker or the brief that went wrong. None of it counts as a
   verdict.
+- **A check that could not run waits on you**, like a dispute: a job that
+  nobody but its author has looked at must not read as quiet. A finished
+  thread whose latest brief's check failed, with no earlier check of that
+  version standing, wants you and is in the queue until you open the brief,
+  and its line says why in a few words: "brief: the check could not run
+  (the provider is not signed in)". `bb cow status` says the same, and its
+  `--json` has the reason on the brief's mark (`failure`). It does not wait
+  while the check runs, nor when an earlier check of the version still
+  stands (the next point), nor when no check was started because
+  `checkOnSubmit` is off: that brief is not checked, which is your setting,
+  and waits on nothing new. Opened, then checked again and failed again, it
+  waits again.
 - The thread a brief is from cannot order its own audit. The thread above it
   can, and so can you. That rule goes by the name the caller gives, which is
   the caller's own word, so cow does not rest on it: see the next point.
@@ -1433,12 +1446,41 @@ to them are not to a check. The rules are in `src/briefs/paths.ts`.
 ### Reading a brief on the page
 
 A line whose thread has submitted a brief carries its mark (see "States").
-A finished thread whose brief has disputes, or lists judgement calls, wants
-you and is in the queue ("brief: 2 disputed, 1 judgement call") until you
-have opened it. A brief the checker did not dispute, and that leaves you no
-decision, puts nothing in the queue.
+A finished thread whose brief has disputes, lists judgement calls, or whose
+check could not run, wants you and is in the queue ("brief: 2 disputed, 1
+judgement call", "brief: the check could not run (the provider is not
+signed in)") until you have opened it. A brief the checker did not dispute,
+and that leaves you no decision, puts nothing in the queue: a finished job
+is put in front of you only for its exceptions.
 
-`b` opens the brief as a sheet over the whole page:
+**A brief that has something for you opens on it.** `b` starts with a short
+block headed "Needs you", one line for each thing, worst first, each with
+the key that acts on it where there is one:
+
+1. a check that could not run, with why, and the way out: `c` checks it
+   again, and when another provider could get past it, the command that
+   runs it there;
+2. a change to what decides whether its checks pass, with how many files;
+3. what an earlier check found, when the check was run again before you
+   read it;
+4. each contradicted claim, then each task check not shown;
+5. each claim or task check not established, with what would settle it;
+6. each judgement call, saying whether it is open as an ask (`a` answers
+   it) or not raised as one.
+
+A dispute, a flag or a call not raised as an ask is dealt with by telling
+the thread: `q`, then `Enter` opens its chat. Under the block, the detail
+of those items as below: the disputes, then the judgement calls. Everything
+else (the claims the checker supported and the task checks it found shown,
+changed files no claim accounts for, what was left undone, what the checker
+was shown, the agent's summary) is folded under one line that counts it,
+"the rest: 7 claims supported, 2 not done; what the checker was shown and
+the summary". It is a stop for `j` and `k`: `l` or `Enter` unfolds it, `h`
+folds it. A brief that has been opened keeps its block when it is opened
+again: it is about the brief, not the queue.
+
+Every brief opens as a sheet over the whole page. The detail, and the whole
+of a brief that has nothing for you, reads in this order:
 
 1. what the check was: how many runs, of which model, or that it failed and
    why, or that none has run;
@@ -1462,7 +1504,7 @@ decision, puts nothing in the queue.
 | Key in the sheet | Does |
 | --- | --- |
 | `j` `k`, `g g`, `G` | move between claims and judgement calls |
-| `l`, `Enter` | open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link that opens the file as it is now in the reader; `q` there returns to the brief |
+| `l`, `Enter` | on "the rest", unfold it; `h` folds it again. Elsewhere, open the claim's evidence in place: excerpts as text, and a file as the text that was submitted, with a link that opens the file as it is now in the reader; `q` there returns to the brief |
 | `h` | close it |
 | `a` | answer the judgement call under the cursor, when it is open as an ask |
 | `c` | run the check again, after `y`: it costs a model run for each run in the settings, and replaces the verdicts once it gives an answer; if it fails, they stay |
@@ -1488,7 +1530,15 @@ as the clipping allows, and it sees nothing outside the thread's checkout. A
 failed check, or none, means nothing in the brief has been looked at by
 anyone but its author; the page says so and never shows it as clean.
 
-`bb cow brief show` prints the disputes first (a change to what decides
+`bb cow brief show` of a brief that has something for you prints "Needs
+you" first, the same lines, each with the command that acts on it (`bb cow
+brief check <thread>`, `bb thread tell <thread>`), then the disputes and the
+judgement calls as below, then the rest under a heading that counts it,
+starting with the agent's summary. `--json` adds `waits` (it waits on you
+now), `needsYou` (the block: each line's `kind`, `text`, the sheet's `item`,
+the page's `key` and the `command`) and `rest` (the counting line, null when
+there is no block), and keeps every other field. Otherwise it prints the
+disputes first (a change to what decides
 whether its checks pass; then each disputed claim with the checker's
 verdict, what the evidence literally shows, then what the agent says;
 contradicted before not established; then the task checks not shown or that
@@ -1497,7 +1547,8 @@ checks; then changed files no claim accounts for, what was left undone, and
 what the checker was shown. The agent's label is always printed as "the
 agent says", after the verdict, never as verification. `--json` adds
 `tasks`, `flagged`, `unaccounted` and `shown`. `bb cow status` adds to a thread's line what its
-latest brief came to, such as "brief disputed: 1 contradicted".
+latest brief came to, such as "brief disputed: 1 contradicted" or "brief:
+the check could not run (the checker did not answer in time)".
 
 Settings (Settings → Installed plugins → cow, or `bb plugin config cow`):
 
@@ -2356,7 +2407,7 @@ cow records and shows what happens, whoever did it:
   - `bb cow park` on a thread that was waiting on you at that moment: it
     had an open ask, one of bb's own questions or permission requests, a
     refused permission not dismissed, a failure, a brief with disputes or
-    judgement calls, or a reply addressed to you not yet seen. Parking a
+    judgement calls or whose check could not run, or a reply addressed to you not yet seen. Parking a
     thread that waited on nothing leaves no trace;
   - `bb cow ask withdraw`;
   - `bb cow ask close --answered` when you have not sent that thread a
@@ -2503,7 +2554,7 @@ agent and stop no other.
 | `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
 | `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it moves it, once finished, from idle in the tree to done under To settle. Whose its replies are does not change: that is decided by who started each turn, for a project as for any thread |
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
-| `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's once it answers. A caller who makes it fail, say by naming a model that does not exist, replaces nothing: the earlier check stays, with the failed attempt beside it. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call. On a brief you had read it does the opposite and makes it wait again |
+| `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's once it answers. A caller who makes it fail, say by naming a model that does not exist, replaces nothing: the earlier check stays, with the failed attempt beside it. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call; a check that fails with no earlier one standing waits on you too. On a brief you had read it does the opposite and makes it wait again |
 
 Recording which thread is Main (`main_choose`) was one of these until 0.2.1.
 A window keeps the Main chosen in it, but a new window starts on the

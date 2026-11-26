@@ -1,4 +1,7 @@
-// A thread's brief as a sheet over the page: what is disputed first (a
+// A thread's brief as a sheet over the page. One that has something for the
+// person opens on "Needs you": a line for each thing in doubt or theirs to
+// decide, worst first, then their detail, and the rest folded under one line
+// that counts it. Otherwise: what is disputed first (a
 // change to what decides whether the job's checks pass, then claims, then the
 // task's checks), then the decisions that are the person's, then the other
 // claims and task checks, then what was left undone, what the checker was
@@ -12,12 +15,15 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Ask } from "./asks/ask.ts";
 import type { Label } from "./briefs/brief.ts";
-import { GATE_TEXT, type ReviewedClaim, type Verdict, earlierDisputesText, failedRecheckText, review, shownLines } from "./briefs/review.ts";
+import { GATE_TEXT, type Need, type ReviewedClaim, type Verdict, briefNeedsYou, earlierDisputesText, failedRecheckText, markOf, needsYou, review, shownLines } from "./briefs/review.ts";
 import type { BriefRecord } from "./briefs/service.ts";
 import { type SheetItem, checkLine, moveStop, sheetItems } from "./briefs/sheet.ts";
 
 /** The record read against its check and what its checker was shown. */
 const reviewOf = (record: BriefRecord) => review(record.brief, record.check, record.shown ?? null);
+/** The mark the line has, read or not: whether the brief has something for the person. */
+const markFor = (record: BriefRecord) =>
+  markOf(record.version, reviewOf(record), 0, false, record.earlierDisputes, record.earlierChecks > 0, record.earlierContradicted, record.earlierTasks);
 import type { Command } from "./keys.ts";
 import type { RaisedData } from "./raisedData.ts";
 import { fileAttribute } from "./reader/trigger.ts";
@@ -66,6 +72,8 @@ interface Open {
   expanded: ReadonlySet<string>;
   confirming: boolean;
   note: string;
+  /** On a brief that needs the person: whether what is not in doubt is unfolded. */
+  rest: boolean;
 }
 
 function ClaimRow({ item, current, expanded, threadId, onSelect }: { item: Extract<SheetItem, { kind: "dispute" | "claim" }>; current: boolean; expanded: boolean; threadId: string; onSelect: () => void }) {
@@ -269,6 +277,47 @@ function CallRow({ item, current, card, onSelect }: { item: Extract<SheetItem, {
   );
 }
 
+function RestRow({ item, current, onSelect }: { item: Extract<SheetItem, { kind: "rest" }>; current: boolean; onSelect: () => void }) {
+  return (
+    <div
+      className={["cow-bf-item", "cow-bf-rest", current ? "cow-cur" : ""].join(" ").trim()}
+      data-cow-brief-item={item.id}
+      data-cow-brief-kind="rest"
+      data-cow-brief-rest={item.open ? "open" : "folded"}
+      data-cow-hint=""
+      aria-current={current || undefined}
+      onClick={onSelect}
+    >
+      <p className="cow-bf-claim">
+        {item.open ? "▾" : "▸"} {upper(item.text)}
+        {current ? <small> · {item.open ? "h folds it" : "l or ⏎ unfolds it"}</small> : null}
+      </p>
+    </div>
+  );
+}
+
+/** "Needs you": one line for each thing in doubt or theirs to decide, worst first, with the key that acts on it. */
+function NeedsBlock({ needs }: { needs: readonly Need[] }) {
+  return (
+    <div className="cow-bf-needs" data-cow-brief-needs-you={needs.length}>
+      <h3 data-cow-brief-section="needs">
+        Needs you <b>{needs.length}</b>
+      </h3>
+      {needs.map((need, index) => (
+        <p key={index} className={`cow-bf-need cow-bf-need-${need.kind}`} data-cow-brief-need={need.kind} data-cow-brief-need-item={need.item ?? undefined}>
+          <span>{need.text}</span>
+          {need.key ? (
+            <small>
+              {" · "}
+              <kbd>{need.key.keys}</kbd> {need.key.does}
+            </small>
+          ) : null}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetHost; items: readonly SheetItem[]; asks: readonly Ask[]; onSelect: (id: string) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -284,6 +333,9 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
   } else {
     const seen = reviewOf(record);
     const check = checkLine(seen);
+    const needs = needsYou(seen, markFor(record), open.threadId, (askId) => asks.some((ask) => ask.id === askId));
+    const folding = needs.length > 0;
+    const rest = items.find((item) => item.kind === "rest") ?? null;
     const disputes = items.filter((item) => item.kind === "dispute" || item.kind === "flag" || (item.kind === "task" && item.disputed));
     const calls = items.filter((item) => item.kind === "call");
     const claims = items.filter((item) => item.kind === "claim");
@@ -294,6 +346,8 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <CallRow key={item.id} item={item} current={item.id === open.cursor} card={item.ask ? host.askCard(item.ask.id) : null} onSelect={() => onSelect(item.id)} />
       ) : item.kind === "flag" ? (
         <FlagRow key={item.id} item={item} current={item.id === open.cursor} onSelect={() => onSelect(item.id)} />
+      ) : item.kind === "rest" ? (
+        <RestRow key={item.id} item={item} current={item.id === open.cursor} onSelect={() => onSelect(item.id)} />
       ) : item.kind === "task" ? (
         <TaskRow key={item.id} item={item} current={item.id === open.cursor} onSelect={() => onSelect(item.id)} />
       ) : (
@@ -304,6 +358,7 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
         <p className={`cow-bf-check cow-bf-check-${check.tone}`} data-cow-brief-check={seen.state} data-cow-brief-runs={seen.runs.done}>
           {check.text}
         </p>
+        {folding ? <NeedsBlock needs={needs} /> : null}
         {host.conflictOf?.(open.threadId) ? (
           <p className="cow-bf-check cow-bf-check-bad" data-cow-merge-note={open.threadId}>
             Before you merge: {host.conflictOf(open.threadId)}. cow never merges.
@@ -334,55 +389,68 @@ function Sheet({ open, host, items, asks, onSelect }: { open: Open; host: SheetH
             ) : null}
           </div>
         ))}
-        <h3 data-cow-brief-section="disputes">
-          Disputed <b>{disputes.length}</b>
-        </h3>
-        {disputes.length === 0 ? (
-          <p className="cow-bf-none">{seen.state === "checked" ? (seen.tasks.length > 0 ? "The checker disputed none of the claims and none of the task's checks." : "The checker disputed none of the claims.") : "Unknown: there is no check to dispute anything."}</p>
-        ) : (
-          disputes.map(draw)
+        {folding && disputes.length === 0 ? null : (
+          <>
+            <h3 data-cow-brief-section="disputes">
+              Disputed <b>{disputes.length}</b>
+            </h3>
+            {disputes.length === 0 ? (
+              <p className="cow-bf-none">{seen.state === "checked" ? (seen.tasks.length > 0 ? "The checker disputed none of the claims and none of the task's checks." : "The checker disputed none of the claims.") : "Unknown: there is no check to dispute anything."}</p>
+            ) : (
+              disputes.map(draw)
+            )}
+          </>
         )}
-        <h3 data-cow-brief-section="calls">
-          Judgement calls for you <b>{calls.length}</b>
-        </h3>
-        {calls.length === 0 ? <p className="cow-bf-none">None listed: the agent left no decision to you.</p> : calls.map(draw)}
-        <h3 data-cow-brief-section="claims">
-          Other claims <b>{claims.length}</b>
-        </h3>
-        {claims.length === 0 ? <p className="cow-bf-none">None: every claim is among the disputed ones above.</p> : claims.map(draw)}
-        {seen.tasks.length > 0 ? (
+        {folding && calls.length === 0 ? null : (
           <>
-            <h3 data-cow-brief-section="task">
-              The task's other checks <b>{tasks.length}</b>
+            <h3 data-cow-brief-section="calls">
+              Judgement calls for you <b>{calls.length}</b>
             </h3>
-            {tasks.length === 0 ? <p className="cow-bf-none">None: every check the task sets is among the disputed ones above.</p> : tasks.map(draw)}
+            {calls.length === 0 ? <p className="cow-bf-none">None listed: the agent left no decision to you.</p> : calls.map(draw)}
           </>
-        ) : null}
-        {seen.unaccounted.length > 0 ? (
+        )}
+        {rest ? draw(rest) : null}
+        {folding && !open.rest ? null : (
           <>
-            <h3 data-cow-brief-section="unaccounted">
-              Changed, and no claim accounts for it <b>{seen.unaccounted.length}</b>
+            <h3 data-cow-brief-section="claims">
+              Other claims <b>{claims.length}</b>
             </h3>
-            <p className="cow-bf-none" data-cow-brief-unaccounted="">
-              A note from the checker, not a dispute: {seen.unaccounted.join(", ")}
-            </p>
+            {claims.length === 0 ? <p className="cow-bf-none">None: every claim is among the disputed ones above.</p> : claims.map(draw)}
+            {seen.tasks.length > 0 ? (
+              <>
+                <h3 data-cow-brief-section="task">
+                  The task's other checks <b>{tasks.length}</b>
+                </h3>
+                {tasks.length === 0 ? <p className="cow-bf-none">None: every check the task sets is among the disputed ones above.</p> : tasks.map(draw)}
+              </>
+            ) : null}
+            {seen.unaccounted.length > 0 ? (
+              <>
+                <h3 data-cow-brief-section="unaccounted">
+                  Changed, and no claim accounts for it <b>{seen.unaccounted.length}</b>
+                </h3>
+                <p className="cow-bf-none" data-cow-brief-unaccounted="">
+                  A note from the checker, not a dispute: {seen.unaccounted.join(", ")}
+                </p>
+              </>
+            ) : null}
+            <h3 data-cow-brief-section="not-done">
+              Left undone, as the agent lists it <b>{seen.notDone.length}</b>
+            </h3>
+            {seen.notDone.length === 0 ? <p className="cow-bf-none">Nothing listed: the agent says it left nothing undone.</p> : seen.notDone.map((entry, index) => <p key={index} className="cow-bf-undone">{entry}</p>)}
+            {shown.length > 0 ? (
+              <>
+                <h3 data-cow-brief-section="shown">What the checker was shown</h3>
+                <p className="cow-bf-none">Besides the claims and their evidence; never the agent's summary or its labels.</p>
+                <pre className="cow-bf-shown" data-cow-brief-shown="">
+                  {shown.map((line) => line.replace(/^ {2}/, "")).join("\n")}
+                </pre>
+              </>
+            ) : null}
+            <h3 data-cow-brief-section="summary">The agent's summary</h3>
+            <p className="cow-bf-summary">{record.brief.summary}</p>
           </>
-        ) : null}
-        <h3 data-cow-brief-section="not-done">
-          Left undone, as the agent lists it <b>{seen.notDone.length}</b>
-        </h3>
-        {seen.notDone.length === 0 ? <p className="cow-bf-none">Nothing listed: the agent says it left nothing undone.</p> : seen.notDone.map((entry, index) => <p key={index} className="cow-bf-undone">{entry}</p>)}
-        {shown.length > 0 ? (
-          <>
-            <h3 data-cow-brief-section="shown">What the checker was shown</h3>
-            <p className="cow-bf-none">Besides the claims and their evidence; never the agent's summary or its labels.</p>
-            <pre className="cow-bf-shown" data-cow-brief-shown="">
-              {shown.map((line) => line.replace(/^ {2}/, "")).join("\n")}
-            </pre>
-          </>
-        ) : null}
-        <h3 data-cow-brief-section="summary">The agent's summary</h3>
-        <p className="cow-bf-summary">{record.brief.summary}</p>
+        )}
         {asks.length > 0 ? <p className="cow-bf-none">This thread also has {asks.length === 1 ? "an ask" : `${asks.length} asks`} open: q, then a on its line.</p> : null}
       </>
     );
@@ -452,7 +520,11 @@ export function useBriefSheet(host: SheetHost): BriefSheetControl {
 
   const record = open?.record ?? null;
   const asks = useMemo(() => (threadId === null ? [] : (raised.asks.get(threadId) ?? [])), [raised.asks, threadId]);
-  const items = useMemo(() => (record === null || record === "none" ? [] : sheetItems(reviewOf(record), asks)), [record, asks]);
+  const unfolded = open?.rest ?? false;
+  const items = useMemo(
+    () => (record === null || record === "none" ? [] : sheetItems(reviewOf(record), asks, briefNeedsYou(markFor(record)) ? { open: unfolded } : null)),
+    [record, asks, unfolded],
+  );
 
   // Having it open is having read it: the line stops waiting. Not while a check still runs.
   const unread = record !== null && record !== "none" && record.readAt === null && !record.check?.runs.some((run) => run.status === "running") ? record.version : null;
@@ -495,6 +567,10 @@ export function useBriefSheet(host: SheetHost): BriefSheetControl {
         if (item === null) return true;
         if (item.kind === "call") {
           patch({ note: opening ? (item.ask ? "a answers it here" : "there is nothing to open on a judgement call") : "" });
+          return true;
+        }
+        if (item.kind === "rest") {
+          patch({ rest: opening, cursor: item.id });
           return true;
         }
         if (item.kind === "flag" || item.kind === "task") {
@@ -550,7 +626,7 @@ export function useBriefSheet(host: SheetHost): BriefSheetControl {
     threadId,
     open: (id) => {
       host.say("");
-      setOpen({ threadId: id, record: null, error: "", cursor: null, expanded: new Set(), confirming: false, note: "" });
+      setOpen({ threadId: id, record: null, error: "", cursor: null, expanded: new Set(), confirming: false, note: "", rest: false });
     },
     onCommand,
     onKey,

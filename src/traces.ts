@@ -37,7 +37,7 @@ const oneLine = (text: string): string => {
  * What a thread was waiting on the person for, at the moment an agent parks
  * it: an open ask, bb's own question or permission request, a permission bb
  * refused and nobody dismissed, a failure, a brief with disputes or judgement
- * calls, a reply addressed to them not yet seen. Empty when it waited on
+ * calls or whose check could not run, a reply addressed to them not yet seen. Empty when it waited on
  * nothing: such a park leaves no trace.
  */
 export function parkWaitedOn(line: Line): string[] {
@@ -48,7 +48,7 @@ export function parkWaitedOn(line: Line): string[] {
   if (thread.hasPendingInteraction) out.push("a question or permission request of bb's");
   if (derived.blocked) out.push("a permission bb refused");
   if (derived.state === "failed") out.push("a failure");
-  if (derived.briefWaits) out.push("a brief with disputes or judgement calls");
+  if (derived.briefWaits) out.push(derived.brief?.state === "failed" && !(derived.brief.read) ? "a brief whose check could not run" : "a brief with disputes or judgement calls");
   if (derived.reply) out.push("a reply to you not yet seen");
   return out;
 }

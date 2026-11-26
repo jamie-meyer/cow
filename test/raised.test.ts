@@ -82,7 +82,7 @@ test("the overview lists its asks, and each line says what its brief came to", (
   // A line that already waits on its brief is not told twice.
   assert.equal(out.threads[0]?.doing, "brief: 3 disputed");
   assert.equal(out.queue[0]?.doing, "brief: 3 disputed");
-  assert.equal(out.threads[1]?.doing, "working · brief: the check failed");
+  assert.equal(out.threads[1]?.doing, "working · brief: the check could not run");
   assert.equal(out.main.doing, "working · brief checked, no disputes");
   assert.deepEqual(Object.keys(out.briefs).sort(), ["child", "grandchild", "main"]);
   assert.deepEqual(out.asks.map((entry) => entry.id), ["ask_a", "ask_b"]);

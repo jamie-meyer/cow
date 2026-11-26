@@ -8,7 +8,7 @@ import { type Ask, RISKS, askText } from "./asks/ask.ts";
 import type { Asks } from "./asks/service.ts";
 import { withRaised } from "./raised.ts";
 import { BRIEF_SHAPE } from "./briefs/brief.ts";
-import { markText, reviewText } from "./briefs/review.ts";
+import { briefWaits, markText, needsYou, restText, reviewText } from "./briefs/review.ts";
 import { type BriefRecord, type Briefs, MAX_RUNS, briefView } from "./briefs/service.ts";
 import { Refusal } from "./kv.ts";
 import type { StatusReport } from "./status.ts";
@@ -55,8 +55,9 @@ const print = (asJson: boolean, data: object, text: string) => ({
 });
 
 /** A brief for `--json`: how to read it, without the evidence text. */
-function briefJson(record: BriefRecord) {
+function briefJson(record: BriefRecord, openAsks: ReadonlySet<string> = new Set()) {
   const { review, mark } = briefView(record);
+  const needs = needsYou(review, mark, record.threadId, (askId) => openAsks.has(askId));
   const slim = (entry: (typeof review.claims)[number]) => ({
     id: entry.claim.id,
     text: entry.claim.text,
@@ -88,10 +89,16 @@ function briefJson(record: BriefRecord) {
     unaccounted: review.unaccounted,
     /** What the checker was shown besides the brief; null for a brief stored before 0.2.18. */
     shown: record.shown,
+    /** Whether the brief waits on the person now: it has something for them, and they have not opened it. */
+    waits: briefWaits(mark),
+    /** What it has for the person, worst first: the "Needs you" block. Empty when it has nothing. */
+    needsYou: needs,
+    /** With `needsYou`: what the rest of the brief holds, counted; null when it has nothing for them. */
+    rest: needs.length > 0 ? restText(review) : null,
   };
 }
 
-const briefText = (record: BriefRecord): string =>
+const briefText = (record: BriefRecord, openAsks: ReadonlySet<string> = new Set()): string =>
   reviewText(
     {
       threadId: record.threadId,
@@ -103,6 +110,8 @@ const briefText = (record: BriefRecord): string =>
       failedRecheck: record.failedRecheck,
     },
     briefView(record).review,
+    briefView(record).mark,
+    (askId) => openAsks.has(askId),
   );
 
 /** The overview with asks and briefs on it. */
@@ -273,8 +282,12 @@ export function attentionCommands(attention: Attention) {
       },
     }),
     "brief show": cliCommand({
-      summary: "A thread's brief as the checker left it: disputes first",
+      summary: "A thread's brief as the checker left it: what needs you first",
       description:
+        "A brief that has something for you starts with \"Needs you\": one line each, worst first (a check that could " +
+        "not run, a change to what decides whether its checks pass, contradicted claims, task checks not shown, what is " +
+        "not established, judgement calls), with the command that acts on it; then the detail, and the rest under a " +
+        "heading that counts it. " +
         "Disputes (a change to what decides whether its checks pass, then claims: the checker's verdict, what the " +
         "evidence literally shows, then the agent's own label; then the task's checks), then judgement calls, then the " +
         "other claims and task checks, then what was left undone and what the checker was shown. At most 30 disputes " +
@@ -286,7 +299,8 @@ export function attentionCommands(attention: Attention) {
         const id = threadId(input.positionals.thread);
         const found = await acting(() => briefs.get(id, o.version));
         const record = o.version === undefined ? await afterCheck(found, o.wait, ctx.signal) : found;
-        return print(o.json, briefJson(record), briefText(record));
+        const open = new Set((await acting(() => asks.list({ threadId: id }))).map((ask) => ask.id));
+        return print(o.json, briefJson(record, open), briefText(record, open));
       },
     }),
   };

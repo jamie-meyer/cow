@@ -113,7 +113,7 @@ test("without a usable check nothing is verified and nothing is disputed", () =>
   assert.equal(failed.state, "failed");
   assert.deepEqual(failed.failures, ["not JSON"]);
   assert.ok(failed.claims.every((entry) => entry.verdict === null));
-  assert.equal(markText(markOf(1, failed)), "brief: the check failed");
+  assert.equal(markText(markOf(1, failed)), "brief: the check could not run (not JSON)");
   const text = reviewText({ threadId: "thr_a", version: 1, summary: BRIEF.summary }, failed);
   assert.match(text, /CHECK FAILED/);
   assert.match(text, /failed run: not JSON/);
@@ -760,8 +760,8 @@ test("changing an existing test or a type-check configuration is a dispute with 
   assert.equal(view.review.state, "failed");
   assert.ok(briefWaits(view.mark));
   assert.equal(disputeCount(view.mark), 1);
-  assert.equal(briefWaitText(view.mark), "brief: changed what decides whether its checks pass");
-  assert.equal(markText(view.mark), "brief: the check failed; changed what decides whether its checks pass");
+  assert.equal(briefWaitText(view.mark), "brief: the check could not run (the checker's turn failed), changed what decides whether its checks pass");
+  assert.equal(markText(view.mark), "brief: the check could not run (the checker's turn failed); changed what decides whether its checks pass");
   const text = reviewText({ threadId: "child", version: 1, summary: "s" }, view.review);
   assert.match(text, /Disputes \(1\)\n {2}CHANGED WHAT DECIDES WHETHER ITS CHECKS PASS {2}\(found by cow from the file list, with no model\)\n {6}test\/login\.test\.ts, tsconfig\.json/);
   assert.deepEqual(sheetItems(view.review, [])[0], { kind: "flag", id: "flag", files: ["test/login.test.ts", "tsconfig.json"] });

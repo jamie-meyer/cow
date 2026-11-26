@@ -22,7 +22,7 @@ import {
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { MainState, rpcContract } from "../server.ts";
 import { type BriefSheetControl, useBriefSheet } from "./BriefSheet.tsx";
-import { type BriefMark, disputeCount } from "./briefs/review.ts";
+import { type BriefMark, disputeCount, failedText } from "./briefs/review.ts";
 import { useCapSheet } from "./caps/CapSheet.tsx";
 import { type StepsOrigin, useCapSteps } from "./caps/CapSteps.tsx";
 import { HeldCard } from "./caps/HeldCard.tsx";
@@ -429,7 +429,7 @@ function BriefMarks({ mark }: { mark: BriefMark }) {
       .filter((part) => part !== "")
       .join("; ") || `${disputed} disputed`,
     clean: "the checker disputed none of its claims; that is one audit of the evidence attached, not proof",
-    failed: "the check failed: nothing in the brief is verified",
+    failed: `${failedText(mark.failure)}: nothing in the brief is verified`,
     checking: "a checker is auditing it now",
     unchecked: "no checker has audited it",
   };
@@ -1123,7 +1123,8 @@ function Help({ onClose }: { onClose: () => void }) {
             <span>
               <b>a brief.</b> The thread submitted its finished job as claims with evidence. Beside it, what a
               separate checker made of it: <Glyph state="done" /> it disputed nothing, <Glyph state="running" /> it is
-              checking, <Glyph state="failed" /> the check failed, so nothing is verified. <kbd>b</kbd> opens it.
+              checking, <Glyph state="failed" /> the check could not run, so nothing is verified, and it waits on you
+              until you open it. <kbd>b</kbd> opens it on what needs you.
               A check is one model's audit of the evidence the agent attached, not proof.
             </span>
           </div>

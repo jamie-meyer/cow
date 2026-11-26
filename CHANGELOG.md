@@ -4,6 +4,36 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.28
+
+- **A finished job shows only its exceptions.** A brief puts something in
+  front of you only when a check disputes something, a check could not run,
+  or a decision is yours. A clean brief still puts nothing in the queue.
+- **A check that could not run waits on you.** A finished thread whose
+  latest brief's check failed (no usable answer, a tool used, an error, a
+  timeout, a checker that could not be started), with no earlier check of
+  that version standing, is in the queue until you open the brief, and the
+  line says why: "brief: the check could not run (the provider is not
+  signed in)". `bb cow status` says the same, and its `--json` has the
+  reason on the brief's mark (`failure`). It does not wait while a check
+  runs, when a check run again fails over one that stands, or when
+  `checkOnSubmit` is off and no check was started. Opened, then checked
+  again and failed again, it waits again.
+- **A brief that has something for you opens on it.** `b` starts with
+  "Needs you": one line each, worst first (a check that could not run with
+  why and the way out, a change to what decides whether its checks pass,
+  contradicted claims, task checks not shown, what is not established with
+  what would settle it, judgement calls and whether each is open as an
+  ask), with the key that acts on it. Under it, their detail; everything
+  else is folded under one line that counts it ("the rest: 7 claims
+  supported, 2 not done; …"), which `l` unfolds and `h` folds. A brief
+  with nothing for you opens as before.
+- `bb cow brief show` prints the same block first, with the command for
+  each line, then the detail, then the rest under a heading. `--json` adds
+  `waits`, `needsYou` and `rest`, and keeps every other field.
+- What an agent's park took out of your queue names a brief whose check
+  could not run as such.
+
 ## 0.2.27
 
 - **Workers get their rules from cow.** A thread whose first message

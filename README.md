@@ -136,7 +136,7 @@ thread's name, what it is doing or waiting on, and the next move.
 
 **The queue.** Only what is yours, oldest first: asks, questions, permission
 requests, permissions bb refused without asking, failures, briefs with
-disputes or judgement calls, replies addressed to you, parked work that has
+disputes or judgement calls or whose check could not run, replies addressed to you, parked work that has
 come back, work waiting on someone else whose reminder has come,
 capabilities you have not acknowledged, and permission requests decided
 somewhere other than cow. `Tab` and `1` to `9` jump to an entry. A reply you
@@ -301,7 +301,10 @@ reaches the thread as a message from you.
 **Briefs and the checker.** A finished job is reported with
 `bb cow brief submit`: a list of claims, each labelled by the agent as
 checked, inferred or not checked, with its evidence. cow has a separate agent
-audit it, and `b` shows you what that checker disputes first. The checker is
+audit it. A finished job is put in front of you only for its exceptions: a
+dispute, a check that could not run, or a decision that is yours. Then `b`
+opens on "Needs you", a line for each, worst first, with the key that acts
+on it, and folds the rest under one line that counts it. The checker is
 not shown the agent's summary or its labels: it gets the claims and their
 evidence, the task the thread was started with (read by cow, with each check
 of its "Done means" section, which it answers for too), and what the thread
@@ -401,7 +404,7 @@ says why, and what to press instead. `?` shows this map on the page.
 | Key | Does |
 | --- | --- |
 | `a` | answer the line's ask or question, grant or deny its permission request, or deal with a permission bb refused: digits choose, Enter confirms; an ask with more at stake is shown back first, or needs a word typed. A request or a refusal can be saved as a capability from its card. On a thread's request for a capability (its line says press a to allow or refuse), 1 allows it: the steps open at once and end in a confirmation; 2, then Enter, refuses it |
-| `b` | open the line's brief over the page: disputes first. In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes |
+| `b` | open the line's brief over the page: what needs you first, the rest folded (l unfolds it). In it: j k move, l or Enter opens a claim's evidence, h closes it, a answers a judgement call, c runs the check again (y confirms), q or Esc closes |
 | `Space` | mark a reply as seen: the line stops waiting on you, and stays where it is, dimmed, until the page is reloaded; on a line to settle, or a project or Main marked with the unread dot, it is no longer unread; on a line whose request was decided outside cow, acknowledge that |
 | `w` | say the line is waiting on someone else: who or what, then a reminder (19 Nov, +3d, +2w) or nothing. On a waiting line, w clears it (y confirms); when its reminder comes, a keeps it waiting or takes it back |
 

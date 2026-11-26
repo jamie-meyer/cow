@@ -1518,6 +1518,34 @@
   color: var(--cow-fail);
   font-weight: 700;
 }
+/* "Needs you": what is in doubt or theirs to decide, one line each, before any detail */
+.cow-bf-needs {
+  margin: 4px 0 6px;
+}
+.cow-bf-need {
+  padding: 2px 10px 2px 12px;
+  border-left: 3px solid var(--cow-needs);
+  font-size: 13.5px;
+  line-height: 20px;
+}
+.cow-bf-need + .cow-bf-need {
+  margin-top: 2px;
+}
+.cow-bf-need-failed,
+.cow-bf-need-flag,
+.cow-bf-need-contradicted,
+.cow-bf-need-not-shown,
+.cow-bf-need-earlier {
+  border-left-color: var(--cow-fail);
+}
+.cow-bf-need small {
+  color: var(--cow-faint);
+  font-size: 12px;
+}
+.cow-bf-rest .cow-bf-claim {
+  font: 13px/20px var(--cow-sans);
+  color: var(--cow-muted);
+}
 .cow-bf-failure {
   font: 12px/18px var(--cow-mono);
   color: var(--cow-fail);

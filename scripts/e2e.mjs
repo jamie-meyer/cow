@@ -683,11 +683,20 @@ async function prepareRaised(ids) {
   await submit(ids.amain, { summary: "Moved the endpoint.", claims: [{ id: "moved", text: "The endpoint answers at its new path.", label: "inferred" }], judgementCalls: [{ text: "Keep the old endpoint for a week?", askId: call.id }] });
   await set("checkerProvider", "claude-code");
   if (checkers.length > 0) console.log(`checker threads started for the briefs: ${checkers.join(", ")}`);
-  return { call };
+  /** Submit a new version on `id` whose check fails: on a provider that does not exist, set for that one submit on the copy's own settings. */
+  const submitFailing = async (id) => {
+    await set("checkerProvider", "cow-test-no-such-provider");
+    try {
+      return await submit(id, { summary: "Set the retry count again.", claims: [{ id: "retries", text: "The config sets retries to 2.", label: "checked", evidence: [{ description: "the config", text: "retries = 2" }] }], notDone: ["Not run."] });
+    } finally {
+      await set("checkerProvider", "claude-code");
+    }
+  };
+  return { call, submitFailing };
 }
 
 async function raisedChecks(page, ids, shot, chooseMain) {
-  const { call } = await prepareRaised(ids);
+  const { call, submitFailing } = await prepareRaised(ids);
   const mainLine = `document.querySelector(".cow-mainline")`;
   const lineEl = (id) => `document.querySelector('.cow-main [data-cow-line="${id}"]')`;
   const doing = (id) =>
@@ -872,17 +881,81 @@ async function raisedChecks(page, ids, shot, chooseMain) {
     `${await page.eval(briefMark(ids.asker))} / ${await page.eval(queued(ids.asker))}`,
   );
 
+  // -- a clean brief opens as it always did: no "Needs you", nothing folded --
+  await page.key("b");
+  await page.waitFor(`${sheet}?.dataset.cowSheet === "${ids.asker}" && !!${sheet}.querySelector("[data-cow-brief-check]")`, { label: "the clean brief" });
+  const cleanSheet = JSON.parse(
+    await page.eval(`JSON.stringify({
+      needs: !!${sheet}.querySelector("[data-cow-brief-needs-you]"),
+      rest: !!${sheet}.querySelector('[data-cow-brief-kind="rest"]'),
+      sections: [...${sheet}.querySelectorAll("[data-cow-brief-section]")].map((head) => head.dataset.cowBriefSection),
+      items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefItem),
+    })`),
+  );
+  check(
+    "a clean brief opens as before: no Needs you block, nothing folded, its claims and summary in place",
+    !cleanSheet.needs && !cleanSheet.rest && cleanSheet.sections[0] === "disputes" && cleanSheet.sections.includes("claims") && cleanSheet.sections.includes("summary") && cleanSheet.items.includes("claim:retries"),
+    JSON.stringify(cleanSheet),
+  );
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the clean brief closing" });
+
+  // -- a check that could not run waits on you, saying why, and opens on what needs you --
+  await submitFailing(ids.asker);
+  await page.waitFor(`(${queued(ids.asker)} ?? "").startsWith("brief: the check could not run (")`, { label: "the failed check in the queue", timeout: 30_000 }).catch(() => undefined);
+  const failedQueued = (await page.eval(queued(ids.asker))) ?? "";
+  console.log(`the failed check's line in the queue: ${failedQueued}`);
+  check(
+    "a finished thread whose brief's check could not run wants you, and the queue says why",
+    failedQueued.startsWith("brief: the check could not run (the checker could not be started") && (await page.eval(lineState(ids.asker))) === "wants" && (await page.eval(briefMark(ids.asker))) === "failed",
+    `${await page.eval(lineState(ids.asker))} / ${failedQueued}`,
+  );
+  const failedStatus = JSON.parse((await cow("status", "--main", ids.amain, "--json")).stdout);
+  const statusLine = [...(failedStatus.queue ?? []), ...(failedStatus.threads ?? []), ...(failedStatus.settle ?? [])].find((line) => line.id === ids.asker);
+  check(
+    "bb cow status says the same, and its --json carries the reason on the mark",
+    (statusLine?.doing ?? "").startsWith("brief: the check could not run (") && (failedStatus.briefs?.[ids.asker]?.failure ?? "").startsWith("the checker could not be started"),
+    JSON.stringify({ doing: statusLine?.doing, mark: failedStatus.briefs?.[ids.asker] }),
+  );
+  const failedShow = await cow("brief", "show", ids.asker);
+  console.log(`bb cow brief show of the failed check, its first lines:\n${failedShow.stdout.split("\n").slice(0, 10).join("\n")}`);
+  check("bb cow brief show opens on Needs you, the failed check first, with the command that checks it again", /\nNeeds you \(1\)\n {2}- the check could not run \([^\n]*→ bb cow brief check /.test(failedShow.stdout), failedShow.stdout.slice(0, 600));
+  await select(ids.asker);
+  await page.key("b");
+  await page.waitFor(`${sheet}?.dataset.cowSheet === "${ids.asker}" && !!${sheet}.querySelector("[data-cow-brief-needs-you]")`, { label: "the failed brief's sheet" });
+  const failedNeeds = JSON.parse(
+    await page.eval(`JSON.stringify({
+      needs: [...${sheet}.querySelectorAll("[data-cow-brief-need]")].map((need) => need.dataset.cowBriefNeed + ": " + need.textContent),
+      firstSection: ${sheet}.querySelector("[data-cow-brief-section]")?.dataset.cowBriefSection,
+      rest: ${sheet}.querySelector('[data-cow-brief-kind="rest"]')?.dataset.cowBriefRest ?? null,
+      restText: ${sheet}.querySelector('[data-cow-brief-kind="rest"]')?.textContent ?? "",
+      claims: ${sheet}.querySelectorAll('[data-cow-brief-kind="claim"]').length,
+    })`),
+  );
+  console.log(`the failed check's Needs you: ${JSON.stringify(failedNeeds)}`);
+  check(
+    "the sheet opens on Needs you: the check that could not run, why, and c; the rest folded under one line that counts it",
+    failedNeeds.firstSection === "needs" && failedNeeds.needs.length === 1 && failedNeeds.needs[0].startsWith("failed: the check could not run (") && failedNeeds.needs[0].includes("c checks it again") && failedNeeds.rest === "folded" && failedNeeds.restText.includes("1 claim with no verdict, 1 not done") && failedNeeds.claims === 0,
+    JSON.stringify(failedNeeds),
+  );
+  await shot("brief-needs-failed");
+  await page.key("q");
+  await page.waitFor(`!${sheet}`, { label: "the failed brief closing" });
+  await page.waitFor(`${queued(ids.asker)} === null`, { label: "the opened failed brief leaving the queue", timeout: 30_000 }).catch(() => undefined);
+  check("opened, the failed brief leaves the queue and keeps its mark", (await page.eval(queued(ids.asker))) === null && (await page.eval(briefMark(ids.asker))) === "failed", String(await page.eval(queued(ids.asker))));
+
   // -- the brief, as a sheet --
   await select(ids.briefer);
   const checkedAt = (await briefOf(ids.briefer)).check.startedAt;
   await page.key("b");
-  await page.waitFor(`${sheet}?.querySelectorAll("[data-cow-brief-item]").length === 3`, { label: "the brief sheet" });
+  await page.waitFor(`${sheet}?.querySelectorAll("[data-cow-brief-item]").length === 3 && !!${sheet}.querySelector("[data-cow-brief-needs-you]")`, { label: "the brief sheet" });
   const laid = JSON.parse(
     await page.eval(`JSON.stringify({
       covers: ${sheet}.getBoundingClientRect().height >= ${ROOT}.clientHeight - 1 && ${sheet}.getBoundingClientRect().width >= ${ROOT}.clientWidth - 1,
       items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefKind + ":" + item.dataset.cowBriefItem),
       sections: [...${sheet}.querySelectorAll("[data-cow-brief-section]")].map((head) => head.dataset.cowBriefSection),
-      shown: ${sheet}.querySelector("[data-cow-brief-shown]")?.textContent ?? "",
+      needs: [...${sheet}.querySelectorAll("[data-cow-brief-need]")].map((need) => need.dataset.cowBriefNeed + ": " + need.textContent),
+      rest: ${sheet}.querySelector('[data-cow-brief-kind="rest"]')?.textContent ?? "",
       cursor: ${sheetCursor},
       first: ${sheet}.querySelector("[data-cow-brief-item]").textContent,
       tag: ${sheet}.querySelector("[data-cow-brief-tag]")?.textContent,
@@ -894,9 +967,11 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   );
   check("b opens the brief as a sheet over the whole page, not in a side panel", laid.covers && !laid.inPanel && (await page.eval(mode)) === "brief", JSON.stringify({ covers: laid.covers }));
   check(
-    "the sheet is in order: the dispute first, then judgement calls, the other claims, what was left undone, what the checker was shown, the summary",
-    JSON.stringify(laid.items) === '["dispute:claim:tests","call:call:0","claim:claim:timeout"]' && JSON.stringify(laid.sections) === '["disputes","calls","claims","not-done","shown","summary"]' && laid.cursor === "claim:tests",
-    JSON.stringify(laid.items),
+    "a disputed brief opens on Needs you: the contradicted claim, then the judgement call; then their detail, and the rest folded under one line that counts it",
+    JSON.stringify(laid.items) === '["dispute:claim:tests","call:call:0","rest:rest"]' && JSON.stringify(laid.sections) === '["needs","disputes","calls"]' && laid.cursor === "claim:tests" &&
+      laid.needs.length === 2 && laid.needs[0].startsWith("contradicted: contradicted: “") && laid.needs[0].includes("opens the thread to reply") && laid.needs[1].startsWith("call: judgement call, not raised as an ask") &&
+      laid.rest.includes("The rest: 1 claim supported, 1 not done"),
+    JSON.stringify({ items: laid.items, sections: laid.sections, needs: laid.needs, rest: laid.rest }),
   );
   check(
     "a dispute shows the claim, the agent's own label as the agent's words, what the evidence shows, and the checker's verdict",
@@ -909,11 +984,6 @@ async function raisedChecks(page, ids, shot, chooseMain) {
     laid.check === "checked" && /^Audited by 1 run of [^,.]+, model /.test(laid.checkText) && laid.checkText.includes(`model ${MODEL}`) && laid.checkText.endsWith("It read the claims and their evidence and the task; not the agent's summary or labels. It ran nothing."),
     laid.checkText,
   );
-  check(
-    "a thread whose folder is not a git checkout still gets a verdict, and the sheet says there was no diff",
-    laid.check === "checked" && laid.shown.includes("diff: none (the agent's thread's folder is not a git checkout)") && laid.shown.includes("no \"Done means\" section"),
-    laid.shown,
-  );
   await shot("brief-sheet");
   await page.key("l");
   const evidence = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:tests"] [data-cow-brief-evidence]')?.textContent ?? ""`);
@@ -922,6 +992,27 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   check("h closes it", !(await page.eval(`!!${sheet}.querySelector("[data-cow-brief-evidence]")`)));
   await page.key("j");
   check("j moves to the judgement call, which says it was not raised as an ask", (await page.eval(sheetCursor)) === "call:0" && (await page.eval(`${sheet}.querySelector(".cow-cur").textContent`)).includes("not raised as an ask"));
+  await page.key("G");
+  check("G goes to the folded rest", (await page.eval(sheetCursor)) === "rest");
+  await page.key("l");
+  await page.waitFor(`${sheet}.querySelector('[data-cow-brief-kind="rest"]')?.dataset.cowBriefRest === "open"`, { label: "the rest unfolding" });
+  const unfolded = JSON.parse(
+    await page.eval(`JSON.stringify({
+      items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefItem),
+      sections: [...${sheet}.querySelectorAll("[data-cow-brief-section]")].map((head) => head.dataset.cowBriefSection),
+      shown: ${sheet}.querySelector("[data-cow-brief-shown]")?.textContent ?? "",
+    })`),
+  );
+  check(
+    "l unfolds the rest: the other claims, what was left undone, what the checker was shown, the summary",
+    JSON.stringify(unfolded.items) === '["claim:tests","call:0","rest","claim:timeout"]' && JSON.stringify(unfolded.sections) === '["needs","disputes","calls","claims","not-done","shown","summary"]',
+    JSON.stringify(unfolded),
+  );
+  check(
+    "a thread whose folder is not a git checkout still gets a verdict, and the sheet says there was no diff",
+    laid.check === "checked" && unfolded.shown.includes("diff: none (the agent's thread's folder is not a git checkout)") && unfolded.shown.includes("no \"Done means\" section"),
+    unfolded.shown,
+  );
   await page.key("G");
   await page.key("Enter");
   const supported = await page.eval(`${sheet}.querySelector('[data-cow-brief-item="claim:timeout"]').textContent`);
@@ -973,12 +1064,12 @@ async function raisedChecks(page, ids, shot, chooseMain) {
       text: ${sheet}.querySelector("[data-cow-brief-check]").textContent,
       failure: ${sheet}.querySelector("[data-cow-brief-failure]")?.textContent ?? "",
       verdicts: [...${sheet}.querySelectorAll("[data-cow-brief-item][data-cow-brief-verdict]")].map((item) => item.dataset.cowBriefVerdict),
-      disputes: ${sheet}.querySelector('[data-cow-brief-section="disputes"]').nextElementSibling.textContent,
+      needs: [...${sheet}.querySelectorAll("[data-cow-brief-need]")].map((need) => need.dataset.cowBriefNeed),
     })`),
   );
   check(
-    "a failed check is shown as failed, with the reason, and no claim carries a verdict",
-    failedSheet.check === "failed" && failedSheet.text.startsWith("Check failed") && failedSheet.failure.includes("could not be started") && failedSheet.verdicts.every((verdict) => verdict === "none") && failedSheet.disputes.startsWith("Unknown"),
+    "a failed check is shown as failed, with the reason, and no claim carries a verdict; Needs you puts it before the judgement call",
+    failedSheet.check === "failed" && failedSheet.text.startsWith("Check failed") && failedSheet.failure.includes("could not be started") && failedSheet.verdicts.every((verdict) => verdict === "none") && JSON.stringify(failedSheet.needs) === '["failed","call"]',
     JSON.stringify(failedSheet),
   );
   await shot("brief-failed");
@@ -1041,6 +1132,12 @@ async function raisedChecks(page, ids, shot, chooseMain) {
   await select(ids.bdiff);
   await page.key("b");
   await page.waitFor(`${sheet}?.dataset.cowSheet === "${ids.bdiff}" && !!${sheet}.querySelector("[data-cow-brief-check]")`, { label: "the diff fixture's brief" });
+  // It waits on you for the flag, so it opens on Needs you with the rest folded: G and l unfold it.
+  const diffNeeds = JSON.parse(await page.eval(`JSON.stringify([...${sheet}.querySelectorAll("[data-cow-brief-need]")].map((need) => need.dataset.cowBriefNeed))`));
+  check("the flagged brief opens on Needs you, the flag first", Array.isArray(diffNeeds) && diffNeeds[0] === "flag", JSON.stringify(diffNeeds));
+  await page.key("G");
+  await page.key("l");
+  await page.waitFor(`${sheet}.querySelector('[data-cow-brief-kind="rest"]')?.dataset.cowBriefRest === "open"`, { label: "the diff fixture's rest unfolding" });
   const diffSheet = JSON.parse(
     await page.eval(`JSON.stringify({
       items: [...${sheet}.querySelectorAll("[data-cow-brief-item]")].map((item) => item.dataset.cowBriefKind + ":" + item.dataset.cowBriefItem),

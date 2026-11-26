@@ -224,9 +224,10 @@ update a branch because of it unless the user asks.
   not the one you mean.
 - A thread with an open ask reads `wants`, "asks you: …", and is under
   "Waiting on the user". So is a finished thread whose brief has disputes or
-  judgement calls the user has not read ("brief: 2 disputed"). A thread's
-  line also says what its latest brief came to, such as "brief disputed: 1
-  contradicted" or "brief: the check failed".
+  judgement calls, or whose check could not run, and the user has not opened
+  it ("brief: 2 disputed", "brief: the check could not run (the provider is
+  not signed in)"). A thread's line also says what its latest brief came to,
+  such as "brief disputed: 1 contradicted".
 - An ask of a thread under a parked or kept thread is under "Waiting on the
   user" too, ending "under parked “…”" or "under kept “…”".
 - "Taken out of the user's queue by an agent, not yet acknowledged by the
@@ -340,7 +341,8 @@ undone. Main itself cannot be parked or archived.
 
 **Parking a thread that was waiting on the user is shown to them**: one
 with an open ask, one of bb's own questions or permission requests, a
-refused permission, a failure, a brief with disputes, or a reply addressed
+refused permission, a failure, a brief with disputes or whose check could not
+run, or a reply addressed
 to them not yet seen. A notice in their queue names your thread, the one
 parked, your reason and when, until they acknowledge it; the log keeps it,
 and `bb cow status` lists it. Parking one that waited on nothing shows

@@ -44,6 +44,7 @@ const markSchema = z.object({
   rechecked: z.literal(true).optional(),
   tasks: z.number().optional(),
   flagged: z.number().optional(),
+  failure: z.string().optional(),
 });
 
 /** What the page reads, and what anyone may do. Answering an ask, closing one as answered in chat, and marking a brief as read are the person's: they are signed calls (see signing/backend.ts). */

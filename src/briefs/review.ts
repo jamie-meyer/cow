@@ -4,7 +4,7 @@
 import type { Brief, Claim, Label } from "./brief.ts";
 import type { DiffRepo } from "./diff.ts";
 import type { ChangedFile } from "./paths.ts";
-import { type ChosenBy, checkerOn } from "./provider.ts";
+import { type ChosenBy, againCommand, checkerOn } from "./provider.ts";
 
 /** The checker's verdict on one claim. Only this is ever shown as verification. */
 export const VERDICTS = ["supported", "not-supported", "cannot-tell"] as const;
@@ -256,6 +256,8 @@ export interface BriefMark {
   tasks?: number;
   /** Set when the diff changed what decides whether the job's checks pass: how many files. One dispute, whatever the check says. */
   flagged?: number;
+  /** Set when the check failed: why it could not run, in a few words. */
+  failure?: string;
 }
 
 export function markOf(
@@ -274,6 +276,7 @@ export function markOf(
     ...(rechecked ? { rechecked: true as const } : {}),
     ...(tasks > 0 ? { tasks } : {}),
     ...(seen.flagged.length > 0 ? { flagged: seen.flagged.length } : {}),
+    ...(seen.state === "failed" ? { failure: failureReason(seen.failures) } : {}),
     version,
     state: seen.state,
     contradicted: seen.disputes.filter((entry) => entry.dispute === "contradicted").length,
@@ -291,24 +294,63 @@ export const checkerDisputes = (mark: BriefMark): number => mark.contradicted + 
 export const disputeCount = (mark: BriefMark): number => mark.contradicted + mark.notEstablished + (mark.tasks ?? 0) + ((mark.flagged ?? 0) > 0 ? 1 : 0);
 
 /**
- * Whether a brief is the person's to read: the checker disputes a claim, or
- * the agent left them a decision, and they have not opened it yet. A brief
- * that checked clean waits on nobody. Disputes exist only once a check has
- * answered, so a failed check adds nothing here; while a version's first
- * check runs, the brief waits for it. Anyone can order a check again, so
- * doing that takes nothing out of the queue: a dispute the person never read
- * keeps the brief waiting through the new check and whatever it says, and a
- * judgement call waits while the new check runs too, until they open it. A
- * diff that changed what decides whether the job's checks pass needs no
- * check: it waits from the start, whatever the check comes to.
+ * Whether a brief is the person's to read: the checker disputes a claim, the
+ * agent left them a decision, or the check could not run, and they have not
+ * opened it yet. A brief that checked clean waits on nobody. Disputes exist
+ * only once a check has answered; while a version's first check runs, the
+ * brief waits for it. A check that failed waits like a dispute: otherwise a
+ * job nobody but its author looked at would read as quiet. It is `failed`
+ * only when no earlier check of the version stands (a check run again that
+ * fails puts the earlier one back), and a brief never checked because
+ * checking on submit is off is `unchecked`, the person's own setting, and
+ * waits on nothing new. Anyone can order a check again, so doing that takes
+ * nothing out of the queue: a dispute the person never read keeps the brief
+ * waiting through the new check and whatever it says, and a judgement call
+ * waits while the new check runs too, until they open it. A diff that changed
+ * what decides whether the job's checks pass needs no check: it waits from
+ * the start, whatever the check comes to.
  */
 export function briefWaits(mark: BriefMark): boolean {
   if (mark.read) return false;
+  return briefNeedsYou(mark);
+}
+
+/** Whether a brief has something for the person, read or not: what `briefWaits` waits on, and what the sheet opens on. */
+export function briefNeedsYou(mark: BriefMark): boolean {
   if ((mark.earlierDisputes ?? 0) > 0) return true;
   // Found without a model: it stands whatever becomes of the check, and while it runs.
   if ((mark.flagged ?? 0) > 0) return true;
   if (mark.state === "running" && !mark.rechecked) return false;
+  if (mark.state === "failed") return true;
   return disputeCount(mark) > 0 || mark.judgementCalls > 0;
+}
+
+const MAX_REASON = 100;
+const clipReason = (text: string) => {
+  const flat = text.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "");
+  return flat.length > MAX_REASON ? `${flat.slice(0, MAX_REASON - 1)}…` : flat;
+};
+
+/** One failed run's error in a few words: the cause, without where it ran, what bb said in full, or the way out. */
+export function failureReasonOf(error: string): string {
+  const text = error.replace(/; and it could not be run again: .*$/s, "").trim();
+  const turn = /^the checker's turn failed on [^:]*: (.*)$/s.exec(text);
+  if (turn) {
+    const cause = turn[1]!.replace(/ To check it on another provider: .*$/s, "").replace(/ \(bb said: .*$/s, "").trim();
+    return /^bb said:|^bb recorded no cause/.test(cause) ? "the checker's turn failed" : clipReason(cause);
+  }
+  if (/^the checker could not be started: bb would not make it a personal workspace/.test(text)) return "bb would not make the checker a workspace of its own";
+  const start = /^the checker could not be started on [^:]*: (.*)$/s.exec(text);
+  if (start) return clipReason(`the checker could not be started: ${start[1]!.replace(/ To check it on another provider: .*$/s, "")}`);
+  if (/^the checker used /.test(text)) return clipReason(text.slice(0, text.indexOf(". ") < 0 ? text.length : text.indexOf(". ")));
+  if (/^the checker (gave no|judged|said cannot-tell)|^the checker's answer /.test(text)) return "the checker gave no usable answer";
+  return clipReason(text.split(/\.\s/)[0] ?? text);
+}
+
+/** Why a failed check could not run, in a few words: each distinct cause, "; " between them. */
+export function failureReason(errors: readonly string[]): string {
+  const reasons = [...new Set(errors.map(failureReasonOf))];
+  return reasons.length === 0 ? "no run gave a usable answer" : reasons.join("; ");
 }
 
 const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -368,6 +410,7 @@ export function failedRecheckText(failed: FailedRecheck, checkedAt: number | nul
 /** What a waiting brief's line says. */
 export function briefWaitText(mark: BriefMark): string {
   const parts: string[] = [];
+  if (mark.state === "failed") parts.push(failedText(mark.failure));
   if ((mark.flagged ?? 0) > 0) parts.push(GATE_TEXT);
   const disputed = disputeCount(mark) - ((mark.flagged ?? 0) > 0 ? 1 : 0);
   if (disputed > 0) parts.push(`${disputed} disputed`);
@@ -377,6 +420,9 @@ export function briefWaitText(mark: BriefMark): string {
   return `brief: ${parts.join(", ")}`;
 }
 
+/** "the check could not run (the provider is not signed in)": a failed check, in the words the queue, the text and the sheet use. */
+export const failedText = (reason: string | undefined): string => `the check could not run${reason ? ` (${reason})` : ""}`;
+
 /** The model-free dispute, in the words the queue, the text and the sheet use. */
 export const GATE_TEXT = "changed what decides whether its checks pass";
 
@@ -385,7 +431,7 @@ export function markText(mark: BriefMark): string {
   const gate = (mark.flagged ?? 0) > 0 ? `; ${GATE_TEXT}` : "";
   if (mark.state === "unchecked") return `brief not checked${gate}`;
   if (mark.state === "running") return `brief being checked${gate}`;
-  if (mark.state === "failed") return `brief: the check failed${gate}`;
+  if (mark.state === "failed") return `brief: ${failedText(mark.failure)}${gate}`;
   const parts: string[] = [];
   if (mark.contradicted > 0) parts.push(`${mark.contradicted} contradicted`);
   if (mark.notEstablished > 0) parts.push(`${mark.notEstablished} not established`);
@@ -460,13 +506,114 @@ export function shownLines(shown: Shown | null): string[] {
   return out;
 }
 
+/** What kind of thing a line of "Needs you" is, worst first. */
+export type NeedKind = "failed" | "flag" | "earlier" | "contradicted" | "not-shown" | "not-established" | "cannot-tell" | "call";
+
+/** One line of the "Needs you" block: what is in doubt, and what acts on it. */
+export interface Need {
+  kind: NeedKind;
+  /** The sheet's stop that holds its detail, when it has one. */
+  item: string | null;
+  text: string;
+  /** The key that acts on it on the page, and what it does; null when none does. */
+  key: { keys: string; does: string } | null;
+  /** The command that acts on it; null when none does. */
+  command: string | null;
+}
+
+const NEED_TEXT = 200;
+/** The page's way to answer a thread in its own words: close the sheet, open its chat. */
+const REPLY_KEY = { keys: "q ⏎", does: "opens the thread to reply" } as const;
+
+/**
+ * What a brief that has something for the person puts in front of them, one
+ * line each, worst first: a check that could not run, a change to what
+ * decides whether its checks pass, what an earlier check found and was run
+ * again unread, contradicted claims, task checks not shown, claims and task
+ * checks not established with what would settle them, then judgement calls.
+ * Empty for a brief that has nothing for them. `openAsk` says whether an ask
+ * is still open.
+ */
+export function needsYou(seen: Review, mark: BriefMark, threadId: string, openAsk: (askId: string) => boolean = () => false): Need[] {
+  if (!briefNeedsYou(mark)) return [];
+  const reply = `bb thread tell ${threadId}`;
+  const out: Need[] = [];
+  if (seen.state === "failed") {
+    const elsewhere = seen.failures.some((error) => error.includes(againCommand(threadId)));
+    out.push({
+      kind: "failed",
+      item: null,
+      text: `${failedText(mark.failure ?? failureReason(seen.failures))}: nothing in the brief has been looked at but by its author. Check it again${elsewhere ? `, or on another provider: ${againCommand(threadId)}` : ""}`,
+      key: { keys: "c", does: "checks it again" },
+      command: `bb cow brief check ${threadId}`,
+    });
+  }
+  if (seen.flagged.length > 0) {
+    const n = seen.flagged.length;
+    out.push({ kind: "flag", item: "flag", text: `${GATE_TEXT}: ${n} ${n === 1 ? "file" : "files"} (${names(seen.flagged, 3)})`, key: REPLY_KEY, command: reply });
+  }
+  const earlier = earlierDisputesText(mark.earlierDisputes ?? 0, mark.earlierContradicted ?? null, mark.earlierTasks ?? null);
+  if (earlier !== "") out.push({ kind: "earlier", item: null, text: earlier, key: null, command: null });
+  const claimNeed = (entry: ReviewedClaim): Need => ({
+    kind: entry.dispute === "contradicted" ? "contradicted" : "not-established",
+    item: `claim:${entry.claim.id}`,
+    text: cut(`${entry.dispute === "contradicted" ? "contradicted" : "not established"}: “${entry.claim.text}”${entry.dispute === "not-established" && entry.verdict?.needs ? `; would settle it: ${entry.verdict.needs}` : ""}`, NEED_TEXT),
+    key: REPLY_KEY,
+    command: reply,
+  });
+  const taskNeed = (entry: ReviewedTask): Need => ({
+    kind: entry.dispute === "contradicted" ? "not-shown" : "cannot-tell",
+    item: `task:${entry.id}`,
+    text: cut(`${entry.dispute === "contradicted" ? "task check not shown" : "task check not established"}: “${entry.text}”${entry.dispute === "not-established" && entry.verdict?.needs ? `; would settle it: ${entry.verdict.needs}` : ""}`, NEED_TEXT),
+    key: REPLY_KEY,
+    command: reply,
+  });
+  out.push(...seen.disputes.filter((entry) => entry.dispute === "contradicted").map(claimNeed));
+  out.push(...seen.taskDisputes.filter((entry) => entry.dispute === "contradicted").map(taskNeed));
+  out.push(...seen.disputes.filter((entry) => entry.dispute === "not-established").map(claimNeed));
+  out.push(...seen.taskDisputes.filter((entry) => entry.dispute === "not-established").map(taskNeed));
+  seen.judgementCalls.forEach((call, index) => {
+    const open = call.askId !== null && openAsk(call.askId);
+    const how = open ? "open as an ask" : call.askId !== null ? "its ask is answered or withdrawn" : "not raised as an ask";
+    out.push({
+      kind: "call",
+      item: `call:${index}`,
+      text: cut(`judgement call, ${how}: “${call.text}”`, NEED_TEXT),
+      key: open ? { keys: "a", does: "answers it" } : call.askId !== null ? null : REPLY_KEY,
+      command: open || call.askId !== null ? null : reply,
+    });
+  });
+  return out;
+}
+
+/** "the rest: 7 claims supported, 2 not done": what a waiting brief folds away, counted. */
+export function restText(seen: Review): string {
+  const parts: string[] = [];
+  const supported = seen.claims.filter((entry) => entry.verdict?.verdict === "supported").length;
+  const judged = seen.claims.filter((entry) => entry.verdict !== null && entry.verdict.verdict !== "supported").length;
+  const unjudged = seen.claims.filter((entry) => entry.verdict === null).length;
+  const shown = seen.tasks.filter((entry) => entry.dispute === null && entry.verdict !== null).length;
+  const untold = seen.tasks.filter((entry) => entry.verdict === null).length;
+  if (supported > 0) parts.push(`${claims(supported)} supported`);
+  if (judged > 0) parts.push(`${claims(judged)} not disputed`);
+  if (unjudged > 0) parts.push(`${claims(unjudged)} with no verdict`);
+  if (shown > 0) parts.push(`${counted(shown, "task check", "task checks")} shown`);
+  if (untold > 0) parts.push(`${counted(untold, "task check", "task checks")} with no verdict`);
+  if (seen.unaccounted.length > 0) parts.push(`${counted(seen.unaccounted.length, "changed file", "changed files")} no claim accounts for`);
+  if (seen.notDone.length > 0) parts.push(`${seen.notDone.length} not done`);
+  return `the rest: ${parts.length > 0 ? `${parts.join(", ")}; ` : ""}what the checker was shown and the summary`;
+}
+
 /**
  * A brief as text: disputes first (a change to what decides whether its
  * checks pass, then claims, then task checks), then judgement calls, then
  * the other claims and task checks, then what was left undone and what the
  * checker was shown. Each claim gives the checker's verdict and what the
  * evidence shows first, and the agent's own label after, as what the agent
- * says, never as a check.
+ * says, never as a check. Given its `mark`, a brief that has something for
+ * the person starts with "Needs you", one line each, worst first; under it
+ * the disputes and judgement calls, and then everything else under one
+ * heading that counts it.
  */
 export function reviewText(
   head: {
@@ -479,8 +626,11 @@ export function reviewText(
     failedRecheck?: FailedRecheck | null;
   },
   seen: Review,
+  mark: BriefMark | null = null,
+  openAsk?: (askId: string) => boolean,
 ): string {
-  const out: string[] = [`Brief v${head.version} from ${head.threadId}`, `  ${cut(head.summary, 1200)}`, ""];
+  const needs = mark === null ? [] : needsYou(seen, mark, head.threadId, openAsk);
+  const out: string[] = [`Brief v${head.version} from ${head.threadId}`, ...(needs.length > 0 ? [] : [`  ${cut(head.summary, 1200)}`]), ""];
   if (head.failedRecheck) out.push(`${cut(failedRecheckText(head.failedRecheck, seen.checkedAt), SHOW_LIMITS.error)}`.replace(/^c/, "C"));
   const checker = seen.checker;
   if (seen.state === "unchecked") out.push("NOT CHECKED: no checker has audited this brief. Nothing below is verified.");
@@ -498,6 +648,11 @@ export function reviewText(
   const earlier = earlierDisputesText(head.earlierDisputes ?? 0, head.earlierContradicted ?? null, head.earlierTasks ?? null);
   if (earlier !== "") out.push(`  NOTE: ${earlier}. This check replaced that one.`);
 
+  if (needs.length > 0) {
+    out.push("", `Needs you (${needs.length})`);
+    for (const need of needs) out.push(`  - ${need.text}${need.command ? `  → ${need.command}` : ""}`);
+  }
+
   const gate = seen.flagged.length > 0 ? 1 : 0;
   const count = seen.disputes.length + seen.taskDisputes.length + gate;
   out.push("", `Disputes (${count})`);
@@ -511,6 +666,8 @@ export function reviewText(
   out.push("", `Judgement calls for you (${seen.judgementCalls.length})`);
   if (seen.judgementCalls.length === 0) out.push("    none");
   for (const call of seen.judgementCalls) out.push(`  - ${cut(call.text, SHOW_LIMITS.text)}${call.askId ? `  (${call.askId})` : ""}`);
+
+  if (needs.length > 0) out.push("", upper(restText(seen)), "", "The agent's summary", `  ${cut(head.summary, 1200)}`);
 
   out.push("", `Other claims (${seen.claims.length})`);
   if (seen.claims.length === 0) out.push("    none");
@@ -534,3 +691,5 @@ export function reviewText(
   if (shown.length > 0) out.push("", "What the checker was shown, besides the claims and their evidence (not the summary, and not the agent's labels)", ...shown);
   return `${out.join("\n")}\n`;
 }
+
+const upper = (text: string): string => `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;

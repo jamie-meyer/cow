@@ -108,7 +108,9 @@ test("a brief waits on you when it has disputes or judgement calls you have not 
   assert.equal(briefWaits(mark({ judgementCalls: 1 })), true);
   assert.equal(briefWaits(mark({ contradicted: 1, read: true })), false);
   assert.equal(briefWaits(mark({ state: "running", judgementCalls: 1 })), false);
-  assert.equal(briefWaits(mark({ state: "failed" })), false);
+  // A check that could not run waits like a dispute: nobody but its author has looked at it.
+  assert.equal(briefWaits(mark({ state: "failed" })), true);
+  assert.equal(briefWaits(mark({ state: "failed", read: true })), false);
   assert.equal(briefWaits(mark({ state: "failed", judgementCalls: 2 })), true);
   assert.equal(briefWaitText(mark({ contradicted: 1, notEstablished: 1 })), "brief: 2 disputed");
   assert.equal(briefWaitText(mark({ contradicted: 1, judgementCalls: 1 })), "brief: 1 disputed, 1 judgement call");
@@ -133,10 +135,13 @@ test("a finished thread with a disputed brief wants you; a clean one is done", (
   assert.equal(read.brief?.contradicted, 1);
   // While the thread still runs, its brief does not interrupt.
   assert.equal(of(child({ status: "active" }), raised([], mark({ contradicted: 1 }))).state, "running");
-  // A failed check is not a dispute and not a pass: the line stays as it was, with the mark.
-  const failed = of(child(), raised([], mark({ state: "failed" })));
-  assert.equal(failed.state, "done");
+  // A failed check is not a pass: the finished line wants you, saying why, until you open it.
+  const failed = of(child(), raised([], mark({ state: "failed", failure: "the provider is not signed in" })));
+  assert.equal(failed.state, "wants");
+  assert.equal(failed.doing, "brief: the check could not run (the provider is not signed in)");
+  assert.equal(failed.briefWaits, true);
   assert.equal(failed.brief?.state, "failed");
+  assert.equal(of(child(), raised([], mark({ state: "failed", read: true }))).state, "done");
 });
 
 test("a disputed brief outranks a reply addressed to you", () => {
