@@ -13,6 +13,7 @@ import { createCaps } from "../src/caps/service.ts";
 import { parkNow } from "../src/park.ts";
 import { type Activity, type ThreadFacts, derive } from "../src/state.ts";
 import { statusText } from "../src/status.ts";
+import type { BriefMark } from "../src/briefs/review.ts";
 import { type TraceInput, closeLeavesTrace, parkWaitedOn, traceText } from "../src/traces.ts";
 import { lineOf } from "../src/tree.ts";
 import { verbBlocked } from "../src/verbs.ts";
@@ -41,9 +42,9 @@ const ask = (overrides: Partial<Ask> = {}): Ask => ({
 });
 
 /** A thread under Main as a verb reads it, with what it carries. */
-function line(overrides: Partial<ThreadFacts> = {}, act: Activity = activity({ turn: { phase: "completed", at: NOW - HOUR, failed: false } }), extra: { asks?: Ask[]; dismissed?: number; park?: ReturnType<typeof parkNow> } = {}) {
+function line(overrides: Partial<ThreadFacts> = {}, act: Activity = activity({ turn: { phase: "completed", at: NOW - HOUR, failed: false } }), extra: { asks?: Ask[]; dismissed?: number; park?: ReturnType<typeof parkNow>; brief?: BriefMark } = {}) {
   const threads = [thread({ id: "main" }), thread({ id: "w", parentThreadId: "main", ...overrides })];
-  const found = lineOf(threads, "w", (t) => derive(t, act, NOW, extra.park ?? null, null, extra.dismissed ?? null, { seenSeq: null }, { asks: extra.asks ?? [], brief: null }), NOW);
+  const found = lineOf(threads, "w", (t) => derive(t, act, NOW, extra.park ?? null, null, extra.dismissed ?? null, { seenSeq: null }, { asks: extra.asks ?? [], brief: extra.brief ?? null }), NOW);
   assert.ok(found);
   return found;
 }
@@ -66,6 +67,9 @@ test("a park leaves a trace only when the thread waited on the person at that mo
   assert.deepEqual(parkWaitedOn(line({}, activity({ refusals: [refusal] }), { dismissed: 7 })), []);
   assert.deepEqual(parkWaitedOn(line({ status: "error" })), ["a failure"]);
   assert.deepEqual(parkWaitedOn(line({}, activity({ replies: personTurn }))), ["a reply to you not yet seen"]);
+  const mark: BriefMark = { version: 1, state: "checked", contradicted: 1, notEstablished: 0, judgementCalls: 0, at: NOW - HOUR, read: false };
+  assert.deepEqual(parkWaitedOn(line({}, undefined, { brief: mark })), ["a brief with disputes or judgement calls"]);
+  assert.deepEqual(parkWaitedOn(line({}, undefined, { brief: { ...mark, state: "failed", contradicted: 0, failure: "the checker did not answer in time" } })), ["a brief whose check could not run"]);
   // Already parked: what it waited on was set aside already; its open ask still waits.
   const parked = parkNow("later", { kind: "none" }, NOW - HOUR);
   assert.deepEqual(parkWaitedOn(line({ status: "error" }, undefined, { park: parked })), []);
