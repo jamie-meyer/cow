@@ -178,10 +178,10 @@ test("marks found by reading the threads are added, unless changed since the rea
   const kv = memoryKv();
   const { leadStore, rules } = setup(kv);
   const since = leadStore.changes();
-  await leadStore.setProject("thr_unmarked_meanwhile", false, 1);
-  await leadStore.found(["thr_old_mark", "thr_unmarked_meanwhile"], since);
+  await leadStore.setProject("thr_off_since", false, 1);
+  await leadStore.found(["thr_old_mark", "thr_off_since"], since);
   assert.equal(rules.lead("thr_old_mark"), true);
-  assert.equal(rules.lead("thr_unmarked_meanwhile"), false);
+  assert.equal(rules.lead("thr_off_since"), false);
   const fresh = createLeadStore(kv);
   await fresh.load();
   assert.equal(fresh.has("thr_old_mark"), true, "and mirrored");
