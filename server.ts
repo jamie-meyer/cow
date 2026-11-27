@@ -25,6 +25,8 @@ import { registerSigning, sha256Hex } from "./src/signing/backend.ts";
 import { capCommands } from "./src/caps/cli.ts";
 import { automationRunCommands, cowCli } from "./src/cli.ts";
 import { createWorkerRules, createWorkerStore, readRules } from "./src/worker-rules.ts";
+import { createLeadRules, createLeadStore, createRules } from "./src/lead-rules.ts";
+import { listThreads } from "./src/activity.ts";
 import { AUTOMATION_RUNS_CHANGED, type StartedStore, createStartedStore } from "./src/automation-runs.ts";
 import {
   archiveNoteSchema,
@@ -196,10 +198,45 @@ export default async function plugin(bb: BbPluginApi) {
     now: Date.now,
     warn: (text) => bb.log.warn(text),
   });
-  bb.agents.contributeInstructions(({ threadId }) => workerRules.instructions(threadId));
+  // Lead rules: a chosen Main, a thread marked as a project and a thread whose first message begins with
+  // the line PROJECT BRIEF are given rules/lead.md instead of the worker rules. Text only, as above.
+  const leadSettings = bb.settings.define({
+    leadRules: {
+      type: "boolean",
+      label: "Give the threads that talk with you their rules",
+      description:
+        "A chosen Main, a thread marked as a project, and a thread whose first message begins with the line PROJECT BRIEF talk with you; their agents are given cow's rules for asking you (rules/lead.md) as part of their instructions, and not the worker rules. Off: no thread is given them, and no thread is recorded for a PROJECT BRIEF.",
+      default: true,
+    },
+    leadRulesExtra: {
+      type: "string",
+      label: "Rules for the threads that talk with you, on this machine",
+      description: "Text added after the rules for the threads that talk with you on this machine only, for what differs between machines. Empty: the rules alone.",
+      default: "",
+    },
+  });
+  const leadNow = (values: { leadRules: boolean; leadRulesExtra: string }) => ({ enabled: values.leadRules, extra: values.leadRulesExtra });
+  let leadSettingsNow = leadNow(await leadSettings.get());
+  leadSettings.onChange((next) => {
+    leadSettingsNow = leadNow(next);
+  });
+  const leadStore = createLeadStore(bb.storage.kv);
+  await leadStore.load().catch((cause: unknown) => bb.log.warn(`could not read which threads talk with the person: ${String(cause)}`));
+  leadStore.setMains(Object.values((await readState().catch(() => ({ mains: {} }))).mains));
+  const leadRulesText = readRules(new URL("./rules/lead.md", import.meta.url));
+  if (leadRulesText === null) bb.log.warn("could not read rules/lead.md: no thread is given its rules for asking the person");
+  const leadRules = createLeadRules({
+    store: leadStore,
+    rules: leadRulesText,
+    settings: () => leadSettingsNow,
+    now: Date.now,
+    warn: (text) => bb.log.warn(text),
+  });
+  const rules = createRules(leadRules, workerRules);
+  bb.agents.contributeInstructions(({ threadId }) => rules.instructions(threadId));
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     try {
-      return await workerRules.dispatch({
+      return await rules.dispatch({
         threadId: context.thread.id,
         status: context.thread.status,
         attempt: context.attempt,
@@ -297,7 +334,9 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return found;
     },
-  }, ledger, ledgers.costing);
+  }, ledger, ledgers.costing, (threadId, marked) => {
+    void leadStore.setProject(threadId, marked, Date.now()).catch((cause: unknown) => bb.log.warn(`could not mirror the project mark of ${threadId}: ${String(cause)}`));
+  });
 
   const chooseMain = async (projectId: string, threadId: string | null): Promise<MainState> => {
       const state = await readState();
@@ -311,6 +350,7 @@ export default async function plugin(bb: BbPluginApi) {
           : { mains: { ...others, [projectId]: threadId }, currentProjectId: projectId };
       // Nothing is published: each window keeps the Main chosen in it.
       await bb.storage.kv.set(STATE_KEY, next);
+      leadStore.setMains(Object.values(next.mains));
       return next;
   };
 
@@ -390,7 +430,7 @@ export default async function plugin(bb: BbPluginApi) {
     }, forgetDeleted: (remove) => ledgers.forgetDeleted(remove), usage: () => limits.report(true), watchMarks: async () => (await watch.check()).marks, mergeFacts: async (ids) => {
       const found = await merge.settled(ids, MERGE_WAIT_MS);
       return Object.fromEntries(Object.entries(found).map(([threadId, facts]) => [threadId, statusMerge(facts)]));
-    }, workerRules: (threadId) => workerRules.gave(threadId) }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
+    }, workerRules: rules.worker, leadRules: rules.lead }, attention, { ...capCommands(caps, attention.asks, titleOf), ...workspaceCommands(workspaces), ...automationRunCommands(startedStore) }, capabilityNames, bb.pluginId),
   );
 
   // What cow keeps about a thread goes when bb deletes the thread; what was
@@ -398,8 +438,17 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.deleted", ({ thread }) => {
     void startedStore.forget(thread.id).catch(() => undefined);
     void workerStore.forget(thread.id).catch(() => undefined);
+    void leadStore.forget(thread.id).catch(() => undefined);
     void actions.forget(thread.id).catch((cause: unknown) => bb.log.warn(`could not forget the deleted thread ${thread.id}: ${String(cause)}`));
   });
+  // Project marks made before cow mirrored them are found once, by reading the threads' own marks.
+  const findMarks = setTimeout(() => {
+    const since = leadStore.changes();
+    void listThreads(bb.sdk.threads)
+      .then(async ({ threads }) => leadStore.found(Object.keys((await actions.notes(threads.map((thread) => thread.id))).projects), since))
+      .catch((cause: unknown) => bb.log.warn(`could not read which threads are marked as projects: ${String(cause)}`));
+  }, 3000);
+  bb.onDispose(() => clearTimeout(findMarks));
   const sweep = setTimeout(() => {
     void actions.sweep().catch((cause: unknown) => bb.log.warn(`could not clear records of deleted threads: ${String(cause)}`));
   }, 5000);

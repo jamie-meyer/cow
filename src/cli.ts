@@ -35,6 +35,8 @@ export type CliActions = Pick<Actions, "archiveChecked" | "parkChecked" | "resum
     mergeFacts?: (threadIds: readonly string[]) => Promise<Record<string, StatusMerge | null>>;
     /** Whether cow gives this thread the worker rules. */
     workerRules?: (threadId: string) => boolean;
+    /** Whether cow gives this thread the rules for asking the person. */
+    leadRules?: (threadId: string) => boolean;
   };
 
 const thread = { name: "thread", description: "The thread's id, such as thr_abc123", required: true } as const;
@@ -490,7 +492,7 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           "Outside Main is every open thread with no parent that is not Main or above it; one a plugin started is only counted. " +
           "A worker over a cap or caught by a stuck check has the mark beside its line (`watch` in --json); cow shows it and never stops it. " +
           "A thread that has finished a turn on a branch with commits of its own says how far it is ahead and behind its base, and whether a trial merge into it is clean or which files conflict (`merge` in --json); it is worked out read-only and never merges anything. " +
-          "In --json, every line says whether cow gives its thread the worker rules (`workerRules`). " +
+          "In --json, every line says whether cow gives its thread the worker rules (`workerRules`) and the rules for asking the user (`leadRules`). " +
           "To move one under Main, use `bb thread update <thread> --parent-thread <main> --parent-notifications stuck`.",
         options: {
           main: {
@@ -511,8 +513,8 @@ export function cowCli<Extra extends Record<string, ReturnType<typeof cliCommand
           const watched = actions.watchMarks ? withWatch(held, await actions.watchMarks()) : held;
           // Whether each finished worker's branch still merges into its base: worked out read-only, at most a few seconds' wait.
           const merged = actions.mergeFacts ? withMerge(watched, await actions.mergeFacts(mergeCandidates(watched))) : watched;
-          // Whether cow gives each thread the worker rules: in --json only.
-          const report = actions.workerRules && input.options.json ? withWorkerRules(merged, actions.workerRules) : merged;
+          // Whether cow gives each thread the worker rules or the rules for asking the user: in --json only.
+          const report = actions.workerRules && input.options.json ? withWorkerRules(merged, actions.workerRules, actions.leadRules) : merged;
           return input.options.json
             ? { exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...report })}\n` }
             : { exitCode: 0, stdout: statusText(report) + elsewhereText(attended?.asksElsewhere ?? 0) };

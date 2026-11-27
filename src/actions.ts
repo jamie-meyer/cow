@@ -182,7 +182,15 @@ export interface TraceNotice {
 /** What each ledger row cost at list price, with the prices as set now. */
 export type Costing = (rows: readonly LedgerRow[]) => Promise<{ cost: RowCost; error: string | null }>;
 
-export function createActions(bb: BbPluginApi, readMains: () => Promise<MainRecord>, raised?: RaisedSource, ledger?: LedgerStore, costing?: Costing): Actions {
+export function createActions(
+  bb: BbPluginApi,
+  readMains: () => Promise<MainRecord>,
+  raised?: RaisedSource,
+  ledger?: LedgerStore,
+  costing?: Costing,
+  /** Told each time a project mark is set or taken off, once it is written. */
+  onProject?: (threadId: string, marked: boolean) => void,
+): Actions {
   const reader: ThreadReader = bb.sdk.threads;
 
   const notes = async (threadIds: readonly string[]): Promise<Notes> => {
@@ -235,7 +243,10 @@ export function createActions(bb: BbPluginApi, readMains: () => Promise<MainReco
   const setWait = (threadId: string, wait: WaitNote | null) => setNote(threadId, WAIT_KEY, wait);
   const setArchiveNote = (threadId: string, note: ArchiveNote | null) => setNote(threadId, ARCHIVE_KEY, note);
   const setDismissal = (threadId: string, dismissal: Dismissal | null) => setNote(threadId, DISMISS_KEY, dismissal);
-  const setProject = (threadId: string, project: ProjectMark | null) => setNote(threadId, PROJECT_KEY, project);
+  const setProject = async (threadId: string, project: ProjectMark | null) => {
+    await setNote(threadId, PROJECT_KEY, project);
+    onProject?.(threadId, project !== null);
+  };
 
   // What cow keeps per thread: its notes and plans in the thread's own
   // metadata, and the reply the person has seen in cow's storage.

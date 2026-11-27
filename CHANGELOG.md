@@ -4,6 +4,27 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.29
+
+- **The threads you talk with ask through cow.** A chosen Main, a thread
+  marked as a project, and a thread whose first message begins with the
+  line `PROJECT BRIEF` are given cow's rules for asking you
+  ([rules/lead.md](rules/lead.md)) as part of their instructions: put
+  every question, decision and approval through `bb cow ask` (in the chat
+  too), one decision per ask with options and a recommendation first, and
+  close an ask you answered in chat with `bb cow ask close`. No handoff
+  has to say so, on any machine. Such a thread is not given the worker
+  rules, even if it began as a worker.
+- **A session keeps the instructions it started with.** A thread that
+  becomes a Main or a project after its first turn gets the rules only
+  when bb next starts its session: in a check, not on its next turn and
+  not after `bb thread stop`, but after `bb thread clear`. One started
+  with `PROJECT BRIEF` has them from its first turn.
+- **Settings:** `leadRules` (on) turns this off, and then everything is as
+  in 0.2.28; `leadRulesExtra` adds a machine's own text after the rules.
+- `bb cow status --json` says `leadRules` beside `workerRules` on each
+  line.
+
 ## 0.2.28
 
 - **A finished job shows only its exceptions.** A brief puts something in

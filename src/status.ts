@@ -40,6 +40,8 @@ export interface OutsideStatusLine {
   id: string;
   /** Whether cow gives this thread the worker rules; absent when not looked up. */
   workerRules?: boolean;
+  /** Whether cow gives this thread the rules for asking the person; absent when not looked up. */
+  leadRules?: boolean;
   title: string;
   /** Its bb project's name, when that is not Main's project; null when it is. */
   project: string | null;
@@ -91,6 +93,8 @@ export interface StatusLine {
   merge?: StatusMerge;
   /** Whether cow gives this thread the worker rules: its first message began with the line WORKER BRIEF, and the setting is on. Absent when not looked up. */
   workerRules?: boolean;
+  /** Whether cow gives this thread the rules for asking the person: it is a chosen Main, marked as a project, or its first message began with the line PROJECT BRIEF, and the setting is on. Absent when not looked up. */
+  leadRules?: boolean;
 }
 
 /** Which lines' merge-readiness is looked at: open threads that have finished a turn, not Main. */
@@ -117,9 +121,9 @@ export function withWatch<T extends StatusReport>(report: T, marks: Readonly<Rec
   return { ...report, main: marked(report.main), queue: report.queue.map(marked), threads: report.threads.map(marked), parked: report.parked.map(marked), settle: report.settle.map(marked), kept: report.kept.map(marked), archived: report.archived.map(marked) };
 }
 
-/** The same report with each line, Outside Main's too, saying whether cow gives its thread the worker rules. */
-export function withWorkerRules<T extends StatusReport>(report: T, gave: (threadId: string) => boolean): T {
-  const told = <L extends { id: string }>(line: L): L => ({ ...line, workerRules: gave(line.id) });
+/** The same report with each line, Outside Main's too, saying whether cow gives its thread the worker rules, and the rules for asking the person when that is looked up. */
+export function withWorkerRules<T extends StatusReport>(report: T, gave: (threadId: string) => boolean, lead?: (threadId: string) => boolean): T {
+  const told = <L extends { id: string }>(line: L): L => ({ ...line, workerRules: gave(line.id), ...(lead ? { leadRules: lead(line.id) } : {}) });
   return { ...report, main: told(report.main), queue: report.queue.map(told), threads: report.threads.map(told), parked: report.parked.map(told), settle: report.settle.map(told), kept: report.kept.map(told), archived: report.archived.map(told), outside: report.outside.map(told) };
 }
 

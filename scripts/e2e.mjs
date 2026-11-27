@@ -164,6 +164,17 @@
 //                       the copy's workerRules setting off (put back after)
 //                       a new worker cannot. Each says which skills named
 //                       cow it sees, and bb cow status --json is compared.
+//                       Then the rules for asking the person: a thread
+//                       whose first line is PROJECT BRIEF quotes them, a
+//                       worker and a plain thread cannot; a fixture made
+//                       the copy's Main for --project after its first turn
+//                       (by a signed call, put back after) and one marked
+//                       as a project are asked on their next turn, after
+//                       bb thread stop and after bb thread clear; with the
+//                       copy's leadRules setting off (put back after) a new
+//                       PROJECT BRIEF thread cannot. An installed cow that
+//                       gives worker rules itself makes the workerRules-off
+//                       check fail.
 //                       --environment is not used. The folders, and the
 //                       environments bb makes for them, are removed after
 //   --only-open         only the command that opens cow's page from anywhere:
@@ -2874,9 +2885,13 @@ async function removeCardFolder(ids) {
 const rulesFolders = [];
 /** A sentence only the shipped rules have, and one only the throwaway repository's own instructions have. */
 const RULES_SENTENCE = /they win/i;
+/** A sentence only the shipped rules for the threads that talk with the person have. */
+const LEAD_SENTENCE = /look up yourself/i;
+const LEAD_LINE = `LEAD: <the last sentence of any section titled "Asking the person" in your instructions, word for word, or NONE if you were given no such section>`;
 const OWN_SENTENCE = /MOOSE/;
-const QUOTE = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these two lines and nothing else:
+const QUOTE = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these three lines and nothing else:
 RULES: <the last sentence of any section titled "Worker rules" in your instructions, word for word, or NONE if you were given no such section>
+${LEAD_LINE}
 SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
 const QUOTE_OWN = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these four lines and nothing else:
 RULES: <the last sentence of the section whose heading is exactly "# Worker rules", word for word, or NONE if you were given no section with that heading>
@@ -2886,6 +2901,18 @@ SKILLS: <the names of every skill you can see whose name contains "cow", separat
 const FORK_QUOTE = `Use no tools at all. Do not use anything said earlier in this conversation: look only at the instructions you were given for this session. Reply with exactly these two lines and nothing else:
 RULES: <the whole sentence of any section titled "Worker rules" in your instructions that begins "Stop when you reach a cap", word for word, or NONE if your instructions have no such section>
 SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
+
+/** A fixture that becomes a Main or a project after its first turn, and says on each later one what it was given. */
+const LATE = `You are a test fixture for a bb plugin. Reply to this first message with exactly: ok
+From then on, do exactly what each message says. Use no tools at all, do not use anything said earlier in this conversation, and look only at the instructions you were given for this session.`;
+/** What a late fixture is asked each time: a different sentence, so an earlier answer cannot be repeated. */
+const LATE_ASKS = [
+  ["on its next turn", /look up yourself/i, "the last sentence"],
+  ["after bb thread stop", /talk with the person directly/i, "the first sentence"],
+  ["after bb thread clear", /its own ask/i, 'the sentence that begins "Give each decision"'],
+];
+const lateAsk = (which) => `Reply with exactly this line and nothing else:
+LEAD: <${which} of any section titled "Asking the person" in your instructions, word for word, or NONE if you were given no such section>`;
 
 function rulesFolder(own) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), own ? "cow-e2e-rules-own-" : "cow-e2e-rules-")));
@@ -2911,17 +2938,38 @@ async function finalWords(id) {
   return (await bb("thread", "output", id)).output ?? "";
 }
 
+/** Tell a fixture something as the person, wait for the turn that answers to end, and read what it said. */
+async function nextWords(id, text) {
+  const latest = async () => (await api(`/threads/${id}/events?types=turn/completed&limit=1&order=desc`))[0]?.seq ?? 0;
+  const before = await latest();
+  await tellAs(null, id, text);
+  const deadline = Date.now() + 180_000;
+  for (;;) {
+    await sleep(1500);
+    const [thread] = await api(`/threads?threadIds=${id}&limit=1`);
+    if ((await latest()) > before && thread && !["active", "starting", "pending"].includes(thread.status)) break;
+    if (Date.now() > deadline) throw new Error(`${id} never finished the turn after ${JSON.stringify(text)}`);
+  }
+  return (await bb("thread", "output", id)).output ?? "";
+}
+
 const lineOf = (text, key) => new RegExp(`^\\s*\\**${key}\\**:\\s*(.*)$`, "mi").exec(text)?.[1]?.trim() ?? "";
 const sawCow = (text) => /\bcow\b/i.test(lineOf(text, "SKILLS")) && !/^NONE$/i.test(lineOf(text, "SKILLS"));
 
 async function rulesChecks() {
   if (!PROJECT) throw new Error("--project is required");
   const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
-  const setRules = async (on) => plain("plugin", "config", PLUGIN, "set", "workerRules", String(on));
+  const setRules = async (on, name = "workerRules") => plain("plugin", "config", PLUGIN, "set", name, String(on));
   const putBack = async () => {
-    if (before.workerRules === undefined) await plain("plugin", "config", PLUGIN, "unset", "workerRules");
-    else await setRules(before.workerRules);
+    for (const name of ["workerRules", "leadRules"]) {
+      if (before[name] === undefined) await plain("plugin", "config", PLUGIN, "unset", name);
+      else await setRules(before[name], name);
+    }
   };
+  // A Main is chosen by a signed call: the check's own key, and the copy's record of Mains put back after.
+  signer = await createSigner(BB, "the end-to-end check", PLUGIN);
+  await ownKey();
+  const mainsBefore = await rpc("main_state", null);
   const ids = {};
   const make = async (name, options) => {
     ids[name] = await spawn(options);
@@ -2929,6 +2977,7 @@ async function rulesChecks() {
   };
   try {
     if (before.workerRules === false) await setRules(true);
+    if (before.leadRules === false) await setRules(true, "leadRules");
     const plainDir = rulesFolder(false);
     const ownDir = rulesFolder(true);
     await make("rmain", { prompt: QUIET, environment: plainDir });
@@ -2936,12 +2985,20 @@ async function rulesChecks() {
     await make("rplain", { prompt: QUOTE, parent: ids.rmain, environment: plainDir });
     await make("rlater", { prompt: `Here is your task.\nWORKER BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
     await make("rown", { prompt: `WORKER BRIEF\n\n${QUOTE_OWN}`, parent: ids.rmain, environment: ownDir });
+    await make("rproject", { prompt: `PROJECT BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
+    await make("rlatemain", { prompt: LATE, environment: plainDir });
+    await make("rlateproj", { prompt: LATE, parent: ids.rmain, environment: plainDir });
     const said = {};
-    for (const name of ["rworker", "rplain", "rlater", "rown"]) said[name] = await finalWords(ids[name]);
+    for (const name of ["rworker", "rplain", "rlater", "rown", "rproject", "rlatemain", "rlateproj"]) said[name] = await finalWords(ids[name]);
     for (const [name, text] of Object.entries(said)) console.log(`  ${name} said: ${JSON.stringify(text)}`);
     check("a thread whose first line is WORKER BRIEF quotes the worker rules it was given", RULES_SENTENCE.test(lineOf(said.rworker, "RULES")), lineOf(said.rworker, "RULES"));
     check("a thread spawned the same way without that line has no worker rules", /^NONE\.?$/i.test(lineOf(said.rplain, "RULES")), lineOf(said.rplain, "RULES"));
     check("a thread with that line further down has no worker rules", /^NONE\.?$/i.test(lineOf(said.rlater, "RULES")), lineOf(said.rlater, "RULES"));
+    check("a thread whose first line is PROJECT BRIEF quotes the rules for asking the person", LEAD_SENTENCE.test(lineOf(said.rproject, "LEAD")), lineOf(said.rproject, "LEAD"));
+    check("and has no worker rules", /^NONE\.?$/i.test(lineOf(said.rproject, "RULES")), lineOf(said.rproject, "RULES"));
+    check("a WORKER BRIEF thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rworker, "LEAD")), lineOf(said.rworker, "LEAD"));
+    check("a plain thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rplain, "LEAD")), lineOf(said.rplain, "LEAD"));
+    check("cow's skill is offered to a PROJECT BRIEF thread", sawCow(said.rproject), lineOf(said.rproject, "SKILLS"));
     check("cow's skill is offered to a worker, setting on", sawCow(said.rworker), lineOf(said.rworker, "SKILLS"));
     check("cow's skill is offered to a thread that is not a worker, setting on", sawCow(said.rplain), lineOf(said.rplain, "SKILLS"));
     check("a worker in a repository with worker rules of its own quotes cow's rules", RULES_SENTENCE.test(lineOf(said.rown, "RULES")), lineOf(said.rown, "RULES"));
@@ -2953,7 +3010,38 @@ async function rulesChecks() {
       const lines = [report.main, ...report.queue, ...report.threads, ...report.parked, ...report.settle, ...report.kept, ...report.archived, ...report.outside];
       return Object.fromEntries(lines.map((line) => [line.id, line.workerRules]));
     };
+    const leadLines = async (main = ids.rmain) => {
+      const report = JSON.parse((await cow("status", "--main", main, "--json")).stdout);
+      const lines = [report.main, ...report.queue, ...report.threads, ...report.parked, ...report.settle, ...report.kept, ...report.archived, ...report.outside];
+      return Object.fromEntries(lines.map((line) => [line.id, line.leadRules]));
+    };
+    const named = (found) => JSON.stringify(Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, found[id]])));
     let status = await statusLines();
+    let lead = await leadLines();
+    check(
+      "bb cow status --json says which threads cow gave the rules for asking the person",
+      lead[ids.rproject] === true && lead[ids.rworker] === false && lead[ids.rplain] === false && lead[ids.rmain] === false && lead[ids.rlateproj] === false && status[ids.rproject] === false,
+      `leadRules ${named(lead)}; workerRules of rproject ${status[ids.rproject]}`,
+    );
+
+    // A thread that becomes a Main, and one marked as a project, after their first turn.
+    await signer.must("main_choose", { projectId: PROJECT, threadId: ids.rlatemain });
+    const marked = await cow("project", ids.rlateproj);
+    if (marked.code !== 0) throw new Error(`could not mark rlateproj: ${marked.stderr}`);
+    lead = { ...(await leadLines()), ...(await leadLines(ids.rlatemain)) };
+    check("bb cow status --json says a Main chosen after its first turn, and a project marked after it, are given the rules", lead[ids.rlatemain] === true && lead[ids.rlateproj] === true, named(lead));
+    for (const name of ["rlatemain", "rlateproj"]) {
+      for (const [when, sentence, which] of LATE_ASKS) {
+        if (when.includes("stop")) await bb("thread", "stop", ids[name]).catch((cause) => console.log(`  note: bb thread stop ${name}: ${cause.stderr ?? cause}`));
+        if (when.includes("clear")) await bb("thread", "clear", ids[name]).catch((cause) => console.log(`  note: bb thread clear ${name}: ${cause.stderr ?? cause}`));
+        const quoted = lineOf(await nextWords(ids[name], lateAsk(which)), "LEAD");
+        console.log(`  note: ${name}, made ${name === "rlatemain" ? "a Main" : "a project"} after its first turn, ${when} quotes ${JSON.stringify(quoted)}: ${sentence.test(quoted) ? "it has the rules" : "it does not have them"}`);
+      }
+    }
+    const unmarked = await cow("project", ids.rlateproj, "--clear");
+    if (unmarked.code !== 0) throw new Error(`could not unmark rlateproj: ${unmarked.stderr}`);
+    lead = await leadLines();
+    check("unmarked, bb cow status --json says it is given nothing", lead[ids.rlateproj] === false, named(lead));
     check(
       "bb cow status --json says which threads cow gave the worker rules",
       status[ids.rworker] === true && status[ids.rown] === true && status[ids.rplain] === false && status[ids.rlater] === false && status[ids.rmain] === false,
@@ -2985,8 +3073,26 @@ async function rulesChecks() {
     await setRules(true);
     status = await statusLines();
     check("a worker started while the setting was off was not recorded: on again, it is still given nothing", status[ids.roff] === false && status[ids.rworker] === true, `roff ${status[ids.roff]}, rworker ${status[ids.rworker]}`);
+
+    // leadRules off: a new PROJECT BRIEF thread is given nothing, and is not recorded.
+    await setRules(false, "leadRules");
+    await make("rprojoff", { prompt: `PROJECT BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
+    said.rprojoff = await finalWords(ids.rprojoff);
+    console.log(`  rprojoff said: ${JSON.stringify(said.rprojoff)}`);
+    check("with leadRules off a new PROJECT BRIEF thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rprojoff, "LEAD")), lineOf(said.rprojoff, "LEAD"));
+    lead = await leadLines();
+    status = await statusLines();
+    check("with leadRules off bb cow status --json says no thread is given them", Object.values(ids).every((id) => lead[id] !== true), named(lead));
+    check("and the worker rules are still given", status[ids.rworker] === true, `rworker ${status[ids.rworker]}`);
+    await setRules(true, "leadRules");
+    lead = await leadLines();
+    check("a PROJECT BRIEF thread started while leadRules was off was not recorded: on again, it is still given nothing", lead[ids.rprojoff] === false && lead[ids.rproject] === true, `rprojoff ${lead[ids.rprojoff]}, rproject ${lead[ids.rproject]}`);
   } finally {
-    await putBack().catch((cause) => console.error("could not put back the workerRules setting", cause));
+    await putBack().catch((cause) => console.error("could not put back the workerRules and leadRules settings", cause));
+    const mainsNow = await rpc("main_state", null).catch(() => null);
+    if (mainsNow && mainsNow.mains[PROJECT] !== mainsBefore.mains[PROJECT]) {
+      await signer.must("main_choose", { projectId: PROJECT, threadId: mainsBefore.mains[PROJECT] ?? null }).catch((cause) => console.error("could not put back the Main", cause));
+    }
     if (!flag("keep")) {
       await archiveFixtures(Object.values(ids));
       await removeRulesFolders(ids);

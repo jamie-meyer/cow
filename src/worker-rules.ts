@@ -14,14 +14,17 @@ import type { Kv } from "./kv.ts";
 export const WORKER_LINE = "WORKER BRIEF";
 const KEY_PREFIX = "worker-rules:";
 
-/** Whether this message's first non-empty line is exactly `WORKER BRIEF` (surrounding spaces aside). */
-export function isWorkerBrief(text: string): boolean {
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed !== "") return trimmed === WORKER_LINE;
+/** Whether this message's first non-empty line is exactly `line` (surrounding spaces aside). */
+export function firstLineIs(text: string, line: string): boolean {
+  for (const each of text.split(/\r?\n/)) {
+    const trimmed = each.trim();
+    if (trimmed !== "") return trimmed === line;
   }
   return false;
 }
+
+/** Whether this message's first non-empty line is exactly `WORKER BRIEF` (surrounding spaces aside). */
+export const isWorkerBrief = (text: string): boolean => firstLineIs(text, WORKER_LINE);
 
 /** The rules, with this machine's own text after them when there is any. */
 export function rulesWith(rules: string, extra: string): string {
