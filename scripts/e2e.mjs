@@ -172,9 +172,13 @@
 //                       as a project are asked on their next turn, after
 //                       bb thread stop and after bb thread clear; with the
 //                       copy's leadRules setting off (put back after) a new
-//                       PROJECT BRIEF thread cannot. An installed cow that
-//                       gives worker rules itself makes the workerRules-off
-//                       check fail.
+//                       PROJECT BRIEF thread cannot. For the section the
+//                       copy's workerRulesExtra and leadRulesExtra are each
+//                       a fresh random marker line (put back after, also on
+//                       a failure), and whether the copy gave a thread its
+//                       rules rests on quoting that marker: an installed cow
+//                       gives the same rule files, so a sentence of them is
+//                       only noted.
 //                       --environment is not used. The folders, and the
 //                       environments bb makes for them, are removed after
 //   --only-open         only the command that opens cow's page from anywhere:
@@ -186,6 +190,7 @@
 //                       without Shift, would clash with an installed cow)
 
 import { execFile, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -2889,14 +2894,25 @@ const RULES_SENTENCE = /they win/i;
 const LEAD_SENTENCE = /look up yourself/i;
 const LEAD_LINE = `LEAD: <the last sentence of any section titled "Asking the person" in your instructions, word for word, or NONE if you were given no such section>`;
 const OWN_SENTENCE = /MOOSE/;
-const QUOTE = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these three lines and nothing else:
+/**
+ * What only the plugin under test gives: the copy's workerRulesExtra and
+ * leadRulesExtra are set to these lines for the section. An installed cow
+ * gives the same rule files, so whether a thread was given the rules by the
+ * copy rests on these, not on a sentence of the rules.
+ */
+const MARKER_PREFIX = { worker: "copy-worker-marker-", lead: "copy-lead-marker-" };
+const MARKS = `WMARK: <the whole line in your instructions that begins with "${MARKER_PREFIX.worker}", word for word, or NONE if there is no such line>
+LMARK: <the whole line in your instructions that begins with "${MARKER_PREFIX.lead}", word for word, or NONE if there is no such line>`;
+const QUOTE = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these five lines and nothing else:
 RULES: <the last sentence of any section titled "Worker rules" in your instructions, word for word, or NONE if you were given no such section>
 ${LEAD_LINE}
+${MARKS}
 SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
-const QUOTE_OWN = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these four lines and nothing else:
+const QUOTE_OWN = `You are a test fixture for a bb plugin. Use no tools at all. Reply with exactly these six lines and nothing else:
 RULES: <the last sentence of the section whose heading is exactly "# Worker rules", word for word, or NONE if you were given no section with that heading>
 OWN: <the sentence from this repository's own instructions that mentions MOOSE, word for word, or NONE>
 ORDER: <COW-FIRST if the section quoted on the RULES line comes before the repository's own instructions in what you were given, REPO-FIRST if it comes after, UNKNOWN if you cannot tell or either is missing>
+${MARKS}
 SKILLS: <the names of every skill you can see whose name contains "cow", separated by commas, or NONE>`;
 const FORK_QUOTE = `Use no tools at all. Do not use anything said earlier in this conversation: look only at the instructions you were given for this session. Reply with exactly these two lines and nothing else:
 RULES: <the whole sentence of any section titled "Worker rules" in your instructions that begins "Stop when you reach a cap", word for word, or NONE if your instructions have no such section>
@@ -2961,11 +2977,15 @@ async function rulesChecks() {
   const before = JSON.parse(await plain("plugin", "config", PLUGIN, "--json")).values ?? {};
   const setRules = async (on, name = "workerRules") => plain("plugin", "config", PLUGIN, "set", name, String(on));
   const putBack = async () => {
-    for (const name of ["workerRules", "leadRules"]) {
+    for (const name of ["workerRules", "leadRules", "workerRulesExtra", "leadRulesExtra"]) {
       if (before[name] === undefined) await plain("plugin", "config", PLUGIN, "unset", name);
-      else await setRules(before[name], name);
+      else await plain("plugin", "config", PLUGIN, "set", name, String(before[name]));
     }
   };
+  const marker = { worker: `${MARKER_PREFIX.worker}${randomBytes(6).toString("hex")}`, lead: `${MARKER_PREFIX.lead}${randomBytes(6).toString("hex")}` };
+  /** Whether the fixture quoted the copy's marker on that line: given by the plugin under test. */
+  const quoted = (text, kind) => lineOf(text, kind === "worker" ? "WMARK" : "LMARK").replace(/^[`"']+|[`"'.]+$/g, "") === marker[kind];
+  const markLine = (text, kind) => lineOf(text, kind === "worker" ? "WMARK" : "LMARK");
   // A Main is chosen by a signed call: the check's own key, and the copy's record of Mains put back after.
   signer = await createSigner(BB, "the end-to-end check", PLUGIN);
   await ownKey();
@@ -2978,6 +2998,8 @@ async function rulesChecks() {
   try {
     if (before.workerRules === false) await setRules(true);
     if (before.leadRules === false) await setRules(true, "leadRules");
+    await plain("plugin", "config", PLUGIN, "set", "workerRulesExtra", marker.worker);
+    await plain("plugin", "config", PLUGIN, "set", "leadRulesExtra", marker.lead);
     const plainDir = rulesFolder(false);
     const ownDir = rulesFolder(true);
     await make("rmain", { prompt: QUIET, environment: plainDir });
@@ -2991,17 +3013,20 @@ async function rulesChecks() {
     const said = {};
     for (const name of ["rworker", "rplain", "rlater", "rown", "rproject", "rlatemain", "rlateproj"]) said[name] = await finalWords(ids[name]);
     for (const [name, text] of Object.entries(said)) console.log(`  ${name} said: ${JSON.stringify(text)}`);
-    check("a thread whose first line is WORKER BRIEF quotes the worker rules it was given", RULES_SENTENCE.test(lineOf(said.rworker, "RULES")), lineOf(said.rworker, "RULES"));
-    check("a thread spawned the same way without that line has no worker rules", /^NONE\.?$/i.test(lineOf(said.rplain, "RULES")), lineOf(said.rplain, "RULES"));
-    check("a thread with that line further down has no worker rules", /^NONE\.?$/i.test(lineOf(said.rlater, "RULES")), lineOf(said.rlater, "RULES"));
-    check("a thread whose first line is PROJECT BRIEF quotes the rules for asking the person", LEAD_SENTENCE.test(lineOf(said.rproject, "LEAD")), lineOf(said.rproject, "LEAD"));
-    check("and has no worker rules", /^NONE\.?$/i.test(lineOf(said.rproject, "RULES")), lineOf(said.rproject, "RULES"));
-    check("a WORKER BRIEF thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rworker, "LEAD")), lineOf(said.rworker, "LEAD"));
-    check("a plain thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rplain, "LEAD")), lineOf(said.rplain, "LEAD"));
+    // Given by the copy: its marker. A sentence of the rules may come from an installed cow as well, so it is only noted.
+    check("a thread whose first line is WORKER BRIEF quotes the copy's worker marker", quoted(said.rworker, "worker"), markLine(said.rworker, "worker"));
+    console.log(`  note: it quotes the worker rules' last sentence: ${RULES_SENTENCE.test(lineOf(said.rworker, "RULES"))}`);
+    check("a thread spawned the same way without that line has no worker rules from the copy", !quoted(said.rplain, "worker"), markLine(said.rplain, "worker"));
+    check("a thread with that line further down has no worker rules from the copy", !quoted(said.rlater, "worker"), markLine(said.rlater, "worker"));
+    check("a thread whose first line is PROJECT BRIEF quotes the copy's lead marker", quoted(said.rproject, "lead"), markLine(said.rproject, "lead"));
+    console.log(`  note: it quotes the rules for asking the person's last sentence: ${LEAD_SENTENCE.test(lineOf(said.rproject, "LEAD"))}`);
+    check("and has no worker rules from the copy", !quoted(said.rproject, "worker"), markLine(said.rproject, "worker"));
+    check("a WORKER BRIEF thread has no rules for asking the person from the copy", !quoted(said.rworker, "lead"), markLine(said.rworker, "lead"));
+    check("a plain thread has no rules for asking the person from the copy", !quoted(said.rplain, "lead"), markLine(said.rplain, "lead"));
     check("cow's skill is offered to a PROJECT BRIEF thread", sawCow(said.rproject), lineOf(said.rproject, "SKILLS"));
     check("cow's skill is offered to a worker, setting on", sawCow(said.rworker), lineOf(said.rworker, "SKILLS"));
     check("cow's skill is offered to a thread that is not a worker, setting on", sawCow(said.rplain), lineOf(said.rplain, "SKILLS"));
-    check("a worker in a repository with worker rules of its own quotes cow's rules", RULES_SENTENCE.test(lineOf(said.rown, "RULES")), lineOf(said.rown, "RULES"));
+    check("a worker in a repository with worker rules of its own quotes the copy's worker marker", quoted(said.rown, "worker"), markLine(said.rown, "worker"));
     check("and the repository's own", OWN_SENTENCE.test(lineOf(said.rown, "OWN")), lineOf(said.rown, "OWN"));
     console.log(`  note: the worker in a repository with rules of its own says the order is ${lineOf(said.rown, "ORDER") || "(not said)"}`);
 
@@ -3065,7 +3090,7 @@ async function rulesChecks() {
     said.roff = await finalWords(ids.roff);
     said.rplainoff = await finalWords(ids.rplainoff);
     for (const name of ["roff", "rplainoff"]) console.log(`  ${name} said: ${JSON.stringify(said[name])}`);
-    check("with the setting off a new WORKER BRIEF thread has no worker rules", /^NONE\.?$/i.test(lineOf(said.roff, "RULES")), lineOf(said.roff, "RULES"));
+    check("with the setting off a new WORKER BRIEF thread has no worker rules from the copy", !quoted(said.roff, "worker"), markLine(said.roff, "worker"));
     check("cow's skill is offered to a worker, setting off", sawCow(said.roff), lineOf(said.roff, "SKILLS"));
     check("cow's skill is offered to a thread that is not a worker, setting off", sawCow(said.rplainoff), lineOf(said.rplainoff, "SKILLS"));
     status = await statusLines();
@@ -3079,7 +3104,7 @@ async function rulesChecks() {
     await make("rprojoff", { prompt: `PROJECT BRIEF\n\n${QUOTE}`, parent: ids.rmain, environment: plainDir });
     said.rprojoff = await finalWords(ids.rprojoff);
     console.log(`  rprojoff said: ${JSON.stringify(said.rprojoff)}`);
-    check("with leadRules off a new PROJECT BRIEF thread has no rules for asking the person", /^NONE\.?$/i.test(lineOf(said.rprojoff, "LEAD")), lineOf(said.rprojoff, "LEAD"));
+    check("with leadRules off a new PROJECT BRIEF thread has no rules for asking the person from the copy", !quoted(said.rprojoff, "lead"), markLine(said.rprojoff, "lead"));
     lead = await leadLines();
     status = await statusLines();
     check("with leadRules off bb cow status --json says no thread is given them", Object.values(ids).every((id) => lead[id] !== true), named(lead));
@@ -3088,7 +3113,7 @@ async function rulesChecks() {
     lead = await leadLines();
     check("a PROJECT BRIEF thread started while leadRules was off was not recorded: on again, it is still given nothing", lead[ids.rprojoff] === false && lead[ids.rproject] === true, `rprojoff ${lead[ids.rprojoff]}, rproject ${lead[ids.rproject]}`);
   } finally {
-    await putBack().catch((cause) => console.error("could not put back the workerRules and leadRules settings", cause));
+    await putBack().catch((cause) => console.error("could not put back the copy's rules settings", cause));
     const mainsNow = await rpc("main_state", null).catch(() => null);
     if (mainsNow && mainsNow.mains[PROJECT] !== mainsBefore.mains[PROJECT]) {
       await signer.must("main_choose", { projectId: PROJECT, threadId: mainsBefore.mains[PROJECT] ?? null }).catch((cause) => console.error("could not put back the Main", cause));
