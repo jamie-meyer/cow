@@ -3,6 +3,7 @@
 // back's choice of repositories, and the provider's workspace input.
 // Throwaway folders and repositories under the system temp folder; needs macOS for the clones.
 import assert from "node:assert/strict";
+import "./host-data.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

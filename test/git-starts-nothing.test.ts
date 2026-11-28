@@ -5,13 +5,15 @@
 // function, and asserts that no marker exists and that the answer is still
 // what it should be.
 import assert from "node:assert/strict";
+import "./host-data.ts";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { collectCloneDiff, collectDiff, readTextFile } from "../src/briefs/diff.ts";
-import { git } from "../src/clone/git.ts";
+import { NO_REPOSITORY, detachedEnv, git, isNoRepository, noRepository, useHostData } from "../src/clone/git.ts";
+import { hostData } from "./host-data.ts";
 import { unsavedWork } from "../src/clone/held.ts";
 import { type CloneCall, startHelper } from "../src/clone/helper.ts";
 import { layout } from "../src/clone/remove.ts";
@@ -451,4 +453,91 @@ test("a repository whose objects are named by SHA-256 is read all the same", asy
   const found = await collectDiff(git, repo, ["main"], readTextFile);
   assert.ok(found.ok, found.ok ? "" : found.why);
   assert.match(found.diff.text, /\+two/);
+});
+
+test("cow's empty git folder: made when missing, made again when it is not exactly what it should be, never a link, and nothing runs without it", async () => {
+  const data = realpathSync(mkdtempSync(join(root, "host-data-")));
+  const repo = join(root, `w${++count}`);
+  mkdirSync(repo, { recursive: true });
+  run(repo, "init", "-q", "-b", "main");
+  write(repo, "a.txt", "one\n");
+  try {
+    useHostData(data);
+    for (const format of ["sha1", "sha256"] as const) {
+      const dir = join(data, NO_REPOSITORY[format].folder);
+      const exact = () => {
+        assert.equal(noRepository(format), dir);
+        assert.ok(lstatSync(dir).isDirectory());
+        assert.deepEqual(readdirSync(dir).sort(), ["HEAD", "config", "refs"]);
+        assert.deepEqual(readdirSync(join(dir, "refs")), []);
+        for (const [name, text] of Object.entries(NO_REPOSITORY[format].files)) assert.equal(readFileSync(join(dir, name), "utf8"), text);
+        // Nothing is left beside it from the making.
+        assert.deepEqual(readdirSync(data).filter((name) => name.includes(".new.") || name.includes(".old.")), []);
+      };
+      // Missing: made.
+      assert.equal(existsSync(dir), false);
+      exact();
+      // Each way it can differ is seen at the next use, and it is made again.
+      const marker = join(data, "ran");
+      const spoil: Record<string, () => void> = {
+        "a configuration that names a program": () => writeFileSync(join(dir, "config"), `${NO_REPOSITORY[format].files.config}[core]\n\tfsmonitor = touch '${marker}'\n`),
+        "another HEAD": () => writeFileSync(join(dir, "HEAD"), "ref: refs/heads/main\n"),
+        "an extra file": () => writeFileSync(join(dir, "config.worktree"), "[core]\n"),
+        "a hooks folder": () => mkdirSync(join(dir, "hooks")),
+        "a ref": () => writeFileSync(join(dir, "refs", "x"), "0\n"),
+        "a missing file": () => rmSync(join(dir, "HEAD")),
+        "a config that is a link": () => {
+          const real = join(data, "elsewhere-config");
+          writeFileSync(real, NO_REPOSITORY[format].files.config);
+          rmSync(join(dir, "config"));
+          symlinkSync(real, join(dir, "config"));
+        },
+        "refs that is a link": () => {
+          mkdirSync(join(data, "elsewhere-refs"), { recursive: true });
+          rmSync(join(dir, "refs"), { recursive: true });
+          symlinkSync(join(data, "elsewhere-refs"), join(dir, "refs"));
+        },
+        "a link in its place, to a folder with the right contents": () => {
+          const real = join(data, "elsewhere");
+          rmSync(real, { recursive: true, force: true });
+          mkdirSync(join(real, "refs"), { recursive: true });
+          for (const [name, text] of Object.entries(NO_REPOSITORY[format].files)) writeFileSync(join(real, name), text);
+          rmSync(dir, { recursive: true });
+          symlinkSync(real, dir);
+        },
+        "a file in its place": () => {
+          rmSync(dir, { recursive: true });
+          writeFileSync(dir, "not a folder\n");
+        },
+      };
+      for (const [what, change] of Object.entries(spoil)) {
+        change();
+        assert.equal(isNoRepository(dir, format), false, what);
+        exact();
+        assert.equal(detachedEnv(format)!.GIT_DIR, dir, what);
+      }
+      // What a link pointed at was left alone: the link was removed, not followed.
+      assert.equal(existsSync(join(data, "elsewhere", "HEAD")), true);
+      assert.equal(existsSync(marker), false);
+    }
+    // cow's own function, with the folder spoiled just before: it is made again first, and the answer is right.
+    writeFileSync(join(data, "no-repository", "config"), "[core]\n\tfsmonitor = false\n[filter \"x\"]\n\tclean = false\n");
+    assert.deepEqual(await cleanState(repo), { clean: false, why: "1 uncommitted or untracked change(s)" });
+    assert.equal(isNoRepository(join(data, "no-repository"), "sha1"), true);
+
+    // Where it cannot be made, nothing detached runs, and cow says so.
+    const blocked = join(root, "host-data-read-only");
+    mkdirSync(blocked);
+    useHostData(blocked);
+    chmodSync(blocked, 0o500);
+    assert.equal(noRepository("sha1"), null);
+    assert.equal(detachedEnv("sha1"), null);
+    const state = await cleanState(repo);
+    assert.equal(state.clean, false);
+    assert.match(state.why ?? "", /empty git folder could not be made/);
+    const found = await collectDiff(git, repo, [], readTextFile);
+    assert.ok(!found.ok && /empty git folder could not be made/.test(found.why));
+  } finally {
+    useHostData(hostData);
+  }
 });

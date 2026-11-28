@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { FIXED, KEPT, NO_REPOSITORY, noRepository } from "../src/clone/git.ts";
+import { FIXED, KEPT, NO_REPOSITORY } from "../src/clone/git.ts";
 import { PERSON_ACTIONS } from "../src/signing/envelope.ts";
 import { ADDRESSES, MINIMUM_BB, NODE_MODULES, STARTS_PROGRAMS, TESTED } from "../src/support.ts";
 
@@ -212,10 +212,10 @@ test("every git cow starts carries the fixed arguments, and what reads a working
   assert.deepEqual([...inRepository].sort(), [...listed.matchAll(/`([a-z-]+)[^`]*`/g)].map((match) => match[1]!).sort());
   assert.ok(limit.replace(/\s+/g, " ").includes("Ten settings") && KEPT.length === 10);
 
-  // cow's empty git folder is in the repository as the code expects it, to the byte.
-  for (const format of ["sha1", "sha256"] as const) {
-    const dir = noRepository(format);
-    assert.ok(dir !== null, `assets/${NO_REPOSITORY[format].folder} is not what the code expects`);
-    assert.equal(dir, join(root, "assets", NO_REPOSITORY[format].folder));
-  }
+  // The host entry says where its data folder is wherever it reads it, and the empty git folder is made nowhere else.
+  const host = code.get(join("src", "clone", "host.ts"))!;
+  assert.equal([...host.matchAll(/experimental_paths\.dataDir/g)].length, 2, "the host entry reads its data folder only in dataOf");
+  assert.ok(/const dataOf = [^;]*\{\s*useHostData\(context\.experimental_paths\.dataDir\);/.test(host));
+  assert.ok(!/import\.meta\.url|tmpdir/.test(code.get(join("src", "clone", "git.ts"))!));
+  assert.deepEqual(Object.keys(NO_REPOSITORY.sha1.files).sort(), ["HEAD", "config"]);
 });

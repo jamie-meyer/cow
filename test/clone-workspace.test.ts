@@ -1,6 +1,7 @@
 // Assembling a workspace and removing it, on temporary directories and
 // throwaway git repositories. Needs macOS and APFS.
 import assert from "node:assert/strict";
+import "./host-data.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";

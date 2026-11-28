@@ -260,7 +260,7 @@ export async function workOut(input: MergeInput, known: MergeFacts | null, deps:
     try {
       // Detached from the repository: its configuration is not read, so no merge driver it names can run.
       const detached = detachedEnv(head.length === 64 ? "sha256" : "sha1");
-      if (detached === null) return unknown("cow's empty git folder is missing from its install, so the trial merge was not run", counted);
+      if (detached === null) return unknown("cow's empty git folder could not be made in its host data folder, so the trial merge was not run", counted);
       const env = { ...detached, GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates };
       const merged = await git(input.path, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", baseTip, head], env);
       if (merged.code !== 0 && merged.code !== 1) return unknown(`git merge-tree failed: ${firstLine(merged.stderr) || `exit ${merged.code}`}`, counted);

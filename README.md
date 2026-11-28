@@ -895,9 +895,17 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   command cow runs starts a program any of them names:
   - Every command that reads a working-tree file or merges contents (the
     brief's diff, uncommitted and untracked changes, the trial merge) runs
-    detached from the repository: its git folder is an empty one that ships
-    with cow (`assets/no-repository`), and the working tree, the index and
-    the objects are named one by one. git then reads no configuration file
+    detached from the repository: its git folder is an empty one that cow
+    makes itself, `no-repository` in its host data folder (beside its
+    records of clones, outside every thread's workspace), and the working
+    tree, the index and the objects are named one by one. Before every use
+    cow checks that the folder holds exactly a `HEAD`, a `config` and an
+    empty `refs` with the expected bytes, none of them a link; when it is
+    missing or differs it is removed and made again, and when it cannot be
+    made no detached git runs and cow says so. This rests on a thread not
+    being able to write cow's host data folder, as cow's records of clones
+    and held clones already do; that is bb's to keep, and cow has not
+    checked it under every provider's sandbox. git then reads no configuration file
     of the folder, of yours or of the system, so no filter, diff program,
     textconv program or merge driver is configured under any name. Ten
     settings that only say how files are compared or ignored are read from
@@ -1009,9 +1017,10 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
       clone's unsaved work, a source's state, making a clone) and finds no
       marker and the right answer. Against 0.2.30 the same tests find
       markers from the clean and process filters, the merge driver and the
-      remote's upload program. Not tested: a git other than 2.54, and
-      where bb's bundle of the host entry finds `assets/no-repository`
-      (when it is not found cow runs no detached git and says so).
+      remote's upload program. A test also spoils cow's empty git folder ten ways (other
+      contents, an extra file, a link in its place) and finds it made
+      again, exact, before the next use. Not tested: a git other than
+      2.54.
     - `src/clone/helper.ts`: `/usr/bin/osascript -l JavaScript`, or
       `/usr/bin/perl` if that cannot start, with a fixed script in the code
       that calls `clonefile(2)`. Paths reach it on its input, never in the

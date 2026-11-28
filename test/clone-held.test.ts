@@ -3,6 +3,7 @@
 // the system temp folder; the clone is a plain copy, which is all the check
 // needs.
 import assert from "node:assert/strict";
+import "./host-data.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

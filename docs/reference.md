@@ -680,7 +680,8 @@ fsmonitor, the pager, every transport and the untracked cache off, without
 optional locks, with no prompt and no lazy fetch of a partial clone's
 objects, and with none of the environment's own `GIT_` variables. Those
 marked *detached* read working-tree files or merge contents, and run with
-cow's own empty git folder in place of the repository's, so that no
+an empty git folder that cow makes and checks in its host data folder
+(`no-repository`) in place of the repository's, so that no
 configuration file of the checkout is read and no filter or merge driver it
 names can start (the README's "git in a thread's folder" has the whole of
 it):

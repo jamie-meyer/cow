@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./host-data.ts";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

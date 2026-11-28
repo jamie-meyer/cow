@@ -20,8 +20,9 @@ git that cow runs in a thread's folder starts no program the folder names.
   could not write `.git/config` had been checked under one provider's
   sandbox only.
 - **What closes it.** Commands that read working-tree files or merge
-  contents now run with an empty git folder of cow's own in place of the
-  repository's, so git reads no configuration of the folder, of yours or
+  contents now run with an empty git folder in place of the repository's,
+  which cow makes in its host data folder and checks to the byte before
+  every use, so git reads no configuration of the folder, of yours or
   of the system, whatever it names. The rest read only refs and objects and
   carry fixed arguments that turn off hooks, the monitor, the pager, every
   transport and maintenance. A clone is put on its branch by moving refs,
@@ -38,7 +39,9 @@ git that cow runs in a thread's folder starts no program the folder names.
 - **Still open.** A thread that can write its git folder can make cow read
   another folder's files into the diff (`core.worktree`), though start
   nothing there, and can make git slow or fail. A repository with a split
-  index is not read. Checked on git 2.54 only; the end-to-end checks in a
+  index is not read. The empty git folder is safe as long as a thread
+  cannot write cow's host data folder, where cow's records of clones
+  already are. Checked on git 2.54 only; the end-to-end checks in a
   browser were not rerun for this entry's code by its author.
 
 ## 0.2.30

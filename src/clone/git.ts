@@ -19,8 +19,8 @@
 //    merge-tree. git's filters, diff drivers and merge drivers are named by
 //    configuration under names the repository chooses, and git has no switch
 //    that ignores a repository's configuration. So these commands are not
-//    given the repository: GIT_DIR is an empty git folder that ships with
-//    cow (`assets/no-repository`), and the working tree, the index and the
+//    given the repository: GIT_DIR is an empty git folder that cow makes in
+//    its host data folder (`no-repository`), and the working tree, the index and the
 //    objects are named one by one. git then reads no configuration file from
 //    the thread's folder at any level (the repository's, a worktree's, an
 //    included file's), nor the person's own or the system's. Attributes are
@@ -32,7 +32,7 @@
 // What git cannot compare with filters off is found and said, not guessed:
 // see `filteredOf`.
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface GitResult {
@@ -111,11 +111,20 @@ export const NO_REPOSITORY: Record<ObjectFormat, { folder: string; files: Record
   sha256: { folder: "no-repository-sha256", files: { HEAD: "ref: refs/heads/none\n", config: "[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n\tobjectformat = sha256\n" } },
 };
 
-/** Whether `dir` is cow's empty git folder and nothing more: exactly HEAD, config and an empty refs. */
-function isNoRepository(dir: string, format: ObjectFormat): boolean {
+/** cow's host data folder, where the empty git folder is made: beside its records of clones, outside every thread's workspace. */
+let hostData: string | null = null;
+/** Say where cow's host data folder is. The host entry does, on every call; until it has, no detached git runs. */
+export function useHostData(dataDir: string): void {
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  hostData = realpathSync(dataDir);
+}
+
+/** Whether `dir` is cow's empty git folder and nothing more: a real folder holding exactly a HEAD, a config and an empty refs, none of them a link. */
+export function isNoRepository(dir: string, format: ObjectFormat): boolean {
   try {
-    if (readdirSync(dir).sort().join(" ") !== "HEAD config refs") return false;
-    if (readdirSync(join(dir, "refs")).some((name) => name !== ".keep")) return false;
+    if (!lstatSync(dir).isDirectory()) return false;
+    if (readdirSync(dir).sort().join("\n") !== "HEAD\nconfig\nrefs") return false;
+    if (!lstatSync(join(dir, "refs")).isDirectory() || readdirSync(join(dir, "refs")).length > 0) return false;
     return Object.entries(NO_REPOSITORY[format].files).every(([name, text]) => lstatSync(join(dir, name)).isFile() && readFileSync(join(dir, name), "utf8") === text);
   } catch {
     return false;
@@ -123,16 +132,42 @@ function isNoRepository(dir: string, format: ObjectFormat): boolean {
 }
 
 /**
- * The empty git folder that ships with cow, in `assets/`. It is looked for
- * beside cow's own code, wherever bb runs that from, and used only when it
- * holds exactly what it shipped with. Null when it is not found.
+ * cow's empty git folder, in its host data folder: checked on every use, and
+ * used only when it holds exactly the expected bytes and nothing more. When
+ * it is missing it is made. When it is there and differs (another file in
+ * it, other contents, a link in its place) it is moved aside, removed, and
+ * made again, then checked again; cow does not refuse for good, since
+ * refusing would stop every diff over one stray file, and a folder only a
+ * thread's writing could have changed is no safer refused than remade.
+ * It is built whole under another name and renamed into place, so no call
+ * ever sees it half made; when two calls make it at once one rename wins,
+ * and the other finds the winner's, checks it and uses it.
+ * Null when the host data folder is not known or the folder cannot be made.
  */
 export function noRepository(format: ObjectFormat): string | null {
-  for (const up of ["../../assets", "../assets", "./assets"]) {
-    const dir = decodeURIComponent(new URL(`${up}/${NO_REPOSITORY[format].folder}`, import.meta.url).pathname);
+  if (hostData === null) return null;
+  const dir = join(hostData, NO_REPOSITORY[format].folder);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     if (isNoRepository(dir, format)) return dir;
+    const tag = `${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const fresh = `${dir}.new.${tag}`;
+    try {
+      // What is there and is not it: out of the way first (a link is renamed, never followed), then gone.
+      if (lstatSync(dir, { throwIfNoEntry: false }) !== undefined) {
+        const aside = `${dir}.old.${tag}`;
+        renameSync(dir, aside);
+        rmSync(aside, { recursive: true, force: true });
+      }
+      mkdirSync(fresh, { mode: 0o700 });
+      mkdirSync(join(fresh, "refs"), { mode: 0o700 });
+      for (const [name, text] of Object.entries(NO_REPOSITORY[format].files)) writeFileSync(join(fresh, name), text, { flag: "wx", mode: 0o600 });
+      renameSync(fresh, dir);
+    } catch {
+      // Another call got there first, or it could not be made: look again.
+      rmSync(fresh, { recursive: true, force: true });
+    }
   }
-  return null;
+  return isNoRepository(dir, format) ? dir : null;
 }
 
 /**
@@ -210,7 +245,7 @@ export async function openTree(cwd: string, run: Run = git, options: GitOptions 
   if (!top || !index || !objects || !exclude || (formatText !== "sha1" && formatText !== "sha256")) return { ok: false, result: failed("git rev-parse said something else") };
   const format: ObjectFormat = formatText;
   const detached = detachedEnv(format);
-  if (detached === null) return { ok: false, result: failed("cow's empty git folder is missing from its install, so git was not run") };
+  if (detached === null) return { ok: false, result: failed("cow's empty git folder could not be made in its host data folder, so git was not run") };
 
   const headOut = await run(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], options);
   const head = headOut.code === 0 && /^[0-9a-f]{40,64}$/.test(headOut.stdout.trim()) ? headOut.stdout.trim() : null;

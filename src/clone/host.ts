@@ -3,6 +3,7 @@
 import { type ExperimentalHostRpcContext, experimental_defineHostEntry } from "@get-bb/plugin-sdk";
 import { cloneHostContract } from "./contract.ts";
 import { collectBriefDiff } from "../briefs/clone-diff.ts";
+import { useHostData } from "./git.ts";
 import { type CloneCall, startHelper } from "./helper.ts";
 import { heldOutput, listHeld, reasonText, removeHeld, removeOrHold, teardownHeld } from "./held.ts";
 import { layout, sweepTrash } from "./remove.ts";
@@ -18,6 +19,11 @@ const locks = new RepoLocks();
 /** One git process per repository at a time for merge-readiness, across every call. */
 const mergeLocks = new MergeLocks();
 const commandDeps = (dataDir: string): CommandDeps => ({ store: new RunStore(dataDir), locks });
+/** cow's host data folder, which every call that runs git names: the empty git folder a detached git runs with is made there. */
+const dataOf = (context: ExperimentalHostRpcContext): string => {
+  useHostData(context.experimental_paths.dataDir);
+  return context.experimental_paths.dataDir;
+};
 const macOnly = () => {
   if (process.platform !== "darwin") throw new Error("cow's workspaces need macOS");
 };
@@ -44,7 +50,7 @@ function sweepOnce(context: ExperimentalHostRpcContext): void {
   if (swept) return;
   swept = true;
   const lease = context.experimental_retainWorker();
-  sweepTrash(layout(context.experimental_paths.dataDir))
+  sweepTrash(layout(dataOf(context)))
     .catch(() => {})
     .finally(() => void lease.dispose());
 }
@@ -58,7 +64,7 @@ export default experimental_defineHostEntry({
       serial(async () => {
         sweepOnce(context);
         try {
-          const paths = layout(context.experimental_paths.dataDir);
+          const paths = layout(dataOf(context));
           let call: CloneCall;
           try {
             call = await getHelper();
@@ -71,7 +77,7 @@ export default experimental_defineHostEntry({
             branch: input.branch,
             inputs: input.inputs,
             workspace: input.workspace,
-            commands: commandDeps(context.experimental_paths.dataDir),
+            commands: commandDeps(dataOf(context)),
             helper: call,
             signal: context.signal,
           });
@@ -86,7 +92,7 @@ export default experimental_defineHostEntry({
         }
       }),
     workspace_inspect: async (input, context) => {
-      const store = new RunStore(context.experimental_paths.dataDir);
+      const store = new RunStore(dataOf(context));
       const out = [];
       for (const item of input.items) {
         try {
@@ -106,7 +112,7 @@ export default experimental_defineHostEntry({
     workspace_sync: async (input, context) => {
       try {
         macOnly();
-        return { status: "done" as const, results: await syncWorkspace(commandDeps(context.experimental_paths.dataDir), input.approved, input.only) };
+        return { status: "done" as const, results: await syncWorkspace(commandDeps(dataOf(context)), input.approved, input.only) };
       } catch (error) {
         return { status: "failed" as const, message: message(error) };
       }
@@ -114,7 +120,7 @@ export default experimental_defineHostEntry({
     workspace_back_preview: async (input, context) => {
       try {
         macOnly();
-        const found = await backCandidates(layout(context.experimental_paths.dataDir), input.clonePath, input.approved ? approvedFile(input.approved) : null);
+        const found = await backCandidates(layout(dataOf(context)), input.clonePath, input.approved ? approvedFile(input.approved) : null);
         return { status: "done" as const, ...found };
       } catch (error) {
         return { status: "failed" as const, message: message(error) };
@@ -123,7 +129,7 @@ export default experimental_defineHostEntry({
     workspace_back: async (input, context) => {
       try {
         macOnly();
-        const results = await backFromClone(commandDeps(context.experimental_paths.dataDir), layout(context.experimental_paths.dataDir), input.clonePath, input.approved);
+        const results = await backFromClone(commandDeps(dataOf(context)), layout(dataOf(context)), input.clonePath, input.approved);
         return { status: "done" as const, results };
       } catch (error) {
         return { status: "failed" as const, message: message(error) };
@@ -131,7 +137,7 @@ export default experimental_defineHostEntry({
     },
     workspace_output: async (input, context) => {
       try {
-        const run = lastRun(new RunStore(context.experimental_paths.dataDir), input.approved, input.as, input.kind);
+        const run = lastRun(new RunStore(dataOf(context)), input.approved, input.as, input.kind);
         return { status: "done" as const, run: run ? { at: run.at, ms: run.ms, code: run.code, timedOut: run.timedOut, tail: run.tail, cwd: run.cwd } : null };
       } catch (error) {
         return { status: "failed" as const, message: message(error) };
@@ -141,7 +147,7 @@ export default experimental_defineHostEntry({
       serial(async () => {
         sweepOnce(context);
         try {
-          const dataDir = context.experimental_paths.dataDir;
+          const dataDir = dataOf(context);
           const outcome = await removeOrHold(layout(dataDir), commandDeps(dataDir), { pathKey: input.pathKey, approved: input.approved, label: input.label });
           const teardowns = outcome.teardowns.map(({ tail: _tail, ...run }) => run);
           if (outcome.kind === "held") {
@@ -155,11 +161,11 @@ export default experimental_defineHostEntry({
           return { status: "failed" as const, message: message(error) };
         }
       }),
-    merge_facts: async (input, context) => workOutBounded(mergeLocks, mergeInput(context.experimental_paths.dataDir, input), input.known, mergeDeps()),
+    merge_facts: async (input, context) => workOutBounded(mergeLocks, mergeInput(dataOf(context), input), input.known, mergeDeps()),
     brief_diff: async (input, context) => {
       try {
         // In one of cow's clones, every repository it brought is read too, from cow's own record of the clone.
-        const found = await collectBriefDiff(context.experimental_paths.dataDir, input.path, input.bases);
+        const found = await collectBriefDiff(dataOf(context), input.path, input.bases);
         return found.ok ? { status: "done" as const, diff: found.diff } : { status: "none" as const, why: found.why };
       } catch (error) {
         return { status: "none" as const, why: `cow could not collect it (${message(error)})` };
@@ -175,11 +181,11 @@ export default experimental_defineHostEntry({
     },
     held_list: async (_input, context) => {
       macOnly();
-      return listHeld(layout(context.experimental_paths.dataDir));
+      return listHeld(layout(dataOf(context)));
     },
     held_output: async (input, context) => {
       try {
-        const record = heldOutput(layout(context.experimental_paths.dataDir), input.id);
+        const record = heldOutput(layout(dataOf(context)), input.id);
         return { status: "done" as const, teardowns: record.teardowns, path: record.path };
       } catch (error) {
         return { status: "failed" as const, message: message(error) };
@@ -189,7 +195,7 @@ export default experimental_defineHostEntry({
       serial(async () => {
         try {
           macOnly();
-          const dataDir = context.experimental_paths.dataDir;
+          const dataDir = dataOf(context);
           const done = await teardownHeld(layout(dataDir), commandDeps(dataDir), { id: input.id, approved: input.approved });
           return { status: "done" as const, removed: done.removed, reasons: done.record.reasons.map(reasonText), teardowns: done.record.teardowns.map(({ tail: _tail, ...run }) => run) };
         } catch (error) {
@@ -200,7 +206,7 @@ export default experimental_defineHostEntry({
       serial(async () => {
         try {
           macOnly();
-          const removed = await removeHeld(layout(context.experimental_paths.dataDir), input.id);
+          const removed = await removeHeld(layout(dataOf(context)), input.id);
           const lease = context.experimental_retainWorker();
           removed.deleting.catch(() => {}).finally(() => void lease.dispose());
           return { status: "removed" as const };

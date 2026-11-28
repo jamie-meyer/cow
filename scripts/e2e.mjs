@@ -8254,7 +8254,7 @@ async function main() {
     asides = await asideTexts();
     check(
       "on a bb outside the tested range the page says so, quietly, naming both versions; with another theme active it mentions cow's own and how to turn it on",
-      /This is bb 0\.51\.2\. cow was tested on bb 0\.49/.test(asides["bb:0.51.2"] ?? "") && (asides.theme ?? "").includes(`bb theme set plugin:${PLUGIN}:cow`) && (asides.theme ?? "").includes("bb theme reset"),
+      /This is bb 0\.51\.2\. cow was tested on bb 0\.50/.test(asides["bb:0.51.2"] ?? "") && (asides.theme ?? "").includes(`bb theme set plugin:${PLUGIN}:cow`) && (asides.theme ?? "").includes("bb theme reset"),
       JSON.stringify(asides).slice(0, 300),
     );
     await fresh.eval(`document.querySelectorAll("[data-cow-aside-dismiss]").forEach((button) => button.click()); true`);
