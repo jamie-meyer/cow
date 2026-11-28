@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { KEY_GROUPS, KEY_MAP } from "../src/keys.ts";
-import { EXPERIMENTAL_SURFACES, TESTED, isCowTheme, outsideTested, outsideText, parseDismissed } from "../src/support.ts";
+import { EXPERIMENTAL_SURFACES, MINIMUM_BB, TESTED, isCowTheme, outsideTested, outsideText, parseDismissed } from "../src/support.ts";
 import { insteadFromCli, insteadOnPage } from "../src/verbs.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -35,7 +35,7 @@ test("the manifest, the changelog and the tested versions agree", () => {
   const manifest = JSON.parse(read("package.json")) as { version: string; engines: Record<string, string>; devDependencies: Record<string, string> };
   assert.equal(manifest.devDependencies["@get-bb/plugin-sdk"], TESTED.pluginSdk);
   assert.equal(manifest.engines.bbPluginSdk, `>=${TESTED.pluginSdk}`);
-  assert.equal(manifest.engines.bb, `>=${TESTED.bb.split(".").slice(0, 2).join(".")}`);
+  assert.equal(manifest.engines.bb, `>=${MINIMUM_BB}`);
   assert.ok(read("CHANGELOG.md").includes(`## ${manifest.version}`), "the changelog has an entry for the manifest's version");
   assert.equal((JSON.parse(read("package-lock.json")) as { version: string }).version, manifest.version);
 });
@@ -56,8 +56,8 @@ test("a development build and an unreadable version say nothing", () => {
 });
 
 test("the aside names the running version and the tested one", () => {
-  assert.match(outsideText("0.51.2", "newer"), /bb 0\.51\.2.*tested on bb 0\.49.*experimental/);
-  assert.match(outsideText("0.40.0", "older"), /bb 0\.40\.0.*built for bb 0\.49/);
+  assert.match(outsideText("0.51.2", "newer"), /bb 0\.51\.2.*tested on bb 0\.50.*experimental/);
+  assert.match(outsideText("0.40.0", "older"), /bb 0\.40\.0.*built for bb 0\.50/);
 });
 
 test("cow's theme is recognised under whatever id cow is installed", () => {

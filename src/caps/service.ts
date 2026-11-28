@@ -3,10 +3,13 @@
 // not make is noticed, and the log of all of it.
 //
 // Everything is in the plugin's own storage, never on a thread, so a thread
-// cannot write itself a capability by editing its metadata. That is the only
-// thing the storage protects against: bb does not say who calls the plugin,
-// so every change made here is logged and put in front of the person
-// instead of being trusted.
+// cannot write itself a capability by editing its metadata. bb does not say
+// who calls the plugin, so making, deleting, putting back and acknowledging
+// a capability, and deciding a request on the page, are the person's: they
+// are reached only through a call signed by an enrolled key
+// (../signing/backend.ts), and each is logged with that key's fingerprint.
+// A capability made or put back also raises a notice that stays until it is
+// acknowledged. The storage itself is protected only by bb's sandbox.
 
 import { toAskDetail } from "../answer.ts";
 import { type Kv, Refusal, serial } from "../kv.ts";
@@ -123,9 +126,10 @@ export interface CreateInput {
 
 export interface Caps {
   state(): Promise<CapState>;
-  // The five that follow are the person's. Each takes `by`, the fingerprint of
-  // the key that signed the call: they are reached only through a verified
-  // signature, and what they log says which key it was.
+  // The four that follow, and decideOnPage below, are the person's. Each
+  // takes `by`, the fingerprint of the key that signed the call: they are
+  // reached only through a verified signature, and what they log says which
+  // key it was.
   /** Make a capability. It is logged, and a notice is raised that stays until acknowledged. */
   create(input: CreateInput, by: string): Promise<Capability>;
   /** Delete one. It allows nothing from this moment. */

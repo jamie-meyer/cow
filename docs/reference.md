@@ -2356,6 +2356,13 @@ files of, a path or a command outside the grammar above. An uncovered
 request shows the ordinary permission card, as before. The rule does not
 look at the directory a command runs in.
 
+**A command rule compares the command line, and nothing else.** It does not
+look at what that line runs. `npm test` runs the package's test script, `make`
+its makefile, `./check.sh` that file, `python -m pytest` the test files: a
+thread that can edit any of them decides what runs outside the sandbox under
+the capability, with your access. Give a command rule only to threads you
+would let run what those files could hold.
+
 When a request is allowed this way it never reaches you. The thread's line
 says "allowed by <name>" for ten minutes, while it has nothing to ask you,
 and its key mark counts it.
@@ -2477,8 +2484,9 @@ The page proves it is yours with a signature.
   before cow last started, is refused; so is one that was already used.
 - **What is not.** What agents are meant to do stays unsigned: `bb cow ask`,
   withdrawing or closing their own ask, `brief submit`, `brief check`,
-  `next`, `todo`, `park`, `resume`, `archive`, `project`, `cap request`, and
-  everything that only reads. So do the page's own ways of doing the same
+  `next`, `todo`, `park`, `resume`, `archive`, `project`, `wait`, `outcome`,
+  `label`, `automation started`, `spend forget`, `workspace add`,
+  `workspace sync`, `cap request`, and everything that only reads. So do the page's own ways of doing the same
   things. Each is in the table under "What is not signed, method by
   method", with what it can change for you. Typing into a chat's own
   composer is bb's, not cow's.
@@ -2530,8 +2538,8 @@ because bb's command sandbox does not let a thread write there.
 
 Everything below is open to any local process, a sandboxed agent included,
 by `bb cow`, by `bb plugin rpc call` or by HTTP. Two things hold for all of
-it. Nothing here is written to the log, apart from `cap request` and the
-traces of "What an agent took out of your queue" (`park`, `ask withdraw`,
+it. Nothing here is written to the log, apart from `cap request`,
+`automation started` and the traces of "What an agent took out of your queue" (`park`, `ask withdraw`,
 `ask close`, run in a thread). And the
 CLI's rules about whose thread a command may touch go by the thread the
 caller names in `BB_THREAD_ID`, which bb sets for a thread and the thread
@@ -2554,6 +2562,11 @@ agent and stop no other.
 | `wait_set` | writes or removes a thread's note that it waits on someone other than you | the page's `w` and `a` on a reminder; an agent uses `bb cow wait` | **setting it takes a reply addressed to you out of your queue**: the line reads waiting instead of "replied to you", until the thread starts a new turn. Still visible: the line stays in the tree, says who or what it waits on and for how long, and gives way to everything else that needs you (an ask, a question or permission request, a refusal, a failure, a brief with disputes or judgement calls). A caller can also remove a reminder, or one you set |
 | `project_set` | marks a thread as a project, or takes the mark off | the page's `P`; an agent uses `bb cow project` | taking the mark off a thread with no threads under it moves it, once finished, from idle in the tree to done under To settle. Whose its replies are does not change: that is decided by who started each turn, for a project as for any thread |
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
+| `spend_read` | reads the tokens and list-price dollars under a Main, for the last 30 days or a month | yes: `bb cow spend` | nothing. It changes nothing |
+| `usage_read` | reads the usage line: the usage windows, the last 30 days' dollars, the budget, the usage notices waiting | yes: `bb cow usage` | nothing is hidden or changed. Asked with `fresh`, it has bb ask each signed-in provider for its usage windows again at once, instead of using the last read when it is under a minute old |
+| `workspace_state` | reads each workspace folder cow knows and its file's state (from cow's host entry: the file, and `git status` in each source repository), and the clones held back from removal; never a command's text or output | yes: `bb cow workspace` | nothing. It runs no command of the file |
+| `workspace_sync` | runs the sync commands of the workspace files you approved, in one folder or all of them, through cow's host entry | yes: `bb cow workspace sync`, so that an automation can run it | **it runs commands outside bb's sandbox, with your access**, on the machine bb names as its primary host: each source repository's approved sync command in that repository, then the workspace folder's own, one at a time, up to five minutes each. Only the content you approved with the signed `workspace_approve` runs, never the file on disk, and a repository with uncommitted or untracked changes is skipped. A caller chooses when, and which folder and repository; it cannot choose the text. What that text runs (a script in the repository) is whatever it holds then. Each run's output is kept in cow's host data folder, readable only through the signed `workspace_output` |
+| `workspace_back_plan` | says what bringing a thread's work back would run: each repository with new commits and the approved back command | yes: `bb cow workspace back` | nothing. It runs nothing; bringing work back is the signed `workspace_back` |
 | `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's once it answers. A caller who makes it fail, say by naming a model that does not exist, replaces nothing: the earlier check stays, with the failed attempt beside it. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call; a check that fails with no earlier one standing waits on you too. On a brief you had read it does the opposite and makes it wait again |
 
 Recording which thread is Main (`main_choose`) was one of these until 0.2.1.
@@ -2580,6 +2593,12 @@ seen, dismissing a refusal and marking a brief as read were three more.
 | `archive` | as `thread_archive`, under the page's rules: only a done, idle or failed line, one blocked with its turn over, or one waiting only for its brief to be read; never one with an open ask or with open threads under it, never a Main, and a thread outside Main only when the caller is Main. With `--outcome`, also as `outcome` below | a failure, a refusal or an unread brief leaves your queue with the line. Still visible under Archived, with its reason, for two days |
 | `outcome` | says what a worker came to, open or archived, under `archive`'s rule of who may | nothing leaves the queue. Run in a thread, the ledger records that thread as the judge, and an outcome you set is refused. A caller that names no thread is taken for you, as everywhere here: its outcome is recorded as yours, and only the signed `outcome_set` is certainly yours |
 | `ledger` | reads the ledger | nothing |
+| `label` | shows, sets or clears a worker's label, under `outcome`'s rule of who may | nothing leaves the queue. A label you set is refused |
+| `automation started` | records that a script automation's run started a thread | the thread is listed under that automation instead of under Outside Main. It is in the log |
+| `spend forget --deleted` | without `--yes`, lists the kept token counts of threads bb has deleted; with it, removes them | the spend under Main and the usage line no longer count those tokens, and nothing brings them back |
+| `workspace`, `workspace back` | read, as `workspace_state` and `workspace_back_plan` | nothing |
+| `workspace add` | makes a workspace folder known, so that its file waits for you on the page | adds to your queue. It approves and runs nothing |
+| `workspace sync` | as `workspace_sync` | as `workspace_sync`: approved sync commands run outside the sandbox when the caller says |
 | `spend` | reads the last 30 days' (or a month's) tokens and list-price dollars | nothing |
 | `usage` | reads the usage line: windows, the last 30 days, the budget, the usage notices waiting | nothing. Only the signed `limit_ack` acknowledges a usage notice |
 | `status`'s caps and stuck-check marks | read: a worker's marks, beside its line and in `--json` | nothing. Only the signed `watch_ack` acknowledges a worker notice, and nothing stops a worker |
@@ -2597,7 +2616,7 @@ leave a notice in the queue until you acknowledge it.
 
 ### What cow cannot guarantee
 
-What was tried, on bb 0.49.0, from inside a sandboxed agent's own turn (a
+What was tried, on the tested bb (bb 0.50.1 for this version), from inside a sandboxed agent's own turn (a
 fixture thread running one script of ordinary commands in bb's command
 sandbox). `npm run e2e` runs it every time: see "the probe" in
 `scripts/e2e.mjs`.
@@ -2669,7 +2688,7 @@ So, plainly:
   at then, and allowed if a capability covers it.
 - A page left open from before an update keeps the code it loaded. One from
   before signing existed cannot act until it is reloaded.
-- cow reads bb 0.49 with the Claude Code provider, as elsewhere on this page.
+- cow reads bb as the tested bb 0.50.1 behaves with the Claude Code provider.
 
 Capabilities, the log and the notices are for control and for noticing. What
 you allow is still decided by what you put in a rule and who you give it to.

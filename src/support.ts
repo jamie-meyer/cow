@@ -1,10 +1,10 @@
 // What cow was built and tested against, in one place: the page, the README
 // and a test all read it from here.
 
-/** The one combination cow has been run on. Anything else may work; none of it has been tried. */
+/** The one combination cow is tested on. Anything else may work; it is not tested. */
 export const TESTED = {
-  /** bb releases cow has been run on: this one, and no other. */
-  bb: "0.49.0",
+  /** The bb release the checks are run on before a release: the one installed then. */
+  bb: "0.50.1",
   /** The Plugin SDK version cow is compiled against. */
   pluginSdk: "0.6.132",
   /** The agent provider the fixtures and the checker ran on. */
@@ -12,6 +12,32 @@ export const TESTED = {
   /** The operating system bb's server and the browser ran on. */
   os: "macOS",
 } as const;
+
+/**
+ * The oldest bb the manifest accepts (`engines.bb`). Accepted, not tested:
+ * nothing promises that cow works on it.
+ */
+export const MINIMUM_BB = "0.49";
+
+/**
+ * What cow's own code (`server.ts`, `app.tsx` and `src/`) takes from Node, in
+ * one place: the README's "How this was checked" names each, and a test reads
+ * the code and fails when it and these lists differ.
+ */
+export const NODE_MODULES = ["child_process", "crypto", "fs", "fs/promises", "os", "path"] as const;
+
+/** Every file that imports `child_process`, and the programs it starts. All of them are reached only from the host entry. */
+export const STARTS_PROGRAMS: readonly { file: string; runs: string }[] = [
+  { file: "src/clone/git.ts", runs: "git, with arguments cow fixes, hooks off" },
+  { file: "src/clone/helper.ts", runs: "/usr/bin/osascript or /usr/bin/perl, with a fixed script that calls clonefile(2)" },
+  { file: "src/clone/remove.ts", runs: "/usr/sbin/lsof, to find processes working inside a clone being removed" },
+  { file: "src/clone/tree.ts", runs: "/bin/df, for the volume a folder is on" },
+  { file: "src/merge/facts.ts", runs: "git, read-only, for merge-readiness" },
+  { file: "src/workspace/run.ts", runs: "/bin/sh -c with a command from a cow.workspace.json the person approved" },
+];
+
+/** Every http:// or https:// address in that code. Neither is fetched: each names where a list price was read. */
+export const ADDRESSES = ["https://platform.claude.com/docs/en/about-claude/pricing", "https://developers.openai.com/api/docs/pricing"] as const;
 
 /**
  * Every experimental surface of the Plugin SDK that cow uses. bb may change or

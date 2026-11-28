@@ -31,7 +31,7 @@ The rules behind each idea, in full, are in
 
 ## Install
 
-You need bb 0.49 and `git` on your `PATH`.
+You need bb 0.49 or later (0.50.1 is the one tested) and `git` on your `PATH`.
 
 ```sh
 bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.2.0'
@@ -551,23 +551,30 @@ was checked is at the end.
 
 ### What is stored, and where
 
-Everything is on the machine bb's server runs on, or in your browser. cow has
-no storage of its own outside bb.
+Everything is on the machine bb's server runs on, on the machine a
+copy-on-write workspace is on (the same one, unless you run bb's host on
+another), or in your browser. cow has no storage of its own outside bb's data
+directory and a temporary folder.
 
 | Where | What |
 | --- | --- |
-| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, in a copy-on-write workspace each repository's folder name and base or why it was not read, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, which provider sessions started a new process since, its parent thread's id, its project's id, whether it is one of cow's checker runs or a project thread, and, once bb deletes it, when cow found that out (no title, no text). A deleted thread's token counts are kept until you forget them (`bb cow spend forget --deleted --yes`); a worker deleted before 0.2.24 gets them back from its ledger row. The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or when. Which threads are workers given the worker rules, and which started with a project brief: each one's id and when it was recorded. Which threads are marked as projects, mirrored from their metadata: each one's id and when it was marked. No title, prompt, message text or reason |
+| bb's database (`bb.db` in bb's data directory, which `bb status` prints), table `plugin_kv`, rows with `plugin_id = 'cow'` | Which thread is Main for each bb project. Which reply of each thread you have seen. Every ask: the question, options, context, the answer you gave, and when. Every brief: its claims and a copy of the text of each piece of evidence as it was when submitted, with the checker's verdicts and, for a failed check, the checker's raw answer; what the checker was shown besides (whether it had the task and its checks, the base revision, in a copy-on-write workspace each repository's folder name and base or why it was not read, up to 300 changed file paths, what was cut and the flagged files), and, in rows of their own, the text it was shown: the task (up to 12,000 characters), the whole list of changed files and the clipped diff (up to 60,000 characters). Every capability, its notices, and counts of use. The log: each capability made or deleted, each request a capability allowed, each decision made on the page, the first 300 characters of each message sent as you, each ask answered, each reply marked as seen, refusal dismissed and brief marked as read (and each of those taken back), each Main recorded, each outcome judged on the page, each key enrolled, requested, refused or removed, and each reset, with the fingerprint of the key that signed it. The public halves of the enrolled keys. The ledger: for each worker archived through cow, its thread's id, project's id and dispatching thread's id, its model and effort, when its first turn started and its first report ended, its counts of steers and turns, its outcome with who judged it and when, its label, its four token counts, and when and by whom it was archived; each judgement of its outcome; and each worker's label with who set it and when. For each thread cow has read the usage of: its token counts by day and model, the last cache lifetime bb reported, the last event read, which provider sessions started a new process since, its parent thread's id, its project's id, whether it is one of cow's checker runs or a project thread, and, once bb deletes it, when cow found that out (no title, no text). A deleted thread's token counts are kept until you forget them (`bb cow spend forget --deleted --yes`); a worker deleted before 0.2.24 gets them back from its ledger row. The usage notices waiting (their sentence and when), and which windows and budget rules were last told of, with their reset time or when. Which threads are workers given the worker rules, and which started with a project brief: each one's id and when it was recorded. Which threads are marked as projects, mirrored from their metadata: each one's id and when it was marked. No title, prompt, message text or reason. For each running worker cow watches, its progress: counts of tool calls and turns, their times, the kind and a hash of each of its last few calls with a label of at most 60 characters (the first line of a command, or a tool's name), and where it last read in Claude Code's transcript when `liveUsage` is on; and the worker notices waiting (their sentence and when). Each workspace folder cow knows, with the whole content of its `cow.workspace.json` as you last approved it, that content's hash, when and by which key, and the hash of a changed file whose notice you dismissed. For each thread a script automation said it started, the automation's id, the run's id when given, and when |
 | the same database, table `thread_plugin_metadata`, rows with `plugin_id = 'cow'` | cow's notes on a thread: why it is parked and until when, why it was archived, which refused permissions you dismissed, what the thread says is next and has not started, who or what it says it waits on and when to remind you, whether it is marked a project, whether you keep it and in what words |
-| the same database, table `plugin_settings` | the five settings of the checker, below |
+| the same database, table `plugin_settings` | cow's 20 settings: `checkOnSubmit`, `checkerModel`, `checkerProvider`, `checkerRuns` and `checkerDiff` for the checker (below); `workerRules`, `workerRulesExtra`, `leadRules` and `leadRulesExtra` for the rules; `budget30Days`, `monthlyBudget` (its old name), `usageWindowPercent` and `usageNotify` for the usage line; `listPrices`; and `caps`, `stuckRepeats`, `stuckQuietMinutes`, `stuckLongItemMinutes`, `liveUsage` and `watchNotify` for caps and stuck checks |
+| `plugins/cow/host-data` under bb's data directory, on the machine a copy-on-write workspace is on, written by cow's host entry | the clones (`clones`), a record of each clone once it is complete (`done`), clones being deleted (`trash`) and clones held back from removal with why (`held`); and of each workspace command's latest run, when it ran, how long it took, its exit code and its last 20 lines of output (`workspace/runs.json`, readable by you alone). Output may hold secrets, so it is kept here and not in bb's database or the log. See [docs/clone.md](docs/clone.md) |
+| a temporary folder of the system's (`cow-merge-…`) | the objects of a trial merge for merge-readiness, removed after |
 | `plugins/cow/reset-enrollment` under bb's data directory | nothing, normally. You create this empty file to reset enrollment; cow deletes it when it sees it |
 | `plugins/snapshots/cow` under bb's data directory, written by bb | when you update cow, bb's own copy of what cow had stored before the update, kept to roll back to if the new version fails to start |
 | bb's log for the plugin (`plugins/cow/logs/plugin.log` under bb's data directory), written by bb | a warning when something cow tried failed: what it was, a thread id, and the error's text |
 | the browser, IndexedDB database `cow-signing`, for bb's address | this browser's signing key pair. The private half is created non-extractable: no script, cow's included, can read it out through the browser |
-| the browser, session storage (`cow:main`, `cow:folds`) | per window: the Main it shows and the groups folded in it |
+| the browser, session storage (`cow:main`, `cow:folds`, `cow:card-hidden`) | per window: the Main it shows, the groups folded in it, and whether the context card is hidden |
 | the browser, local storage (`cow:dismissed`) | which one-time notices you have put away: the two notes below, and the notice that this page's key was enrolled |
 
-No secret, token or credential is stored or handled. cow hands no credential
-to any thread. When bb deletes a thread, cow deletes its notes on it and its
+cow asks for no secret, token or credential, and hands none to any thread.
+What it keeps can still hold one that was put there: the evidence and the
+diff a brief carries hold what the agent attached and what its checkout
+changed, and a workspace command's output, in the host data folder, holds
+what that command printed. When bb deletes a thread, cow deletes its notes on it and its
 record of which reply you saw, and keeps its token counts, since the tokens
 were spent: the spend under its Main and the usage line still count them
 until you forget them (`bb cow spend forget --deleted`, then again with
@@ -583,10 +590,11 @@ thread was archived or stopped.
 
 ### What leaves the machine
 
-**cow makes no network request of its own.** Its backend and its page talk
-only to the bb server they run in, through bb's plugin SDK. There is no
-telemetry, no update check, no font or script fetched from anywhere, and no
-address in the code but bb's own.
+**cow makes no network request of its own.** Its backend, its host entry and
+its page talk only to bb, through bb's plugin SDK. There is no
+telemetry, no update check, and no font or script fetched from anywhere. The
+only addresses in the code are two providers' pricing pages, kept as where
+each list price was read, and never fetched.
 
 Three things cow does cause to be sent, all by bb, to a model provider:
 
@@ -694,6 +702,10 @@ on that machine; the trial merge's objects go to a temporary folder of
 cow's own that is removed after. The commands are listed under
 [Merge-readiness](docs/reference.md#merge-readiness).
 
+The commands in a `cow.workspace.json` you approved are yours, and cow's host
+entry runs them as they are: one that runs `git fetch` reaches your remote.
+cow adds nothing to them.
+
 For the context card, cow's server asks bb's own git and pull-request
 plugins about the selected thread's environment, and asks each plugin that
 offers `cow_card` about the selected thread, by its id. Those are requests
@@ -756,22 +768,48 @@ An agent **can**, through cow:
   outcome or label you set is refused. Run with the variable that names its thread
   cleared, it is taken for you, as every command is: only an outcome set on
   the page is certainly yours (it is signed, and in the log);
+- propose a workspace folder (`bb cow workspace add`), which approves and
+  runs nothing; and **run the sync commands of a workspace file you
+  approved** (`bb cow workspace sync`), outside bb's sandbox and with your
+  access, in each source repository that has no uncommitted changes. The
+  text that runs is the text you approved, but what it runs, a script in a
+  repository for one, may be a file a thread can change. Starting a thread
+  in a copy-on-write workspace runs the approved setup commands in its
+  clone, and bb removing it runs the approved teardowns, the same way;
+- say which thread a script automation started (`bb cow automation
+  started`), which changes only where that thread is listed, and is logged;
+- forget the token counts of threads bb has deleted (`bb cow spend forget
+  --deleted --yes`), which takes them out of the spend under Main and the
+  usage line;
 - read everything: the overview, asks, briefs, capabilities, the ledger and the log;
 - ask for a key to be enrolled, which shows in your queue under whatever
   name the caller gave and does nothing until an enrolled page approves it;
 - do the unsigned things above to any thread, not only its own, by calling
   cow's interface directly or by clearing the variable that names its
   thread: the CLI's rules about whose thread a command may touch go by the
-  caller's own word. None of the unsigned things is logged, except the
-  three above that are shown to you, and those only through `bb cow`:
+  caller's own word. None of the unsigned things is logged, except a
+  capability asked for, a thread recorded under an automation, and the
+  three above that are shown to you, and those three only through `bb cow`:
   parking by calling cow's interface directly, as the page does, leaves no
   notice.
 
 An agent **cannot**, through cow: make, delete, restore or acknowledge a
-capability; decide a permission request; answer an ask or close one as you;
-send a message as you; mark a reply as seen, dismiss a refused permission
-or mark a brief as read, or take any of those back; record which thread is
-Main; judge a worker's outcome on the page; approve a workspace file's content or dismiss its notice, bring a thread's work back, read a workspace command's output; approve, refuse or remove a key. Those are one method, `signed`, which
+capability (`cap_create`, `cap_delete`, `cap_restore`, `cap_ack`);
+acknowledge a usage notice or a worker notice (`limit_ack`, `watch_ack`);
+decide a permission request (`permission_decide`); send a message as you
+(`send`); answer an ask or close one as you (`ask_answer`, `ask_close`);
+mark a reply as seen, dismiss a refused permission or mark a brief as read,
+or take any of those back (`seen_set`, `dismissal_set`, `brief_read`);
+record which thread is Main (`main_choose`); delete one of bb's automations
+(`automation_delete`); judge a worker's outcome on the page
+(`outcome_set`); approve a workspace file's content or dismiss its notice
+(`workspace_approve`, `workspace_dismiss`); bring a thread's work back
+(`workspace_back`); read a workspace command's output
+(`workspace_output`); for a clone held back from removal, run its teardown
+again, read what its teardowns printed or remove it
+(`workspace_held_teardown`, `workspace_held_output`,
+`workspace_held_remove`); approve, refuse or remove a key (`key_approve`,
+`key_refuse`, `key_remove`). Those are one method, `signed`, which
 acts only on a call signed by an enrolled key over the action, all of its
 arguments, a time and a nonce. A call signed more than two minutes ago,
 signed before cow last started, or already used, is refused. Each one done
@@ -814,7 +852,8 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   and the log are protected only by a sandboxed thread not being able to
   write under bb's data directory. A thread in bb's full-access mode is not
   sandboxed: it can create the reset file and be the next page enrolled, or
-  rewrite the storage.
+  rewrite the storage, the approved workspace files in it included, whose
+  commands cow then runs.
 - **First use.** Whatever opens a cow that has no key enrolled is enrolled.
   Open cow yourself before you let agents run. If something else got there
   first, your page says in red that the key held is not its own; to take it
@@ -836,7 +875,12 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   covers whatever follows it. A directory rule is judged on the path; on a
   machine other than bb's server cow cannot follow symbolic links, and says
   so in the log. A link made after cow looked and before the write is not
-  seen.
+  seen. A command rule compares the command line only, not what that line
+  runs: a thread that can edit a package script, a test file or a script
+  the command names decides what runs outside the sandbox under it.
+- **An approved workspace command is as safe as what it runs.** cow runs
+  only the text you approved, but `npm run sync` or `./sync.sh` runs
+  whatever that script holds when it runs.
 - **cow can be turned off.** `bb plugin disable` and `bb plugin remove` are
   reachable from a thread. A request raised and decided entirely while cow
   was not running is never seen.
@@ -859,23 +903,69 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
 
 ### How this was checked
 
-- *No network.* A search of `server.ts`, `app.tsx` and `src/` for `fetch(`,
-  `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, dynamic
-  `import(`, the Node modules `http`, `https`, `net`, `dgram`, `tls`, `dns`
-  and `child_process`, and any `http://` or `https://` address finds none.
-  The only Node modules imported are `crypto`, `fs/promises` (to follow
-  symbolic links and to delete the reset file), `os` (the home directory, for
-  the rules a capability may not cover) and `path`. The same search of the
-  two bundles bb builds finds no call, and three addresses, all of them names
-  of JSON Schema versions inside zod, which are never fetched.
+- *No network, and which programs cow starts.* cow's code is `server.ts`,
+  which bb's server runs; `app.tsx`, the page, which your browser runs; and
+  `src/clone/host.ts`, cow's host entry, which bb runs on the machine a
+  copy-on-write workspace is on, with your access and outside bb's sandbox.
+  All three are built from `src/`. A search of `server.ts`, `app.tsx` and
+  `src/` for `fetch(`, `XMLHttpRequest`, `WebSocket`, `EventSource`,
+  `sendBeacon`, a dynamic `import(` of a package, `require(`, and the Node
+  modules `http`, `https`, `net`, `dgram`, `tls` and `dns` finds none. The
+  only `http://` or `https://` addresses are two in `src/prices.ts`,
+  https://platform.claude.com/docs/en/about-claude/pricing and
+  https://developers.openai.com/api/docs/pricing, kept as where each list
+  price was read; nothing reads them but the code that stores them beside
+  the price. The Node modules imported are `child_process`, `crypto`, `fs`,
+  `fs/promises`, `os` and `path`, and no other; the packages are bb's
+  plugin SDK, `react` and `zod`.
+  - The page imports no Node module.
+  - What bb's server runs imports `crypto` (ids, hashes, checking
+    signatures), `fs` and `fs/promises` (reading `rules/`, following
+    symbolic links for a directory rule, deleting the reset file), `os` (the
+    home directory, for the places a capability may not cover) and `path`.
+    Two files it loads for their constants, `src/briefs/diff.ts` and
+    `src/transcript/read.ts`, import `fs` too. It imports no
+    `child_process`: it starts no program.
+  - The host entry imports `fs`, `fs/promises`, `os` and `path`, to make,
+    read and remove clones, to read the diff for the checker, and, with
+    `liveUsage` on, to read one Claude Code transcript. It imports
+    `child_process`, in six files, and starts these
+    programs, each with its arguments in a list and never through a shell,
+    except the last:
+    - `src/clone/git.ts` and `src/merge/facts.ts`: `git`, found on your
+      `PATH`, with hooks and the file-system monitor off, to make a clone,
+      to read what a thread changed for the checker, and for
+      merge-readiness. cow chooses every argument.
+    - `src/clone/helper.ts`: `/usr/bin/osascript -l JavaScript`, or
+      `/usr/bin/perl` if that cannot start, with a fixed script in the code
+      that calls `clonefile(2)`. Paths reach it on its input, never in the
+      script.
+    - `src/clone/remove.ts`: `/usr/sbin/lsof`, to find the processes working
+      inside a clone being removed, which cow then stops.
+    - `src/clone/tree.ts`: `/bin/df -P`, for the volume a folder is on.
+    - `src/workspace/run.ts`: `/bin/sh -c` with a command from a
+      `cow.workspace.json`. The text is exactly the content you approved on
+      the page (a signed `workspace_approve`, kept with its hash in bb's
+      database), never the file on disk, which anyone who can write the
+      folder can change; a changed file runs nothing until you approve it
+      again. A sync runs when anyone asks (`bb cow workspace sync`); a setup
+      when a thread starts in a clone; a teardown when bb removes one, or
+      when you run it again from the page; a back only when you bring work
+      back from the page. What the approved text runs is up to it.
+  The bundles bb builds from this code also hold zod and React. They were
+  not searched for this version, and no test reads them.
 - *What is stored.* Read from the code (every `storage.kv` key prefix, every
   thread-metadata key, every use of the browser's storage), and compared with
   the rows a copy of the plugin left in bb's database after the end-to-end
   checks.
 - *What an agent can and cannot do.* `npm run e2e` has a fixture thread try
-  each signed action from inside bb's sandbox, by HTTP and by
+  signed actions from inside bb's sandbox, by HTTP and by
   `bb plugin rpc call`, unsigned and with a forged signature, and checks
-  every one is refused and nothing changed; it also approves a request with
+  every one is refused and nothing changed (the ones it tries are listed
+  under "What cow cannot guarantee" in the reference); the script itself
+  tries more, such as `watch_ack`, `limit_ack`, `outcome_set`,
+  `automation_delete` and `workspace_output`, unsigned or forged. No test checks
+  that every action in `PERSON_ACTIONS` is tried; it also approves a request with
   `bb thread interactions` and checks cow flags it. For marking a reply
   seen, dismissing a refusal and marking a brief read, the same script was
   run by a sandboxed fixture against 0.2.0, where all three worked by both
@@ -889,14 +979,16 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
 
 ## Limits, and what cow rests on
 
-**Tested on one combination.** bb 0.49.0, Plugin SDK 0.6.132, the Claude Code
-provider, macOS, with the page in Chrome. Nothing else has been tried. The manifest accepts any bb from 0.49 and any SDK from 0.6.132, so a
-newer bb will install cow; on a bb of another minor version the page says so
-once.
+**Tested on one combination.** bb 0.50.1, Plugin SDK 0.6.132, the Claude Code
+provider, macOS, with the page in Chrome. The end-to-end checks are run on
+that bb before a release. Nothing else is tested. The manifest accepts any bb
+from 0.49, which is accepted and not tested, and any SDK from 0.6.132, so
+a newer bb will install cow too; on a bb of another minor version the page
+says so once.
 
-**It reads bb the way bb 0.49 behaves.** A thread's state is worked out from
+**It reads bb the way the tested bb behaves.** A thread's state is worked out from
 bb's thread list and event log. Detecting a permission bb refused without
-asking depends on the messages bb 0.49 refuses with under the Claude Code
+asking depends on the messages bb refuses with under the Claude Code
 provider; with another provider, or a bb that words them differently, those
 refusals are not detected and the rest still works. cow reads the latest
 hundred or so events of a thread, and at most 5,000 threads; past that the
@@ -936,16 +1028,16 @@ uses one that is not listed.
 
 **Another plugin's methods.** The Automations section reads bb's bundled
 automations plugin through `automations_overview` and `automations_runs`,
-and deletes one through `automations_delete`, as that plugin answers in bb
-0.49. Its answers are read without trusting
+and deletes one through `automations_delete`, as that plugin answers in the
+tested bb. Its answers are read without trusting
 their shape; if a newer bb changes them, the section shows less or
 disappears, and the rest of the page is unaffected. The context card reads
 bb's bundled git plugin (`status`) and GitHub pull-request plugin
 (`pullRequests`) the same way, and leaves out what either does not give.
 
-**Nothing tells cow that a thread waits on something other than you.** A
-thread waiting on a build, a person or another service reads as running, then
-stuck.
+**cow cannot tell by itself that a thread waits on something other than you.**
+Unless the thread says so (`bb cow wait`) or you do (`w`), a thread waiting on
+a build, a person or another service reads as running, then stuck.
 
 **One person.** cow has no notion of users: whoever holds an enrolled key is
 "you".
@@ -972,7 +1064,7 @@ bb plugin remove cow
 bb plugin install 'git:https://github.com/jamie-meyer/cow.git@^0.3.0'
 ```
 
-Removing deletes the five settings, so set them again if you had changed
+Removing deletes cow's 20 settings, so set them again if you had changed
 them. Everything else is still in bb's database and the new install finds
 it, your enrolled key included.
 
@@ -1038,6 +1130,8 @@ node scripts/copy-for-checks.mjs /some/empty/folder
 bb plugin install /some/empty/folder --yes
 npm run e2e -- --project <bb project id> --environment <environment id>
 npm run e2e:asks -- --project <bb project id> --environment <environment id>
+npm run e2e:clone -- --plugin cow-check --project <bb project id>
+npm run e2e:clone -- workspace --plugin cow-check --project <bb project id>
 bb plugin remove cow-check
 node scripts/clear-stored.mjs --id cow-check --yes
 ```
@@ -1046,7 +1140,12 @@ node scripts/clear-stored.mjs --id cow-check --yes
 start first (the top of `scripts/e2e.mjs` gives the command). It creates
 seventeen cheap fixture threads titled "cow test", acts only on those, and
 archives them afterwards. `npm run e2e:asks` checks asks and briefs without a
-browser, with two more. `npm run e2e` sets cow's checker model while it runs, `npm
+browser, with two more. `npm run e2e:clone` (`scripts/e2e-clone.mjs`, macOS
+only, run outside any command sandbox) starts a "cow test" thread in a
+copy-on-write workspace of throwaway folders and repositories under the
+system's temporary folder and checks the clone, and with `workspace` checks
+a workspace file's approval, sync, setup, back and teardown; the head of
+the script says what it touches. `npm run e2e` sets cow's checker model while it runs, `npm
 run e2e:asks` clears it so that the checker inherits the fixture's, and both
 put it back, and both refuse to run against the installed cow unless given
 `--plugin cow --reset-the-installed-cow`. The head of each script says exactly

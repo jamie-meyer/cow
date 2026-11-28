@@ -4,6 +4,50 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.30
+
+No change in what cow does. What cow's documents said about its own code
+had fallen behind the code, and this corrects it.
+
+- **Programs and Node modules.** The README said cow's code imports no
+  `child_process` and only `crypto`, `fs/promises`, `os` and `path`, and
+  holds no address. Since the copy-on-write workspace (0.2.13) and
+  merge-readiness (0.2.26), cow's host entry starts `git`, `osascript` or `perl`,
+  `lsof`, `df`, and `/bin/sh -c` with the commands of a workspace file you
+  approved; it imports `fs` too, and since 0.2.19 `src/prices.ts` holds two
+  pricing pages' addresses, which are never fetched. "How this was checked" now
+  names each module, each file that starts a program and what decides the
+  command, and which code runs in bb's server and which in the host entry.
+- **Settings.** The README spoke of five settings; there are 20, and it
+  names them.
+- **What only you may do.** The README's list left out acknowledging a
+  usage or worker notice, deleting an automation and the three actions on
+  a held clone. The reference's table of calls that need no signature left
+  out `spend_read`, `usage_read`, `workspace_state`, `workspace_sync` and
+  `workspace_back_plan`; `workspace_sync` runs approved commands outside
+  bb's sandbox when anyone asks, and the table now says so. The commands
+  table gains `label`, `automation started`, `spend forget` and the
+  `workspace` commands.
+- **What is stored.** The table gains workers' progress records, worker
+  notices, the approved workspace files, automation records, cow's host
+  data folder and the context card's hidden mark.
+- **A command rule's reach.** A capability for a command compares the
+  command line only; a thread that can edit the script it runs decides what
+  runs. The reference and the README now say so, and the same of approved
+  workspace commands.
+- **Tested versions.** cow is tested on bb 0.50.1, where the checks are run
+  before a release. bb 0.49 is accepted and not tested. On a bb older than
+  0.50 the page now says once that cow was built for 0.50.
+- **Waiting on someone else.** "Nothing tells cow" was no longer so since
+  `bb cow wait` and `w`; it now says cow cannot tell unless the thread or
+  you say so.
+- `npm run e2e:clone` runs `scripts/e2e-clone.mjs`, and "Developing and
+  testing" describes it.
+- **What keeps it right.** `test/claims.test.ts` reads the code and fails
+  when the README's modules, program-starting files, addresses, settings or
+  signed actions, or the reference's table of unsigned calls, differ from
+  it. The lists are in `src/support.ts`.
+
 ## 0.2.29
 
 - **The threads you talk with ask through cow.** A chosen Main, a thread

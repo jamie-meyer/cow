@@ -27,11 +27,16 @@ started, and lets you deal with all of it from the keyboard.
 cow reads bb's threads and their event logs and keeps its own notes in bb's
 database. What only you may do on the page is signed with a key your browser
 holds. It makes no network request of its own. Checking a brief starts a
-hidden thread on the model provider bb is configured with; that can be turned
-off in the plugin's settings.
+hidden thread on the provider and model set in cow's settings, or else the
+ones the submitting thread ran on; that can be turned off in the plugin's
+settings. A copy-on-write workspace runs the commands of a workspace file
+you approved on the page, outside bb's sandbox. Besides those, cow starts
+only git and a few of macOS's own tools, from its host entry on the machine
+a thread's checkout is on.
 
 ## Requirements
 
-bb 0.49. Tested with the Claude Code provider on macOS. It uses parts of
+bb 0.49 or later, which is accepted and not tested. Tested on bb 0.50.1
+with the Claude Code provider on macOS. It uses parts of
 bb's plugin interface that bb marks experimental, so a newer bb may break
 parts of it.

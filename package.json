@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-cow",
-  "version": "0.2.29",
+  "version": "0.2.30",
   "description": "Run your work through one main thread and supervise it from one keyboard-driven page.",
   "license": "MIT",
   "type": "module",
@@ -34,7 +34,8 @@
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc",
     "e2e": "node scripts/e2e.mjs",
-    "e2e:asks": "node scripts/e2e-asks.mjs"
+    "e2e:asks": "node scripts/e2e-asks.mjs",
+    "e2e:clone": "node scripts/e2e-clone.mjs"
   },
   "dependencies": {
     "zod": "^4.6.5"
