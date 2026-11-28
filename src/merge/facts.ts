@@ -7,14 +7,20 @@
 // --write-tree`, which touches no working tree, index or ref; the objects it
 // makes go to a temporary folder of cow's own (GIT_OBJECT_DIRECTORY), with
 // the repository's objects borrowed read-only as alternates, so nothing is
-// written into the repository either. `status` runs without optional locks.
-// Nothing fetches: there is no network access, lazy fetches of a partial
-// clone included. On a git older than 2.38 it is not known.
+// written into the repository either. Nothing fetches: there is no network
+// access, lazy fetches of a partial clone included. On a git older than 2.38
+// it is not known.
+//
+// git starts no program the checkout names (see ../clone/git.ts). The trial
+// merge and the look for uncommitted changes run detached from the
+// repository, so that no merge driver or filter its configuration names can
+// run: a file whose attributes name a merge driver is merged as plain text.
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { FIXED, detachedEnv, gitEnv, uncommitted } from "../clone/git.ts";
 import type { MergeFacts } from "./text.ts";
 
 export type { MergeFacts };
@@ -56,27 +62,14 @@ export interface FactsDeps {
   exists: (path: string) => boolean;
 }
 
-/** The environment git runs with: none of the caller's GIT_ variables, no prompt, no lazy fetch, no optional lock. */
-export function gitEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("GIT_") && value !== undefined) env[key] = value;
-  env.GIT_TERMINAL_PROMPT = "0";
-  env.GIT_NO_LAZY_FETCH = "1";
-  env.GIT_OPTIONAL_LOCKS = "0";
-  env.GIT_ASKPASS = "";
-  env.SSH_ASKPASS = "";
-  return { ...env, ...extra };
-}
-
-/** The read-only settings every git command here runs with. */
-const SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "--no-optional-locks"];
+export { gitEnv };
 
 /** Run git: never through a shell, killed when the signal aborts. */
 export function runGit(binary = "git"): GitRun {
   return (cwd, args, { signal, env }) =>
     new Promise((done) => {
       if (signal.aborted) return done({ code: -1, stdout: "", stderr: "timed out" });
-      execFile(binary, [...SAFE, ...args], { cwd, env: gitEnv(env), maxBuffer: 8 * 1024 * 1024, signal, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+      execFile(binary, [...FIXED, ...args], { cwd, env: gitEnv(env), maxBuffer: 8 * 1024 * 1024, signal, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
         if (signal.aborted) return done({ code: -1, stdout: "", stderr: "timed out" });
         const raw = error ? (error as { code?: unknown }).code : 0;
         const code = typeof raw === "number" ? raw : error ? -1 : 0;
@@ -238,9 +231,11 @@ export async function workOut(input: MergeInput, known: MergeFacts | null, deps:
     const alternates = [join(commonDir, "objects"), ...(sourceObjects ? [sourceObjects] : [])].join(process.platform === "win32" ? ";" : ":");
     const borrowed = clone ? { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates } : undefined;
 
+    // Read detached from the repository: no filter its configuration names runs. A submodule counts when its commit moved.
+    const detachedRun = (cwd: string, args: string[], options?: { env?: Record<string, string> }) => deps.git(cwd, args, { signal, ...(options?.env ? { env: options.env } : {}) });
     const dirty = async (): Promise<boolean | null> => {
-      const status = await git(input.path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=dirty"]);
-      return status.code === 0 ? status.stdout.length > 0 : null;
+      const status = await uncommitted(input.path, detachedRun, {}, 0, false);
+      return status.code === 0 ? status.paths.length > 0 : null;
     };
 
     // Neither tip has moved: the answer stands.
@@ -263,7 +258,10 @@ export async function workOut(input: MergeInput, known: MergeFacts | null, deps:
     // The trial merge, its objects in a folder of cow's own.
     const scratch = deps.scratch();
     try {
-      const env = { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates };
+      // Detached from the repository: its configuration is not read, so no merge driver it names can run.
+      const detached = detachedEnv(head.length === 64 ? "sha256" : "sha1");
+      if (detached === null) return unknown("cow's empty git folder is missing from its install, so the trial merge was not run", counted);
+      const env = { ...detached, GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates };
       const merged = await git(input.path, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", baseTip, head], env);
       if (merged.code !== 0 && merged.code !== 1) return unknown(`git merge-tree failed: ${firstLine(merged.stderr) || `exit ${merged.code}`}`, counted);
       const [tree, ...rest] = merged.stdout.split("\0");

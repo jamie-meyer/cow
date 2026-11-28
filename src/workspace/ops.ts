@@ -8,7 +8,7 @@
 
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { git } from "../clone/git.ts";
+import { git, uncommitted } from "../clone/git.ts";
 import { type Layout, checkPathKey, donePath, resolveCloneFolder } from "../clone/remove.ts";
 import { type CommandKind, MAX_FILE_BYTES, WORKSPACE_FILE, type WorkspaceFile, KEPT_WHY, commandFor, keepsBranch, parseWorkspaceFile, resolveBringPath } from "./file.ts";
 
@@ -62,9 +62,9 @@ export function readFolder(asked: string): FolderRead {
 /** Whether a source may be synced: a git repository with no uncommitted or untracked changes, or any folder that is not one. */
 export async function cleanState(path: string): Promise<{ clean: boolean; why: string | null }> {
   if (lstatSync(join(path, ".git"), { throwIfNoEntry: false }) === undefined) return { clean: true, why: null };
-  const status = await git(path, ["status", "--porcelain", "--untracked-files=normal"]);
+  const status = await uncommitted(path);
   if (status.code !== 0) return { clean: false, why: `git status failed: ${status.stderr.trim().slice(0, 200)}` };
-  const changed = status.stdout.split("\n").filter((line) => line.trim() !== "").length;
+  const changed = status.paths.length;
   return changed === 0 ? { clean: true, why: null } : { clean: false, why: `${changed} uncommitted or untracked change(s)` };
 }
 

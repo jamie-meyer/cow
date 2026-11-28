@@ -676,20 +676,32 @@ answer, a checkout that has gone or a git older than 2.38 read as "not
 known", with the reason, and never as clean.
 
 **The git commands, all read-only.** Each runs without a shell, with hooks,
-fsmonitor and the untracked cache off, without optional locks, with no
-prompt and no lazy fetch of a partial clone's objects, and with none of the
-environment's own `GIT_` variables:
+fsmonitor, the pager, every transport and the untracked cache off, without
+optional locks, with no prompt and no lazy fetch of a partial clone's
+objects, and with none of the environment's own `GIT_` variables. Those
+marked *detached* read working-tree files or merge contents, and run with
+cow's own empty git folder in place of the repository's, so that no
+configuration file of the checkout is read and no filter or merge driver it
+names can start (the README's "git in a thread's folder" has the whole of
+it):
 
 - once per host entry: `git version`;
 - every look: `git rev-parse --path-format=absolute --git-common-dir HEAD
   --symbolic-full-name HEAD` in the checkout, and `git for-each-ref
   refs/heads refs/remotes/origin/HEAD` where the base is;
-- every look with commits ahead: `git status --porcelain=v1 -z
-  --untracked-files=normal`;
+- every look with commits ahead, for uncommitted changes: where the index
+  and objects are and the settings handed over (`git rev-parse`, `git
+  config --null --list`), then, detached, `git diff --cached --name-status
+  HEAD`, `git diff --name-status HEAD` and `git ls-files --others
+  --exclude-standard --directory`; and for a changed file whose attributes
+  name a filter, `git check-attr filter` and one more `git diff
+  --name-only` that compares by recorded size and time. A submodule counts
+  when its commit moved;
 - only when a tip moved: `git rev-list --left-right --count <base>...<head>`,
-  then, with commits ahead, `git merge-tree --write-tree --name-only
-  --no-messages -z <base> <head>` and, when it is clean, `git rev-parse
-  <base>^{tree}`.
+  then, with commits ahead and detached, `git merge-tree --write-tree
+  --name-only --no-messages -z <base> <head>` and, when it is clean, `git
+  rev-parse <base>^{tree}`. A file whose attributes name a merge driver is
+  merged as plain text.
 
 `git merge-tree --write-tree` changes no working tree, index or ref. The
 objects it makes are written to a temporary folder of cow's own
@@ -1344,7 +1356,9 @@ fence is an instruction.
   check). With no first message to read, the checker is told there is no
   task to compare against.
 - **What changed.** When the thread's environment is a git checkout, cow
-  runs git there, on its machine, read-only and with hooks off. The base is
+  runs git there, on its machine, read-only, with hooks off and detached
+  from the repository's configuration, so that no filter, diff program or
+  textconv program the checkout names is started. The base is
   the merge base of `HEAD` with the first of these that resolves: the
   environment's merge-base branch, its base branch, its default branch (each
   also tried as `origin/<name>`), `origin/HEAD`, `main`, `master`. With none,
@@ -1355,7 +1369,11 @@ fence is an instruction.
   in all and 12,000 a file. When it does not all fit, every file gets the
   same share before any gets more (never below 1,500 characters while there
   is room; past that, the last files are left out), so one large file cannot
-  hide the rest. Lock files and binary files go by name only, and so do
+  hide the rest. A file whose attributes name a git filter goes by name
+  only when it changed (by its recorded size and time; cow runs no filter,
+  so a diff of it would compare the wrong things) and is left out when it
+  did not; a submodule shows when its commit moved, and by name only when
+  it has uncommitted changes inside. Lock files and binary files go by name only, and so do
   files that may hold secrets (the patterns a clone leaves out: `.env`,
   `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `*.sock`,
   `*.socket`, `*.pid`, and anything under `.aws` or `.ssh`). An untracked
@@ -2564,7 +2582,7 @@ agent and stop no other.
 | `todo_change` | removes an item from a thread's list of work not started, or moves it | the page's `x`, `J` and `K`; an agent uses `bb cow todo` | a not-started row can be removed from the tree or reordered. Those rows are never in the queue |
 | `spend_read` | reads the tokens and list-price dollars under a Main, for the last 30 days or a month | yes: `bb cow spend` | nothing. It changes nothing |
 | `usage_read` | reads the usage line: the usage windows, the last 30 days' dollars, the budget, the usage notices waiting | yes: `bb cow usage` | nothing is hidden or changed. Asked with `fresh`, it has bb ask each signed-in provider for its usage windows again at once, instead of using the last read when it is under a minute old |
-| `workspace_state` | reads each workspace folder cow knows and its file's state (from cow's host entry: the file, and `git status` in each source repository), and the clones held back from removal; never a command's text or output | yes: `bb cow workspace` | nothing. It runs no command of the file |
+| `workspace_state` | reads each workspace folder cow knows and its file's state (from cow's host entry: the file, and each source repository's uncommitted and untracked changes, read with a git that starts no program the repository names), and the clones held back from removal; never a command's text or output | yes: `bb cow workspace` | nothing. It runs no command of the file |
 | `workspace_sync` | runs the sync commands of the workspace files you approved, in one folder or all of them, through cow's host entry | yes: `bb cow workspace sync`, so that an automation can run it | **it runs commands outside bb's sandbox, with your access**, on the machine bb names as its primary host: each source repository's approved sync command in that repository, then the workspace folder's own, one at a time, up to five minutes each. Only the content you approved with the signed `workspace_approve` runs, never the file on disk, and a repository with uncommitted or untracked changes is skipped. A caller chooses when, and which folder and repository; it cannot choose the text. What that text runs (a script in the repository) is whatever it holds then. Each run's output is kept in cow's host data folder, readable only through the signed `workspace_output` |
 | `workspace_back_plan` | says what bringing a thread's work back would run: each repository with new commits and the approved back command | yes: `bb cow workspace back` | nothing. It runs nothing; bringing work back is the signed `workspace_back` |
 | `brief_check` | starts a new check of a thread's latest brief, with the model, provider and number of runs the caller names | the page's `c` in a brief; an agent above the thread uses `bb cow brief check` | it costs a model run each time, and replaces the verdicts the brief shows with the new check's once it answers. A caller who makes it fail, say by naming a model that does not exist, replaces nothing: the earlier check stays, with the failed attempt beside it. **It cannot take the brief out of your queue**: a dispute you have not read keeps the brief waiting through the new check and whatever it says, and so does a judgement call; a check that fails with no earlier one standing waits on you too. On a brief you had read it does the opposite and makes it wait again |

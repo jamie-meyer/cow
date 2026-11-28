@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { FIXED, KEPT, NO_REPOSITORY, noRepository } from "../src/clone/git.ts";
 import { PERSON_ACTIONS } from "../src/signing/envelope.ts";
 import { ADDRESSES, MINIMUM_BB, NODE_MODULES, STARTS_PROGRAMS, TESTED } from "../src/support.ts";
 
@@ -177,4 +178,44 @@ test("the documents give the tested bb, and the minimum as accepted, not tested"
   }
   const limits = section(readme, "## Limits, and what cow rests on");
   assert.match(limits, new RegExp(`from ${MINIMUM_BB.replace(".", "\\.")}[^.]*accepted[^.]*not tested`));
+});
+
+test("every git cow starts carries the fixed arguments, and what reads a working tree runs only detached", () => {
+  // The two places git is started: both put FIXED first.
+  for (const path of [join("src", "clone", "git.ts"), join("src", "merge", "facts.ts")]) {
+    const starts = [...code.get(path)!.matchAll(/execFile\(([^,]+), \[([^\]]*)\]/g)];
+    assert.equal(starts.length, 1, `${path} starts git once`);
+    assert.equal(starts[0]![2], "...FIXED, ...args", path);
+  }
+  for (const setting of ["core.hooksPath=/dev/null", "core.fsmonitor=false", "protocol.allow=never", "submodule.recurse=false", "gc.auto=0", "maintenance.auto=false"]) assert.ok(FIXED.includes(setting), setting);
+  assert.ok(FIXED.includes("--no-pager") && FIXED.includes("--no-optional-locks"));
+
+  const limit = between(readme, "- **git in a thread's folder.**", "- **An approved workspace command");
+  const detachedOnly = new Set(["diff", "ls-files", "check-attr", "merge-tree"]);
+  const never = new Set(["status", "checkout", "switch", "restore", "reset", "add", "commit", "stash", "merge", "rebase", "fetch", "pull", "push", "clone", "submodule", "log", "show", "grep", "blame", "gc", "apply", "archive"]);
+  const inRepository = new Set<string>();
+  for (const [path, text] of code) {
+    // Every list of arguments that opens with a git command's name, and what it is handed to.
+    for (const match of text.matchAll(/([\w.]+)\(\s*(?:[\w.!]+,\s*)?\[\s*"([a-z][a-z-]+)"\s*[,\]]/g)) {
+      const [, callee, command] = match;
+      if (callee === "enum" || callee === "z.enum" || callee === "Set") continue;
+      assert.ok(!never.has(command!), `${path} runs git ${command}`);
+      if (detachedOnly.has(command!)) {
+        // merge-tree is handed the detached environment in src/merge/facts.ts; the rest go through a Tree.
+        if (command === "merge-tree") assert.ok(path === join("src", "merge", "facts.ts") && /const env = \{ \.\.\.detached, GIT_OBJECT_DIRECTORY/.test(text), `${path} runs merge-tree detached`);
+        else assert.ok(callee!.endsWith("tree.run"), `${path} runs git ${command} through ${callee}, not detached`);
+      } else if (callee === "git" || callee === "run") inRepository.add(command!);
+    }
+  }
+  // What runs in the repository itself is what the README lists, command for command.
+  const listed = between(limit, "The other commands read and write only refs and objects (", ")");
+  assert.deepEqual([...inRepository].sort(), [...listed.matchAll(/`([a-z-]+)[^`]*`/g)].map((match) => match[1]!).sort());
+  assert.ok(limit.replace(/\s+/g, " ").includes("Ten settings") && KEPT.length === 10);
+
+  // cow's empty git folder is in the repository as the code expects it, to the byte.
+  for (const format of ["sha1", "sha256"] as const) {
+    const dir = noRepository(format);
+    assert.ok(dir !== null, `assets/${NO_REPOSITORY[format].folder} is not what the code expects`);
+    assert.equal(dir, join(root, "assets", NO_REPOSITORY[format].folder));
+  }
 });

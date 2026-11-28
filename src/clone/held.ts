@@ -11,7 +11,7 @@
 // teardown again or remove it for good.
 import { lstatSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { git } from "./git.ts";
+import { git, uncommitted as uncommittedPaths } from "./git.ts";
 import { type Layout, type RemoveResult, checkPathKey, deleteTrash, donePath, killProcessesUnder, removeClone, resolveCloneFolder, resolveKeyFolder, restoreWrite } from "./remove.ts";
 import { type Approved, type CommandDeps, type TeardownRun, approvedFile, runTeardowns } from "../workspace/ops.ts";
 import { type WorkspaceFile, commandFor } from "../workspace/file.ts";
@@ -20,13 +20,6 @@ import { type HoldReason, type RepoAtRemoval, type Unsaved, judge } from "./judg
 export { type HoldReason, type RepoAtRemoval, type Unsaved, judge, lossText, reasonText } from "./judge.ts";
 
 const NOT_A_REPO: Unsaved = { repo: false, uncommitted: 0, branches: [], error: null };
-
-/** The path of a `git status --porcelain` line, unquoted enough to compare its first segment. */
-const statusPath = (line: string) => {
-  const rest = line.slice(3);
-  const target = rest.includes(" -> ") ? rest.slice(rest.indexOf(" -> ") + 4) : rest;
-  return target.replace(/^"|"$/g, "");
-};
 
 /**
  * Whether the repository at `clone` holds work its source at `source` does
@@ -43,10 +36,10 @@ const statusPath = (line: string) => {
 export async function unsavedWork(clone: string, source: string, skip: readonly string[] = []): Promise<Unsaved> {
   const dotGit = lstatSync(join(clone, ".git"), { throwIfNoEntry: false });
   if (dotGit === undefined || !dotGit.isDirectory()) return NOT_A_REPO;
-  const status = await git(clone, ["status", "--porcelain", "--untracked-files=normal"]);
+  const status = await uncommittedPaths(clone);
   if (status.code !== 0) return { repo: true, uncommitted: 0, branches: [], error: `git status failed: ${status.stderr.trim().slice(0, 200)}` };
   const skipped = new Set(skip);
-  const uncommitted = status.stdout.split("\n").filter((line) => line.trim() !== "" && !skipped.has(statusPath(line).replace(/\/$/, "").split("/")[0]!)).length;
+  const uncommitted = status.paths.filter((path) => !skipped.has(path.replace(/\/$/, "").split("/")[0]!)).length;
   const refs = await git(clone, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/stash"]);
   if (refs.code !== 0) return { repo: true, uncommitted, branches: [], error: `git for-each-ref failed: ${refs.stderr.trim().slice(0, 200)}` };
   const tips: Array<{ sha: string; name: string }> = [];

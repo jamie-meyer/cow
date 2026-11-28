@@ -7,7 +7,7 @@ import { type Stats, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, 
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { type CloneInputs, type CloneResource, cloneInputsSchema, cloneResourceSchema } from "./contract.ts";
 import type { CloneCall } from "./helper.ts";
-import { git } from "./git.ts";
+import { git, uncommitted } from "./git.ts";
 
 export { git };
 import { type Layout, checkPathKey, donePath, removeClone, resolveCloneFolder, strictlyInside } from "./remove.ts";
@@ -44,8 +44,8 @@ async function inspect(path: string, what: string): Promise<RepoFacts> {
     );
   }
   const head = await git(path, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  const status = await git(path, ["status", "--porcelain", "--untracked-files=normal"]);
-  return { path, isRepo: true, head: head.code === 0 ? head.stdout.trim() : null, dirty: status.code === 0 ? status.stdout.trim() !== "" : null };
+  const status = await uncommitted(path);
+  return { path, isRepo: true, head: head.code === 0 ? head.stdout.trim() : null, dirty: status.code === 0 ? status.paths.length > 0 : null };
 }
 
 function isDirectory(path: string): boolean {
@@ -155,8 +155,17 @@ async function fixGit(repo: string, branch: string | null): Promise<boolean> {
   // The source's list of linked worktrees: stale here, and `git worktree remove` in the clone could delete a real one.
   if (lstatSync(join(dotGit, "worktrees"), { throwIfNoEntry: false }) !== undefined) rmSync(join(dotGit, "worktrees"), { recursive: true, force: true });
   if (branch === null) return false;
-  const checkout = await git(repo, ["checkout", "--quiet", "-b", branch]);
-  if (checkout.code !== 0) throw new StepError(`git checkout -b ${branch} failed: ${checkout.stderr.trim().slice(0, 500)}`);
+  // What `git checkout -b` does to the refs, and nothing else: checkout also reads the working tree, where a filter could be made to run.
+  const head = await git(repo, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+  const was = await git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (head.code === 0) {
+    // An empty old value: the branch must not be there yet.
+    const made = await git(repo, ["update-ref", `refs/heads/${branch}`, head.stdout.trim(), ""]);
+    if (made.code !== 0) throw new StepError(`making the branch ${branch} failed: ${made.stderr.trim().slice(0, 500)}`);
+  }
+  const from = was.code === 0 ? was.stdout.trim() : head.stdout.trim();
+  const on = await git(repo, ["symbolic-ref", "-m", `checkout: moving from ${from} to ${branch}`, "HEAD", `refs/heads/${branch}`]);
+  if (on.code !== 0) throw new StepError(`putting ${repo} on the branch ${branch} failed: ${on.stderr.trim().slice(0, 500)}`);
   return true;
 }
 

@@ -28,11 +28,11 @@ export const NODE_MODULES = ["child_process", "crypto", "fs", "fs/promises", "os
 
 /** Every file that imports `child_process`, and the programs it starts. All of them are reached only from the host entry. */
 export const STARTS_PROGRAMS: readonly { file: string; runs: string }[] = [
-  { file: "src/clone/git.ts", runs: "git, with arguments cow fixes, hooks off" },
+  { file: "src/clone/git.ts", runs: "git, with arguments cow fixes, so that it starts no program a folder names" },
   { file: "src/clone/helper.ts", runs: "/usr/bin/osascript or /usr/bin/perl, with a fixed script that calls clonefile(2)" },
   { file: "src/clone/remove.ts", runs: "/usr/sbin/lsof, to find processes working inside a clone being removed" },
   { file: "src/clone/tree.ts", runs: "/bin/df, for the volume a folder is on" },
-  { file: "src/merge/facts.ts", runs: "git, read-only, for merge-readiness" },
+  { file: "src/merge/facts.ts", runs: "git, read-only and with the same fixed arguments, for merge-readiness" },
   { file: "src/workspace/run.ts", runs: "/bin/sh -c with a command from a cow.workspace.json the person approved" },
 ];
 

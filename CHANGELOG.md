@@ -4,6 +4,43 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.31
+
+git that cow runs in a thread's folder starts no program the folder names.
+
+- **What was open.** cow's host entry runs git outside bb's sandbox, in
+  folders a thread can write, and turned off only hooks and the file-system
+  monitor. A thread that could write its checkout's git configuration and
+  attributes could have a program started outside the sandbox: by a clean
+  or process filter since the copy-on-write workspace (0.2.13) and the
+  checker's diff (0.2.18), by a merge driver since merge-readiness (0.2.26), and
+  by the upload program of a partial clone's remote wherever cow looked
+  for a commit a repository did not have. 0.2.30 named the filter; the
+  other two were found for this release. The README's note that a thread
+  could not write `.git/config` had been checked under one provider's
+  sandbox only.
+- **What closes it.** Commands that read working-tree files or merge
+  contents now run with an empty git folder of cow's own in place of the
+  repository's, so git reads no configuration of the folder, of yours or
+  of the system, whatever it names. The rest read only refs and objects and
+  carry fixed arguments that turn off hooks, the monitor, the pager, every
+  transport and maintenance. A clone is put on its branch by moving refs,
+  not by `git checkout -b`. cow no longer runs `git status`; it asks the
+  same three questions itself.
+- **What you see.** For an ordinary repository, nothing: the same diff,
+  merge-readiness and counts of uncommitted changes. A file whose
+  attributes name a git filter (a large-file filter, say) is no longer run
+  through it: unchanged by its recorded size and time, it is left out;
+  changed, or not possible to tell, it counts as changed and the checker
+  is shown its name and no diff. A submodule with uncommitted changes
+  inside is listed by name in the checker's diff. A file with a merge
+  driver is merged as plain text in the trial merge. cow needs git 2.32.
+- **Still open.** A thread that can write its git folder can make cow read
+  another folder's files into the diff (`core.worktree`), though start
+  nothing there, and can make git slow or fail. A repository with a split
+  index is not read. Checked on git 2.54 only; the end-to-end checks in a
+  browser were not rerun for this entry's code by its author.
+
 ## 0.2.30
 
 No change in what cow does. What cow's documents said about its own code

@@ -142,6 +142,10 @@ export function checkerPrompt(brief: Brief, nonce: string, material: Material = 
     if (binary.length > 0) notes.push(`Binary files, by name only: ${list(binary)}.`);
     const secret = diff.namesOnly.filter((entry) => entry.why === "secret").map((entry) => entry.path);
     if (secret.length > 0) notes.push(`Files that may hold secrets, by name only (cow never shows their contents): ${list(secret)}.`);
+    const filtered = diff.namesOnly.filter((entry) => entry.why === "git filter").map((entry) => entry.path);
+    if (filtered.length > 0) notes.push(`Files that pass through a git filter, by name only (cow runs no filter, so it cannot show what changed in them; read them in the checkout if a claim rests on them): ${list(filtered)}.`);
+    const submodules = diff.namesOnly.filter((entry) => entry.why === "submodule").map((entry) => entry.path);
+    if (submodules.length > 0) notes.push(`Submodules with uncommitted changes inside, by name only: ${list(submodules)}.`);
     out.push(notes.length > 0 ? notes.join(" ") : "Nothing was cut: the whole diff is below.");
     out.push(...fence("DIFF", nonce, diff.text === "" ? "(empty)" : diff.text.replace(/\n$/, "")));
   }

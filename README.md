@@ -228,8 +228,9 @@ found locally. It is worked out read-only by a trial merge (`git merge-tree
 and fetches nothing, again only when the branch's tip or the base's moves,
 and anything that fails reads "not known", never "clean". Uncommitted
 changes are not in the trial merge, and the line says when there are some
-(cow asks `git status`, and does not turn git filters off: see "git
-filters" under the limits of signing and capabilities).
+(cow works that out itself, with a git that starts no program the checkout
+names: see "git in a thread's folder" under the limits of signing and
+capabilities).
 A conflict also shows beside a brief you have not read or an ask about
 merging, and never queues anything by itself. **cow never merges.**
 Details are under [Merge-readiness](docs/reference.md#merge-readiness).
@@ -608,9 +609,12 @@ Three things cow does cause to be sent, all by bb, to a model provider:
   and the checks of its "Done means" section; and **what that thread
   changed**: every changed file's path and status, and the diff (up to
   60,000 characters in all and 12,000 a file), which cow collects by running
-  git with hooks off, from its host entry and outside the sandbox, in the
-  thread's checkout on its own machine. git filters are not turned off:
-  see "git filters" under the limits below. In a copy-on-write workspace that is the workspace folder and
+  git from its host entry and outside the sandbox, in the thread's checkout
+  on its own machine, so that git starts no program the checkout names: no
+  hook, filter, diff program or textconv program (see "git in a thread's
+  folder" under the limits below). A file that passes through a git filter
+  goes by name only, since cow runs no filter and so cannot show what
+  changed in it. In a copy-on-write workspace that is the workspace folder and
   every repository cow brought into the clone (by cow's record of the clone,
   not the file in it), each against the commit it was on when the clone was
   made, its files under its folder, the limits shared fairly between them.
@@ -700,7 +704,8 @@ times and message ids (kept as hashes): no text, tool input or file name.
 Details are under [Tokens during a turn](docs/reference.md#tokens-during-a-turn-liveusage).
 
 For merge-readiness, cow's host entry runs git commands that change no
-repository (git filters are not turned off: see the limits below) in each
+repository and start no program the checkout names (see "git in a thread's
+folder" under the limits below) in each
 finished worker's checkout, and in the source folder of one of cow's clones,
 on that machine; the trial merge's objects go to a temporary folder of
 cow's own that is removed after. The commands are listed under
@@ -882,13 +887,53 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   seen. A command rule compares the command line only, not what that line
   runs: a thread that can edit a package script, a test file or a script
   the command names decides what runs outside the sandbox under it.
-- **git filters.** cow does not turn git filters off. When it collects a
-  brief's diff, cow's host entry runs `git diff` in the thread's checkout,
-  outside the sandbox, and git runs any clean filter that the repository's
-  config defines for a changed file. A thread that can write the git config
-  of its checkout could therefore have a command run outside the sandbox.
-  Under the Claude Code provider's sandbox a thread could not write
-  `.git/config` in the one check made; nothing else was checked.
+- **git in a thread's folder.** cow's host entry runs git outside the
+  sandbox in folders a thread can write, and git can be told by a
+  repository's configuration to start programs. cow assumes the thread can
+  write every git configuration file of its checkout, its worktree's own
+  (`config.worktree`) and any file they include, and the attributes. No git
+  command cow runs starts a program any of them names:
+  - Every command that reads a working-tree file or merges contents (the
+    brief's diff, uncommitted and untracked changes, the trial merge) runs
+    detached from the repository: its git folder is an empty one that ships
+    with cow (`assets/no-repository`), and the working tree, the index and
+    the objects are named one by one. git then reads no configuration file
+    of the folder, of yours or of the system, so no filter, diff program,
+    textconv program or merge driver is configured under any name. Ten
+    settings that only say how files are compared or ignored are read from
+    the repository and handed over by name (`KEPT` in `src/clone/git.ts`).
+    This does not rest on a list of dangerous settings.
+  - The other commands read and write only refs and objects (`rev-parse`,
+    `for-each-ref`, `symbolic-ref`, `update-ref`, `merge-base`, `rev-list`,
+    `cat-file`, `config --list`, `check-ref-format`, `version`) and must
+    read the repository's own configuration. Each carries fixed arguments
+    that turn off what those commands could start: hooks, the file-system
+    monitor, a pager, any transport (so a missing object of a partial clone
+    is not fetched by a program a remote names), background maintenance.
+    This part does rest on a list: the settings in the installed git's
+    manual (2.54) that name a program, read against what these ten commands
+    do.
+  - git never starts another git inside a submodule: cow looks into each
+    submodule itself, the same detached way.
+
+  What this changes in what you see: a file whose attributes name a git
+  filter (a large-file filter, say) is compared by its recorded size and
+  time, not its content, since only the filter could compare the content.
+  Unchanged, it is left out; changed, or not possible to tell (git cannot
+  tell for a file written in the same second as its index), it counts as
+  changed and the checker is shown its name and no diff. A file whose
+  attributes name a merge driver is merged as plain text in the trial
+  merge. `info/attributes` in the git folder and a split index are not
+  read: with a split index cow says it could not read the checkout. It
+  needs git 2.32 or later.
+
+  What is not covered: a thread that can write its git folder can point it
+  at another folder (`core.worktree`, or the `.git` file), and cow then
+  reads that folder's files for the diff, as before; it starts nothing
+  there. A thread can also make git slow or make it fail. And the earlier
+  statement that a thread could not write `.git/config` was checked under
+  one provider's sandbox only; nothing here rests on any sandbox refusing
+  that write.
 - **An approved workspace command is as safe as what it runs.** cow runs
   only the text you approved, but `npm run sync` or `./sync.sh` runs
   whatever that script holds when it runs.
@@ -944,11 +989,29 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
     programs, each with its arguments in a list and never through a shell,
     except the last:
     - `src/clone/git.ts` and `src/merge/facts.ts`: `git`, found on your
-      `PATH`, with hooks and the file-system monitor off, to make a clone,
-      to read what a thread changed for the checker, for merge-readiness
-      and for a workspace's state. cow chooses every argument. It does not
-      turn git filters off, so git runs a filter that the repository's
-      config defines (see "git filters" under the limits).
+      `PATH`, to make a clone, to read what a thread changed for the
+      checker, for merge-readiness and for a workspace's state. cow chooses
+      every argument, and every call starts with the same fixed ones
+      (`FIXED` in `src/clone/git.ts`; a test reads the code for it, and for
+      the commands that may run only detached). `test/git-starts-nothing.test.ts`
+      builds throwaway repositories and plants a program, which only
+      creates a marker file, by every setting in git's manual that names
+      one (clean, smudge and process filters, hooks by `core.hooksPath` and
+      in the git folder's own `hooks`, the file-system monitor, external
+      diff, a diff driver's command and textconv, a merge driver and
+      `merge.default`, pager, editor, ssh, askpass, credential helper, gpg,
+      aliases named after the commands, submodule recursion, and a partial
+      clone's remote with its own upload program), in four places: the
+      repository's configuration, a worktree's `config.worktree`, a file in
+      the working tree that the configuration includes, and a nested
+      repository and a submodule's own configuration. It then runs cow's own
+      functions (the brief's diff, a clone's diff, merge-readiness, a
+      clone's unsaved work, a source's state, making a clone) and finds no
+      marker and the right answer. Against 0.2.30 the same tests find
+      markers from the clean and process filters, the merge driver and the
+      remote's upload program. Not tested: a git other than 2.54, and
+      where bb's bundle of the host entry finds `assets/no-repository`
+      (when it is not found cow runs no detached git and says so).
     - `src/clone/helper.ts`: `/usr/bin/osascript -l JavaScript`, or
       `/usr/bin/perl` if that cannot start, with a fixed script in the code
       that calls `clonefile(2)`. Paths reach it on its input, never in the

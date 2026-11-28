@@ -71,7 +71,7 @@ export interface Shown {
         chars: number;
         clipped: string[];
         omitted: string[];
-        namesOnly: { path: string; why: "lock file" | "binary" | "secret" }[];
+        namesOnly: { path: string; why: "lock file" | "binary" | "secret" | "git filter" | "submodule" }[];
         /** In one of cow's clones: each repository looked at, with its base or why it was not read. Absent before 0.2.22 and outside clones. */
         repos?: DiffRepo[];
       };

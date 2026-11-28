@@ -3,14 +3,23 @@
 // untracked files included), and the diff text, clipped to a budget. cow
 // collects it itself, in the thread's checkout, on the machine it is on (see
 // the host entry); the submitting agent has no say in it.
+//
+// The working tree is read by a git detached from the repository (see
+// ../clone/git.ts): no filter, diff program or textconv program that the
+// checkout's configuration names is started. A file that passes through a
+// git filter is shown by name only, because without the filter git compares
+// what is on disk with what the filter stored, which is not a diff of the
+// file. A submodule is shown when its commit moved; one with uncommitted
+// changes inside is listed by name.
 
 import { lstatSync, realpathSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
+import { DIFF_SAFE, type Tree, dirtySubmodules, filteredOf, openTree } from "../clone/git.ts";
 import { DEFAULT_EXCLUDES, createMatcher } from "../clone/glob.ts";
 import { type ChangedFile, type FileStatus, isLockFile } from "./paths.ts";
 
-export type NameOnly = "lock file" | "binary" | "secret";
+export type NameOnly = "lock file" | "binary" | "secret" | "git filter" | "submodule";
 const secrets = createMatcher(DEFAULT_EXCLUDES);
 /** A path cow never shows the contents of: one that is, or is under, what a clone leaves out as a secret (.env, keys, .ssh, …). */
 export function isSecretPath(path: string): boolean {
@@ -33,7 +42,7 @@ export const DIFF_LIMITS = {
 export type DiffLimits = Record<keyof typeof DIFF_LIMITS, number>;
 
 /** A git that runs in a directory and never through a shell. */
-export type Git = (cwd: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+export type Git = (cwd: string, args: string[], options?: { env?: Record<string, string> }) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 export interface DiffCollected {
   /** The commit compared against. */
@@ -62,7 +71,7 @@ export type DiffResult = { ok: true; diff: DiffCollected } | { ok: false; why: s
 
 /** git's empty tree: the base of a repository with no commits. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "-M", "--src-prefix=a/", "--dst-prefix=b/"];
+const DIFF_FLAGS = ["--no-color", ...DIFF_SAFE, "--submodule=short", "-M", "--src-prefix=a/", "--dst-prefix=b/"];
 
 const STATUS: Record<string, FileStatus> = { A: "added", M: "modified", D: "deleted", R: "renamed", T: "modified", C: "added" };
 
@@ -201,6 +210,12 @@ interface Listed {
   /** The path within the checkout, by the path as it is shown. */
   inside: Map<string, string>;
   prefix: string;
+  /** The working tree, read detached from its repository. */
+  tree: Tree;
+  /** Paths (as shown) that pass through a git filter: by name only. */
+  filtered: Set<string>;
+  /** Submodules (as shown) with uncommitted changes inside: by name only. */
+  submodules: Set<string>;
 }
 
 const gitFailed = (what: string, out: { code: number; stderr: string }) => `git could not ${what}: ${out.stderr.trim().slice(0, 300) || `exit ${out.code}`}`;
@@ -214,10 +229,19 @@ const byPathOrder = (a: ChangedFile, b: ChangedFile) => (a.path < b.path ? -1 : 
  */
 async function listChanges(git: Git, top: string, found: { base: string; baseText: string }, prefix = "", skip: ReadonlySet<string> = new Set()): Promise<{ ok: true; listed: Listed } | { ok: false; why: string }> {
   const { base, baseText } = found;
-  const listed = await git(top, ["diff", "--name-status", "-z", "-M", base, "--"]);
+  const opened = await openTree(top, git);
+  if (!opened.ok) return { ok: false, why: gitFailed("read the checkout", opened.result) };
+  const { tree } = opened;
+  const listed = await tree.run(["diff", ...DIFF_SAFE, "--name-status", "-z", "-M", base, "--"]);
   if (listed.code !== 0) return { ok: false, why: gitFailed("list the changed files", listed) };
-  const tracked = parseNameStatus(listed.stdout);
-  const others = await git(top, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  const everyTracked = parseNameStatus(listed.stdout);
+  // Files that pass through a git filter: those that did not change are left out, the rest are shown by name only.
+  const judged = await filteredOf(tree, base, everyTracked.map((file) => file.path));
+  if (!judged.ok) return { ok: false, why: gitFailed("read the attributes of the changed files", judged.result) };
+  const tracked = everyTracked.filter((file) => !judged.unchanged.has(file.path));
+  const within = await dirtySubmodules(tree, new Set(tracked.map((file) => file.path)), git);
+  for (const path of within) tracked.push({ path, status: "modified", from: null, untracked: false });
+  const others = await tree.run(["ls-files", "--others", "--exclude-standard", "-z", ...(tree.exclude ? ["-X", tree.exclude] : [])]);
   if (others.code !== 0) return { ok: false, why: gitFailed("list the untracked files", others) };
   const untracked: ChangedFile[] = others.stdout
     .split("\0")
@@ -233,12 +257,12 @@ async function listChanges(git: Git, top: string, found: { base: string; baseTex
       return shown;
     })
     .sort(byPathOrder);
-  return { ok: true, listed: { top, base, baseText, all, inside, prefix } };
+  const shown = (paths: Iterable<string>) => new Set([...paths].map((path) => `${prefix}${path}`));
+  return { ok: true, listed: { top, base, baseText, all, inside, prefix, tree, filtered: shown(judged.filtered), submodules: shown(within) } };
 }
 
 /** The diff of each of `files` (listed by `listChanges`), and those shown by name only. */
 async function diffParts(
-  git: Git,
   listed: Listed,
   files: readonly ChangedFile[],
   readUntracked: (path: string) => Promise<string | null>,
@@ -246,7 +270,7 @@ async function diffParts(
 ): Promise<{ ok: true; parts: { path: string; text: string }[]; namesOnly: DiffCollected["namesOnly"]; chars: number } | { ok: false; why: string }> {
   const { top, base, prefix } = listed;
   const flags = prefix === "" ? DIFF_FLAGS : DIFF_FLAGS.map((flag) => (flag === "--src-prefix=a/" ? `--src-prefix=a/${prefix}` : flag === "--dst-prefix=b/" ? `--dst-prefix=b/${prefix}` : flag));
-  const whole = await git(top, ["diff", ...flags, base, "--"]);
+  const whole = await listed.tree.run(["diff", ...flags, base, "--"]);
   if (whole.code !== 0) return { ok: false, why: gitFailed("make the diff", whole) };
   const byPath = splitDiff(whole.stdout);
   let chars = 0;
@@ -261,6 +285,14 @@ async function diffParts(
     }
     if (isLockFile(file.path)) {
       namesOnly.push({ path: file.path, why: "lock file" });
+      continue;
+    }
+    if (!file.untracked && listed.filtered.has(file.path)) {
+      namesOnly.push({ path: file.path, why: "git filter" });
+      continue;
+    }
+    if (!file.untracked && listed.submodules.has(file.path)) {
+      namesOnly.push({ path: file.path, why: "submodule" });
       continue;
     }
     // A rename with no change of content names its new path only in "rename to", which git writes without the prefix.
@@ -297,7 +329,7 @@ export async function collectDiff(
   if (!found.ok) return found;
   const { listed } = found;
   const files = listed.all.slice(0, limits.files);
-  const made = await diffParts(git, listed, files, readUntracked, limits);
+  const made = await diffParts(listed, files, readUntracked, limits);
   if (!made.ok) return made;
   const clipped = clipParts(made.parts, limits);
   return {
@@ -424,7 +456,7 @@ export async function collectCloneDiff(
   let chars = 0;
   for (const [n, listed] of read.entries()) {
     const files = listed.all.slice(0, fileShares[n] ?? 0);
-    const parts = await diffParts(git, listed, files, readUntracked, limits);
+    const parts = await diffParts(listed, files, readUntracked, limits);
     const entry = looked.find((repo) => repo.base !== null && (repo.as === null ? listed.prefix === "" : listed.prefix === `${repo.as}/`))!;
     if (!parts.ok) {
       Object.assign(entry, { base: null, baseText: null, why: parts.why });

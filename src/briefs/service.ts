@@ -102,7 +102,7 @@ const shownSchema = z.object({
       chars: z.number(),
       clipped: z.array(z.string()),
       omitted: z.array(z.string()),
-      namesOnly: z.array(z.object({ path: z.string(), why: z.enum(["lock file", "binary", "secret"]) })),
+      namesOnly: z.array(z.object({ path: z.string(), why: z.enum(["lock file", "binary", "secret", "git filter", "submodule"]) })),
       repos: z.array(z.object({ as: z.string().nullable(), base: z.string().nullable(), baseText: z.string().nullable(), filesTotal: z.number(), why: z.string().nullable() })).optional(),
     }),
   ]),
