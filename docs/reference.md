@@ -1116,7 +1116,7 @@ if sending fails, cow sends it again the next time it loads.
 You may answer an ask in an ordinary message to the thread instead of on
 the page. The ask is not closed by that: cow never closes one by itself.
 It can be closed from either side, and nothing is sent to the thread either
-way:
+way, except for a request for a capability (below):
 
 - **The asking thread** closes it with `bb cow ask close <id> --answered
   "<your answer, quoted or closely paraphrased>"`. A thread above it may do
@@ -1134,6 +1134,18 @@ a withdrawal. `bb cow asks --all` shows each ask that has ended with who
 ended it: "answered on cow's page", "closed by the thread: answered in
 chat: …" with the answer as the thread gave it, "closed by the user on cow's
 page: answered in chat", or withdrawn.
+
+A request for a capability that is closed this way grants nothing, whatever
+was said in chat. When the thread closes it, `bb cow ask close` prints "No
+capability was granted from <id>: it was closed as answered in chat, and
+words in chat grant nothing. \`bb cow caps\` shows what you hold; \`bb cow
+cap request\` asks again." (run by a thread above it, the line names the
+thread, says cow does not tell it, and gives both commands with `--thread`).
+When you close it on the page, the card says first that closing it grants
+nothing, and cow sends the thread one message: "From cow, not the user: the
+user closed your request for a capability (<id>) on cow's page, as answered
+in chat:", the request quoted, and the same line. `bb cow ask withdraw` on a
+request prints the line too, with "the request was withdrawn".
 
 ### Answering an ask
 
@@ -2291,8 +2303,26 @@ request ("“<thread>” asks for a capability to write under /srv/reports"),
 it. `1` opens the steps at once, starting from what was asked for, which you
 can narrow or widen, and nothing is granted until you confirm their last
 sentence; the capability then lasts until you delete it, and the thread is
-told what was granted. `2`, then `Enter`, tells it no, as a message from
-you. A rule that could never be
+told what was granted: "allow it (option 1): granted as the capability
+“<name>”: <what it covers> for <who it applies to>". Nothing else answers
+it with option 1: the signed answer is refused until a capability made from
+the request is in force. `2`, then `Enter`, tells it no, as a message from
+you.
+
+Anything but `1` grants nothing, and the thread is told so in cow's own
+words. As soon as you type in the field for words, the card says "Words
+grant nothing: they are sent to “<thread>” with a line from cow that no
+capability was granted. 1 is what grants; your words can still say what to
+ask for instead." (marking "already answered in chat" says "Closing it
+grants nothing: …"). It does not stop you: `Enter` sends the words, which
+is how you say "narrow it to this one file". The message the thread gets,
+for words or a refusal, ends with a line of cow's after the answer:
+"From cow, not the user: No capability was granted from <id>: the user
+answered in words, and words grant nothing." (or "the user refused it."),
+then "\`bb cow caps\` shows what you hold; \`bb cow cap request\` asks
+again." `bb cow asks --all` lists such a request with "no capability was
+granted from it". For a close in chat or a withdrawal, see "An ask answered
+in chat". A rule that could never be
 granted is refused when the agent asks, with the reason, and no ask is
 raised. `caps` and `caps log` only read.
 

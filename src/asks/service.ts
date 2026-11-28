@@ -3,7 +3,7 @@
 
 import { type Kv, Refusal, serial } from "../kv.ts";
 import { type TraceInput, closeLeavesTrace } from "../traces.ts";
-import { type Ask, type Risk, answerMessage, answered, askSchema, closedInChat, draftAsk, mayAskFor, openAsks, withdrawn } from "./ask.ts";
+import { type Ask, type Risk, answerMessage, answered, askSchema, closedInChat, closedNoteMessage, draftAsk, mayAskFor, openAsks, withdrawn } from "./ask.ts";
 
 const PREFIX = "ask:";
 /** Open asks one thread may have at once; more than this is a thread talking to itself. */
@@ -58,7 +58,8 @@ export interface Asks {
   /**
    * Close an ask the person answered in chat. With `answer`, it is the asking
    * side closing it (the thread, or one above it); without, the person, from
-   * the page. Nothing is sent to the thread.
+   * the page. Nothing is sent to the thread, except when the person closes a
+   * request for a capability: its thread is then told that none was granted.
    */
   close(id: string, given: { caller: string | null; answer: string } | { person: true }): Promise<Ask>;
   /** Record the person's answer and deliver it. Never call this for an agent. */
@@ -111,12 +112,21 @@ export function createAsks(deps: AskDeps): Asks {
   const deliveredTo = async (threadId: string): Promise<number[]> =>
     (await all()).filter((ask) => ask.threadId === threadId && ask.deliveredAt !== null).map((ask) => ask.deliveredAt!);
 
-  /** Send an answered ask's answer, once, and record that it arrived. */
+  /** What is owed to the ask's thread and not sent yet: an answer, or the note on a request for a capability the person closed. */
+  const owed = (ask: Ask): string | null => {
+    if (ask.deliveredAt !== null) return null;
+    if (ask.status === "answered") return answerMessage(ask);
+    if (ask.status === "closed" && ask.closed?.notify === true) return closedNoteMessage(ask);
+    return null;
+  };
+
+  /** Send what is owed to the ask's thread, once, and record that it arrived. */
   const deliver = (id: string): Promise<Ask> =>
     locked(id, async () => {
       const ask = await get(id);
-      if (ask.status !== "answered" || ask.deliveredAt !== null) return ask;
-      await deps.send(ask.threadId, answerMessage(ask));
+      const text = owed(ask);
+      if (text === null) return ask;
+      await deps.send(ask.threadId, text);
       const delivered = { ...ask, deliveredAt: deps.now() };
       await write(delivered);
       return delivered;
@@ -195,6 +205,13 @@ export function createAsks(deps: AskDeps): Asks {
       if (!person && !quiet && given.caller !== null) {
         await trace({ action: "closed", actorThreadId: given.caller, threadId: done.threadId, askId: done.id, question: done.question, claim: done.closed?.answer ?? null, waited: [] });
       }
+      // A request for a capability the person closed: its thread is told nothing was granted. The close stands if that fails; it is sent again on the next load.
+      if (done.closed?.notify === true) {
+        return deliver(done.id).catch((cause: unknown) => {
+          deps.warn?.(`${done.id} is closed, but its thread was not told that no capability was granted: ${cause instanceof Error ? cause.message : String(cause)}`);
+          return done;
+        });
+      }
       return done;
     },
 
@@ -219,7 +236,7 @@ export function createAsks(deps: AskDeps): Asks {
     async redeliver() {
       let sent = 0;
       for (const ask of await all()) {
-        if (ask.status !== "answered" || ask.deliveredAt !== null) continue;
+        if (owed(ask) === null) continue;
         await deliver(ask.id).then(
           () => (sent += 1),
           () => undefined,

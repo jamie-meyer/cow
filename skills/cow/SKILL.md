@@ -49,7 +49,8 @@ bb cow ask --question "Ship the migration tonight or wait for the review?" \
   messages you, run `bb cow asks --thread $BB_THREAD_ID`, and close every
   ask that message answered:
   `bb cow ask close <id> --answered "<their answer, quoted or closely paraphrased>"`.
-  It leaves their queue at once and sends you nothing. Otherwise the ask
+  It leaves their queue at once and sends you nothing. Closing a request for
+  a capability grants nothing, and the command says so. Otherwise the ask
   stays in front of them, already answered.
 - `bb cow ask withdraw <id>` is for a question that no longer needs an
   answer; it is not for one that was answered.
@@ -385,7 +386,16 @@ bb cow caps                      # what your thread holds, and where each comes 
   `--rule` is a directory's whole path from `/`, or the exact command line in
   plain words. It prints an ask id; the answer arrives as a message from the
   user, who may narrow what you asked for. Carry on with what does not need
-  it, or say what you are waiting for and end your turn. A rule that could
+  it, or say what you are waiting for and end your turn.
+- **Only an answer that names a capability grants one**: "allow it (option
+  1): granted as the capability “…”", with what it covers and who it applies
+  to. Any other end grants nothing, whatever the words say ("done", "ok",
+  "go ahead"): an answer in words or a refusal comes with a line "From cow,
+  not the user: No capability was granted …"; if the user closes it on the
+  page as answered in chat, cow sends you that line alone; `bb cow ask close`
+  and `bb cow ask withdraw` on a request print it. Then do not act as if you
+  held it: run `bb cow caps` to see what you hold, and `bb cow cap request`
+  to ask again, narrowed as the user said if they did. A rule that could
   never be granted (your home directory, a credentials directory, a command
   with a shell operator) is refused at once with the reason.
 - **Never try to get a capability any other way.** Making, deleting and

@@ -421,6 +421,42 @@ async function main() {
 
     const withdrawn = second ? await cow(ids.asker, "ask", "withdraw", second.id) : { code: 1, stderr: "" };
     check("the thread that asked withdraws its ask", withdrawn.code === 0, withdrawn.stderr.trim());
+
+    // ---- a request for a capability closed in chat grants nothing -----------
+    const requestOf = async (rule) => {
+      const raised = await cow(ids.asker, "cap", "request", "--kind", "command", "--rule", rule, "--why", "to check a close in chat", "--json");
+      return raised.code === 0 ? JSON.parse(raised.stdout).ask : null;
+    };
+    const madeFrom = async (id) => ((await rpc("caps_state", null)).result?.capabilities ?? []).some((capability) => capability.askId === id);
+    const userRows = async () => (await api(`/threads/${ids.asker}/timeline`)).rows.filter((row) => row.kind === "conversation" && row.role === "user");
+    const byThread = await requestOf("echo cow asks closed by the thread");
+    const rowsBefore = (await userRows()).length;
+    const closedByThread = byThread ? await cow(ids.asker, "ask", "close", byThread.id, "--answered", "done") : { code: 1, stdout: "", stderr: "no request" };
+    check(
+      "the thread closing its request for a capability in chat is told by the command that nothing was granted, and how to ask again; no capability is made",
+      closedByThread.code === 0 &&
+        closedByThread.stdout.includes(`No capability was granted from ${byThread.id}: it was closed as answered in chat, and words in chat grant nothing.`) &&
+        closedByThread.stdout.includes("`bb cow caps` shows what you hold; `bb cow cap request` asks again.") &&
+        !(await madeFrom(byThread.id)) &&
+        (await userRows()).length === rowsBefore,
+      closedByThread.stdout + closedByThread.stderr,
+    );
+    const plainClose = await cow(ids.asker, "ask", "--question", "An ordinary one to close?", "--json");
+    const plainId = plainClose.code === 0 ? JSON.parse(plainClose.stdout).ask.id : null;
+    const plainClosed = plainId ? await cow(ids.asker, "ask", "close", plainId, "--answered", "done") : { code: 1, stdout: "" };
+    check("an ordinary ask closed in chat reads as before: no word of capabilities", plainClosed.code === 0 && !/capability/.test(plainClosed.stdout), plainClosed.stdout);
+    const byPerson = await requestOf("echo cow asks closed by the person");
+    const personClosed = byPerson ? await signer.call("ask_close", { id: byPerson.id }) : { ok: false };
+    const note = await waitFor("cow's note that nothing was granted", async () => (await userRows()).find((row) => row.text?.includes(`(${byPerson.id})`)) ?? null, 60_000);
+    check(
+      "the person closing a request for a capability on the page: the thread is sent cow's note, marked as cow's, that nothing was granted",
+      personClosed.ok === true &&
+        note.text.startsWith(`From cow, not the user: the user closed your request for a capability (${byPerson.id})`) &&
+        note.text.includes("No capability was granted from") &&
+        !(await madeFrom(byPerson.id)),
+      JSON.stringify(note.text),
+    );
+    await idle(ids.asker);
   } catch (error) {
     failure = error;
   } finally {

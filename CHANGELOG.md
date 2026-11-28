@@ -4,6 +4,38 @@ What changed for someone who uses cow. Versions are tags in this repository:
 `v0.2.1` is the commit `bb plugin install` gives you for a range that allows
 0.2.1.
 
+## 0.2.32
+
+A request for a capability that ends without one says so.
+
+- **What was wrong.** A thread that asked for a capability with `bb cow cap
+  request` was answered by whatever ended its ask. Answered in words ("ok",
+  say), it got those words as a message from you, and could not tell that
+  nothing had been granted. Closed as answered in chat, it got nothing at
+  all from cow.
+- **What the thread is told now.** Only `1` on the card, through the steps,
+  grants a capability, and the answer names it, what it covers and who it
+  applies to, as before. Words and a refusal still go as your message,
+  followed by a line of cow's: "From cow, not the user: No capability was
+  granted from <id>: the user answered in words, and words grant nothing."
+  (or "the user refused it."), then "`bb cow caps` shows what you hold;
+  `bb cow cap request` asks again." When you close a request on the page as
+  answered in chat, cow sends the thread that line in a message of its own,
+  marked as cow's. When a thread closes a request with `bb cow ask close`,
+  or withdraws one, the command prints the line; run by a thread above it,
+  the line names the thread and says to tell it. `bb cow asks --all` lists
+  such a request with "no capability was granted from it".
+- **What you see.** On a request's card, as soon as you type words, the
+  card says "Words grant nothing: … 1 is what grants; your words can still
+  say what to ask for instead." Marking "already answered in chat" says
+  "Closing it grants nothing: …". Neither stops you sending. The line after
+  sending says the thread was told no capability was granted.
+- **Also.** The signed answer refuses option 1 on a request until a
+  capability made from it is in force, so no answer can read as a grant
+  that was not made. Ordinary asks, answered or closed in chat, read as
+  before. The end-to-end checks for this were written and not run by this
+  entry's author.
+
 ## 0.2.31
 
 git that cow runs in a thread's folder starts no program the folder names.

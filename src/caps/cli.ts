@@ -102,7 +102,7 @@ export function capCommands(caps: Caps, asks: Asks, titleOf: (threadId: string) 
       description:
         "Raises an ask on cow's page that the user allows or refuses with one key, a, on its line. Say what you need and why. For a directory give its whole path " +
         "from /; for a command give the exact command line, in plain words with no shell operators. The user may narrow or widen what " +
-        "you propose. The answer arrives as a message from the user. There is no other way to get a capability, and you must not look for one.",
+        "you propose. The answer arrives as a message from the user: it names the capability when one was made; anything else, words included, grants nothing, and cow adds a line that says so. There is no other way to get a capability, and you must not look for one.",
       options: {
         kind: { type: "enum", values: ["dir", "command"], required: true, description: "dir: write under a directory. command: run a command" },
         rule: { type: "string", required: true, description: "The directory's absolute path, or the exact command line" },
@@ -133,7 +133,8 @@ export function capCommands(caps: Caps, asks: Asks, titleOf: (threadId: string) 
           }),
         );
         await caps.requested(ask.threadId, ask.id, rule);
-        return print(o.json, { ask }, `${ask.id}\nasked the user for a capability. The answer will arrive as a message from the user; carry on with what does not need it, and do not ask again.\n` +
+        return print(o.json, { ask }, `${ask.id}\nasked the user for a capability. The answer will arrive as a message from the user; carry on with what does not need it, and do not ask again. Only an answer that names the capability made grants one; ` +
+            "any other answer (words, a refusal, a close in chat) grants nothing, and cow says so. `bb cow caps` shows what you hold.\n" +
             "If the user asks how to decide it: it is in their queue on cow's page; a on its line opens it, 1 allows it (they then confirm what it covers), 2 and Enter refuse it.");
       },
     }),

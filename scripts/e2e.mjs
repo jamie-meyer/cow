@@ -5455,6 +5455,45 @@ async function capsChecks(page, ids, shot, chooseMain) {
   const logText = await cowAs(ckid, "caps", "log", "--limit", "5");
   check("bb cow caps log prints the log, newest first", logText.code === 0 && /entries, numbered without a gap/.test(logText.stdout) && logText.stdout.includes("capability added: cow test requested"), logText.stdout.split("\n").slice(0, 3).join(" / "));
 
+  // -- a request answered in words grants nothing, and the thread is told so --------
+  const wordsRequest = await cowAs(ckid, "cap", "request", "--kind", "dir", "--rule", `${scratch}/words`, "--why", "to write a second report", "--json");
+  const wordsAsk = wordsRequest.code === 0 ? JSON.parse(wordsRequest.stdout).ask : null;
+  check("a second request raises its ask", wordsAsk?.capability?.rule === `${scratch}/words` && wordsAsk.status === "open", wordsRequest.stdout + wordsRequest.stderr);
+  const earlyGrant = await signer.call("ask_answer", { id: wordsAsk?.id, option: 1, text: "granted" });
+  check(
+    "option 1 on a request is refused until a capability was made from it, and the ask stays open",
+    earlyGrant.ok === false && /no capability has been made from/.test(earlyGrant.error?.message ?? "") && (await openAsksOf(ckid)).some((ask) => ask.id === wordsAsk?.id),
+    JSON.stringify(earlyGrant.error ?? earlyGrant),
+  );
+  const userBefore = (await userRows(ckid)).length;
+  await openCard(ckid, `document.querySelector("[data-cow-ask-card]")?.dataset.cowAsk === "${wordsAsk?.id}"`);
+  const noGrant = `(document.querySelector("[data-cow-ask-nogrant]")?.textContent ?? "")`;
+  check("before anything is typed, the card does not warn", (await page.eval(noGrant)) === "");
+  await page.key("3");
+  await page.waitFor(`document.activeElement?.dataset.cowInput === "ask-answer"`, { label: "the caret in the field for words" });
+  await page.type("narrow it to the one file");
+  await page.waitFor(`${noGrant} !== ""`, { label: "the warning that words grant nothing" });
+  check("as soon as words are typed, the card says they grant nothing and 1 is what grants", /^Words grant nothing: .* 1 is what grants/.test(await page.eval(noGrant)), await page.eval(noGrant));
+  await shot("caps-ask-words");
+  await page.key("Enter");
+  await page.waitFor(`${message}.startsWith("sent to")`, { label: "the words sent" });
+  check("the page says what was sent, and that no capability was granted", (await page.eval(message)).includes("no capability was granted, and it was told so"), await page.eval(message));
+  await waitUntil(async () => (await userRows(ckid)).length > userBefore, "the words to be delivered", 30_000);
+  const wordsRow = (await userRows(ckid)).at(-1);
+  const wordsAnswered = (await rpc("asks_list", { threadId: ckid, all: true })).asks.find((ask) => ask.id === wordsAsk?.id);
+  check(
+    "the words arrive with cow's line that no capability was granted and how to ask again, and no capability is made",
+    wordsRow?.text.includes("narrow it to the one file") &&
+      wordsRow.text.includes(`From cow, not the user: No capability was granted from ${wordsAsk?.id}: the user answered in words, and words grant nothing.`) &&
+      wordsRow.text.includes("`bb cow cap request` asks again") &&
+      wordsAnswered?.status === "answered" && wordsAnswered.deliveredAt !== null &&
+      !(await capState()).capabilities.some((capability) => capability.askId === wordsAsk?.id),
+    JSON.stringify(wordsRow?.text),
+  );
+  const wordsListed = await cowAs(ckid, "asks", "--thread", ckid, "--all");
+  check("bb cow asks --all says no capability was granted from it", wordsListed.stdout.includes(wordsAsk?.id) && wordsListed.stdout.includes("no capability was granted from it"), wordsListed.stdout.slice(-400));
+  await settle(ckid);
+
   // -- what a sandboxed agent can do against the person's actions ------------------
   // One fixture runs every route in one script, inside its command sandbox, in the
   // ordinary way. Each of the person's actions must fail; bb's own approve command

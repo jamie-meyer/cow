@@ -12,6 +12,7 @@ import { createHash, createPublicKey, verify as verifySignature } from "node:cry
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { unmadeGrant } from "../asks/ask.ts";
 import type { Asks } from "../asks/service.ts";
 import { CAPS_CHANGED, CAP_LIMITS, VIAS, scopeSchema } from "../caps/cap.ts";
 import type { LogStore } from "../caps/logstore.ts";
@@ -270,6 +271,9 @@ export function registerSigning(bb: BbPluginApi, log: LogStore, caps: Caps, asks
     },
     ask_answer: async (args, by) => {
       const before = await asks.get(args.id);
+      // On a request for a capability, option 1 says it was granted: only the steps that made it may answer so.
+      const unmade = before.capability !== null && args.option === 1 ? unmadeGrant(before, args.option, (await caps.state()).capabilities) : null;
+      if (unmade !== null) throw new Refusal("cannot_answer", unmade, "Press 1 on its card: the steps make the capability, then answer it.");
       // Logged before it is sent: an answer the thread received is always one the log holds.
       await log.append({ kind: "ask-answered", threadId: before.threadId, askId: before.id, what: args.option === null ? (args.text ?? "").slice(0, 300) : `option ${args.option}${args.text ? `: ${args.text.slice(0, 280)}` : ""}` }, by);
       changed();

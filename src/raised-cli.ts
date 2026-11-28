@@ -4,7 +4,7 @@
 // cow's page.
 
 import { PluginCliError, cliCommand } from "@get-bb/plugin-sdk";
-import { type Ask, RISKS, askText } from "./asks/ask.ts";
+import { type Ask, RISKS, askText, ungrantedLine } from "./asks/ask.ts";
 import type { Asks } from "./asks/service.ts";
 import { withRaised } from "./raised.ts";
 import { BRIEF_SHAPE } from "./briefs/brief.ts";
@@ -172,21 +172,21 @@ export function attentionCommands(attention: Attention) {
       options: { json },
       async run(input, ctx) {
         const ask = await acting(() => asks.withdraw(ctx.threadId ?? null, input.positionals.id.trim()));
-        return print(input.options.json, { ask }, `withdrew ${ask.id}: ${ask.question}`);
+        return print(input.options.json, { ask }, `withdrew ${ask.id}: ${ask.question}${ungrantedLine(ask, ctx.threadId ?? null)}`);
       },
     }),
     "ask close": cliCommand({
       summary: "Close a question the user answered in an ordinary message instead of on cow's page",
       description:
         "Records the ask as closed by you, answered in chat, with the user's answer as you quote it. It leaves the user's " +
-        "queue at once and nothing is sent to your thread. After the user messages you, check `bb cow asks --thread <you>` and " +
+        "queue at once and nothing is sent to your thread. Closing a request for a capability grants nothing, and the output says so. After the user messages you, check `bb cow asks --thread <you>` and " +
         "close what the message answered. Withdraw is for a question that no longer needs an answer.",
       positionals: [{ name: "id", description: "The ask's id, such as ask_1a2b3c4d", required: true }],
       options: { answered: { type: "string", required: true, aliases: ["answer"], description: "The user's answer, quoted or closely paraphrased, up to 4000 characters" }, json },
       async run(input, ctx) {
         const ask = await acting(() => asks.close(input.positionals.id.trim(), { caller: ctx.threadId ?? null, answer: input.options.answered }));
         return print(input.options.json, { ask }, `closed ${ask.id} as answered in chat: ${ask.question}
-  the answer, as you gave it: ${ask.closed?.answer ?? ""}`);
+  the answer, as you gave it: ${ask.closed?.answer ?? ""}${ungrantedLine(ask, ctx.threadId ?? null)}`);
       },
     }),
     asks: cliCommand({

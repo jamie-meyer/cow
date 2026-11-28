@@ -337,7 +337,13 @@ capability is a named grant (write under one directory, or run one command)
 for one thread, a thread and everything under it, or everything under Main.
 When a request is covered entirely, cow answers bb "allow once" for you and
 writes it in a log. Only you make and delete capabilities (`C`), and every
-new one sits in your queue until you acknowledge it.
+new one sits in your queue until you acknowledge it. A thread may ask for
+one (`bb cow cap request`); only `1` on its card, through the steps, grants
+it, and the thread is told which capability it got. Words, a refusal, a
+close as answered in chat or a withdrawal grant nothing, and the thread is
+told so in cow's words, not yours ("From cow, not the user: No capability
+was granted …"), with `bb cow caps` and `bb cow cap request` to look and to
+ask again. The card says so as soon as you type.
 
 **Signing.** bb does not tell a plugin who is calling it, and serves a
 plugin's interface to any local process. So everything only you may do
@@ -732,7 +738,8 @@ An agent **can**, through cow:
 - raise an ask for its own thread or one under it, and withdraw or close it;
 - submit a brief for its own thread or one under it, and order a check of a
   brief from a thread under it, which costs a model run;
-- ask for a capability, which raises an ask and grants nothing;
+- ask for a capability, which raises an ask and grants nothing; closing or
+  withdrawing that ask grants nothing either, and the command says so;
 - write a "next" note, a list of work not started, and the project mark, on
   its own thread and the threads under it;
 - say its own thread, or one under it, waits on someone other than you.

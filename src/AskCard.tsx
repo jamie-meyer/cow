@@ -5,7 +5,7 @@
 
 import { type RefObject } from "react";
 import type { Ask } from "./asks/ask.ts";
-import { type AskDraft, CONFIRM_WORD, chatDigit, draftAnswer } from "./asks/card.ts";
+import { type AskDraft, CONFIRM_WORD, chatDigit, draftAnswer, noGrantWarning } from "./asks/card.ts";
 import { MESSAGED_SINCE, capabilityWanted } from "./state.ts";
 import { fileAttribute } from "./reader/trigger.ts";
 import { formatAge } from "./text.ts";
@@ -100,6 +100,7 @@ export function AskCard({
   // The field has a digit when there is anything else to choose.
   const fieldDigit = !ask.optionsOnly && (ask.options.length > 0 || messaged);
   const digits = ask.options.length + (fieldDigit ? 1 : 0) + (messaged ? 1 : 0);
+  const noGrant = noGrantWarning(draft, ask, title);
   return (
     <div
       className={`cow-ans cow-ask${ask.risk ? ` cow-risk-${ask.risk}` : ""}`}
@@ -202,17 +203,22 @@ export function AskCard({
         <>
           <p className="cow-ans-why cow-ask-messaged" data-cow-ask-messaged="">
             {MESSAGED_SINCE[0]!.toUpperCase()}
-            {MESSAGED_SINCE.slice(1)}. If that message answered it, close it here: nothing more is sent.
+            {MESSAGED_SINCE.slice(1)}. If that message answered it, close it here: {ask.capability ? "it is told only that no capability was granted." : "nothing more is sent."}
           </p>
           <div className={draft.chat ? "cow-ans-o cow-chosen" : "cow-ans-o"} data-cow-ask-chat="" data-cow-chosen={draft.chat || undefined}>
             <kbd>{chatDigit(ask)}</kbd>
             <span className="cow-ans-mark">{draft.chat ? "◉" : "○"}</span>
             <span>
               already answered in chat
-              <small> · closes the ask and sends the thread nothing</small>
+              <small> · {ask.capability ? "closes the ask and grants nothing: it is told so" : "closes the ask and sends the thread nothing"}</small>
             </span>
           </div>
         </>
+      ) : null}
+      {noGrant ? (
+        <p className="cow-ans-why cow-err" data-cow-ask-nogrant="">
+          {noGrant}
+        </p>
       ) : null}
       {staged && answer.ok ? (
         <div className="cow-perm-confirm cow-ask-restate" data-cow-ask-restate="">
@@ -285,7 +291,7 @@ export function AskCard({
                 choose ·{" "}
               </>
             ) : null}
-            <kbd>⏎</kbd> {draft.chat ? "close it, sending nothing" : ask.risk === "medium" || ask.risk === "high" ? "review the answer" : "send the answer"}
+            <kbd>⏎</kbd> {draft.chat ? (ask.capability ? "close it, granting nothing" : "close it, sending nothing") : ask.risk === "medium" || ask.risk === "high" ? "review the answer" : "send the answer"}
             {others.length > 0 && !state.single ? (
               <>
                 {" "}

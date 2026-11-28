@@ -34,6 +34,12 @@ const closedSchema = z.object({
   /** The person's answer as the thread quotes it; null when the person closed it. */
   answer: z.string().max(ASK_LIMITS.answer).nullable(),
   at: z.number(),
+  /**
+   * A request for a capability the person closed this way: cow owes its
+   * thread a note that nothing was granted, and `deliveredAt` says when it
+   * was sent. Left out of every other close, and of those recorded before it.
+   */
+  notify: z.boolean().optional(),
 });
 export type Closed = z.infer<typeof closedSchema>;
 
@@ -218,7 +224,8 @@ export function withdrawn(ask: Ask, now: number): Result<Ask> {
  * The ask, closed because the person answered it in an ordinary message to
  * the thread instead of on the page. The asking side closes it with the
  * answer as it understood it; the person closes it with nothing more to
- * say. Nothing is sent to the thread either way. It is a record of its own:
+ * say. Nothing is sent to the thread either way, but for a request for a
+ * capability the person closes: see `notify`. It is a record of its own:
  * not an answer given on the page, and not a withdrawal.
  */
 export function closedInChat(ask: Ask, given: { by: "thread" | "person"; closedBy: string | null; answer: string | null }, now: number): Result<Ask> {
@@ -230,7 +237,9 @@ export function closedInChat(ask: Ask, given: { by: "thread" | "person"; closedB
     return fail("--answered is empty", "Quote, or closely paraphrase, what the user answered. To drop a question that no longer needs an answer, use `bb cow ask withdraw`.");
   }
   if (answer.length > ASK_LIMITS.answer) return fail(`the answer is over ${ASK_LIMITS.answer} characters`);
-  return { ok: true, value: { ...ask, status: "closed", closed: { by: given.by, closedBy: given.closedBy, answer: answer === "" ? null : answer, at: now } } };
+  // The person closing a request for a capability: its thread is sent a note that nothing was granted.
+  const notify = given.by === "person" && ask.capability !== null;
+  return { ok: true, value: { ...ask, status: "closed", closed: { by: given.by, closedBy: given.closedBy, answer: answer === "" ? null : answer, at: now, ...(notify ? { notify } : {}) } } };
 }
 
 /** How a closed ask was closed, in a line. */
@@ -274,9 +283,71 @@ const quote = (text: string): string =>
     .map((line) => `> ${line}`)
     .join("\n");
 
+/**
+ * Whether a capability was made from this request: it was answered with its
+ * first option, which only the steps that make the capability do. The
+ * signed answer refuses option 1 until the capability exists.
+ */
+export function granted(ask: Ask): boolean {
+  return ask.capability !== null && ask.status === "answered" && ask.answer?.option === 1;
+}
+
+/**
+ * Why answering `option` would claim a grant that was not made: option 1 on
+ * a request for a capability before a capability in force was made from it.
+ * Null when the answer claims nothing it should not.
+ */
+export function unmadeGrant(ask: Ask, option: number | null, made: readonly { askId: string | null; deletedAt: number | null }[]): string | null {
+  if (ask.capability === null || option !== 1) return null;
+  return made.some((capability) => capability.askId === ask.id && capability.deletedAt === null) ? null : `no capability has been made from ${ask.id}: option 1 answers it only once one is`;
+}
+
+/** Whether this is a request for a capability that has ended with none made from it. */
+export function endedUngranted(ask: Ask): boolean {
+  return ask.capability !== null && ask.status !== "open" && !granted(ask);
+}
+
+/** Where to look and how to ask again: the end of every note that nothing was granted. */
+export const ASK_AGAIN = "`bb cow caps` shows what you hold; `bb cow cap request` asks again.";
+
+/** Marks what cow adds to a message sent as the user: it is cow's, not the user's words. */
+export const FROM_COW = "From cow, not the user:";
+
+/** Why nothing was granted, as the start of a sentence after "No capability was granted: ". */
+function ungrantedWhy(ask: Ask): string {
+  if (ask.status === "withdrawn") return "the request was withdrawn";
+  if (ask.status === "closed") return "it was closed as answered in chat, and words in chat grant nothing";
+  if (ask.answer?.option === 2) return "the user refused it";
+  return "the user answered in words, and words grant nothing";
+}
+
+/** That a request for a capability ended with none granted, why, and what to do: one line. */
+export function notGrantedText(ask: Ask): string {
+  return `No capability was granted from ${ask.id}: ${ungrantedWhy(ask)}. ${ASK_AGAIN}`;
+}
+
+/**
+ * What `bb cow ask withdraw` and `bb cow ask close` add to their output when
+ * the ask was a request for a capability: a line that nothing was granted.
+ * Empty for any other ask. `caller` is the thread that ran the command.
+ */
+export function ungrantedLine(ask: Ask, caller: string | null): string {
+  if (!endedUngranted(ask)) return "";
+  if (caller === ask.threadId) return `\n${notGrantedText(ask)}`;
+  return `\nNo capability was granted to ${ask.threadId} from ${ask.id}: ${ungrantedWhy(ask)}. cow does not tell it so: tell it, if it waits for one. \`bb cow caps --thread ${ask.threadId}\` shows what it holds; \`bb cow cap request --thread ${ask.threadId}\` asks again.`;
+}
+
 /** What the asking thread is sent, as the user, when its ask is answered. */
 export function answerMessage(ask: Ask): string {
-  return [`Answer to your question (${ask.id}):`, "", quote(ask.question), "", answerText(ask)].join("\n");
+  const lines = [`Answer to your question (${ask.id}):`, "", quote(ask.question), "", answerText(ask)];
+  // A request for a capability answered with anything but the grant: cow says, in its own voice, that nothing was granted.
+  if (endedUngranted(ask)) lines.push("", `${FROM_COW} ${notGrantedText(ask)}`);
+  return lines.join("\n");
+}
+
+/** What the thread is sent when the person closes its request for a capability as answered in chat. */
+export function closedNoteMessage(ask: Ask): string {
+  return [`${FROM_COW} the user closed your request for a capability (${ask.id}) on cow's page, as answered in chat:`, "", quote(ask.question), "", notGrantedText(ask)].join("\n");
 }
 
 /** Open asks, oldest first; `threadId` narrows them to one thread. */
@@ -302,5 +373,6 @@ export function askText(ask: Ask, now: number, age: (ms: number) => string): str
   if (ask.proofs.length > 0) lines.push(`  proof: ${ask.proofs.join(", ")}`);
   if (ask.status === "answered") lines.push(`  answered on cow's page: ${answerText(ask)}${ask.deliveredAt === null ? " (not delivered yet)" : ""}`);
   if (ask.status === "closed") lines.push(`  ${closedText(ask)}`);
+  if (endedUngranted(ask)) lines.push("  no capability was granted from it");
   return lines.join("\n");
 }

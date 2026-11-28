@@ -728,7 +728,12 @@ export function useVerbs(host: VerbHost): Verbs {
     const sent = step.kind === "close" ? host.raised.close(currentAsk.id) : host.raised.answer(currentAsk.id, step.option, step.text);
     sent.then(
       () => {
-        const line = step.kind === "close" ? `closed as answered in chat: nothing was sent to “${title}” · it cannot be undone` : `sent to “${title}”: ${step.said} · it cannot be undone`;
+        const line =
+          step.kind === "close"
+            ? currentAsk.capability
+              ? `closed as answered in chat: “${title}” was told no capability was granted · it cannot be undone`
+              : `closed as answered in chat: nothing was sent to “${title}” · it cannot be undone`
+            : `sent to “${title}”: ${step.said}${currentAsk.capability ? " · no capability was granted, and it was told so" : ""} · it cannot be undone`;
         const next = modal.single ? null : (left[0] ?? null);
         if (next === null) return close(line);
         setModal({ ...modal, askId: next.id, draft: emptyAskDraft, sending: false, note: "", sent: [...modal.sent, line] });

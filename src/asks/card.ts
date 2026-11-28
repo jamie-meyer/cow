@@ -92,3 +92,15 @@ export function nextAsk(asks: readonly Ask[], currentId: string): Ask | null {
   const at = asks.findIndex((ask) => ask.id === currentId);
   return asks.slice(at + 1).find((ask) => ask.id !== currentId) ?? others[0]!;
 }
+
+/**
+ * On a request for a capability, what the card says once words are typed or
+ * "already answered in chat" is marked: that neither grants anything, and
+ * that 1 is what grants. Null for any other ask, and before either.
+ */
+export function noGrantWarning(draft: AskDraft, ask: Ask, title: string): string | null {
+  if (ask.capability === null || draft.stage !== "choose") return null;
+  if (draft.chat) return `Closing it grants nothing: “${title}” is told that no capability was granted. 1 is what grants.`;
+  if (draft.text.trim() === "") return null;
+  return `Words grant nothing: they are sent to “${title}” with a line from cow that no capability was granted. 1 is what grants; your words can still say what to ask for instead.`;
+}
