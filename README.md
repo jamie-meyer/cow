@@ -227,7 +227,9 @@ found locally. It is worked out read-only by a trial merge (`git merge-tree
 --write-tree`, git 2.38 or later) that writes nothing into the repository
 and fetches nothing, again only when the branch's tip or the base's moves,
 and anything that fails reads "not known", never "clean". Uncommitted
-changes are not in the trial merge, and the line says when there are some.
+changes are not in the trial merge, and the line says when there are some
+(cow asks `git status`, and does not turn git filters off: see "git
+filters" under the limits of signing and capabilities).
 A conflict also shows beside a brief you have not read or an ask about
 merging, and never queues anything by itself. **cow never merges.**
 Details are under [Merge-readiness](docs/reference.md#merge-readiness).
@@ -606,8 +608,9 @@ Three things cow does cause to be sent, all by bb, to a model provider:
   and the checks of its "Done means" section; and **what that thread
   changed**: every changed file's path and status, and the diff (up to
   60,000 characters in all and 12,000 a file), which cow collects by running
-  git, read-only and with hooks off, in the thread's checkout on its own
-  machine. In a copy-on-write workspace that is the workspace folder and
+  git with hooks off, from its host entry and outside the sandbox, in the
+  thread's checkout on its own machine. git filters are not turned off:
+  see "git filters" under the limits below. In a copy-on-write workspace that is the workspace folder and
   every repository cow brought into the clone (by cow's record of the clone,
   not the file in it), each against the commit it was on when the clone was
   made, its files under its folder, the limits shared fairly between them.
@@ -696,7 +699,8 @@ under `~/.claude/projects/`, and takes from it only token counts, model ids,
 times and message ids (kept as hashes): no text, tool input or file name.
 Details are under [Tokens during a turn](docs/reference.md#tokens-during-a-turn-liveusage).
 
-For merge-readiness, cow's host entry runs read-only git commands in each
+For merge-readiness, cow's host entry runs git commands that change no
+repository (git filters are not turned off: see the limits below) in each
 finished worker's checkout, and in the source folder of one of cow's clones,
 on that machine; the trial merge's objects go to a temporary folder of
 cow's own that is removed after. The commands are listed under
@@ -878,6 +882,13 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   seen. A command rule compares the command line only, not what that line
   runs: a thread that can edit a package script, a test file or a script
   the command names decides what runs outside the sandbox under it.
+- **git filters.** cow does not turn git filters off. When it collects a
+  brief's diff, cow's host entry runs `git diff` in the thread's checkout,
+  outside the sandbox, and git runs any clean filter that the repository's
+  config defines for a changed file. A thread that can write the git config
+  of its checkout could therefore have a command run outside the sandbox.
+  Under the Claude Code provider's sandbox a thread could not write
+  `.git/config` in the one check made; nothing else was checked.
 - **An approved workspace command is as safe as what it runs.** cow runs
   only the text you approved, but `npm run sync` or `./sync.sh` runs
   whatever that script holds when it runs.
@@ -934,8 +945,10 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
     except the last:
     - `src/clone/git.ts` and `src/merge/facts.ts`: `git`, found on your
       `PATH`, with hooks and the file-system monitor off, to make a clone,
-      to read what a thread changed for the checker, and for
-      merge-readiness. cow chooses every argument.
+      to read what a thread changed for the checker, for merge-readiness
+      and for a workspace's state. cow chooses every argument. It does not
+      turn git filters off, so git runs a filter that the repository's
+      config defines (see "git filters" under the limits).
     - `src/clone/helper.ts`: `/usr/bin/osascript -l JavaScript`, or
       `/usr/bin/perl` if that cannot start, with a fixed script in the code
       that calls `clonefile(2)`. Paths reach it on its input, never in the

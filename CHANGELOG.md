@@ -41,6 +41,9 @@ had fallen behind the code, and this corrects it.
 - **Waiting on someone else.** "Nothing tells cow" was no longer so since
   `bb cow wait` and `w`; it now says cow cannot tell unless the thread or
   you say so.
+- **git filters.** The README said cow's git runs read-only. cow does not
+  turn git filters off, and `git diff` for a brief runs a clean filter the
+  checkout's config defines, outside the sandbox. This limit is now stated.
 - `npm run e2e:clone` runs `scripts/e2e-clone.mjs`, and "Developing and
   testing" describes it.
 - **What keeps it right.** `test/claims.test.ts` reads the code and fails
