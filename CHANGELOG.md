@@ -33,8 +33,17 @@ A request for a capability that ends without one says so.
 - **Also.** The signed answer refuses option 1 on a request until a
   capability made from it is in force, so no answer can read as a grant
   that was not made. Ordinary asks, answered or closed in chat, read as
-  before. The end-to-end checks for this were written and not run by this
-  entry's author.
+  before. The end-to-end checks for capabilities and asks were run on this
+  code before release, on an installed copy.
+- **A limit, now stated.** The README says plainly that the empty git
+  folder, the records of clones, capabilities and the rest of what cow
+  keeps hold only where the provider's sandbox keeps a thread out of cow's
+  data: so for the one provider cow is tested on, and known not to be so
+  for at least one other configuration, a provider that approves its own
+  commands, where a thread is limited only by what it chooses to do.
+- **The 0.2.31 entry, corrected.** It said the end-to-end checks in a
+  browser were not rerun for its code; they were run before release, on an
+  installed copy.
 
 ## 0.2.31
 
@@ -73,8 +82,9 @@ git that cow runs in a thread's folder starts no program the folder names.
   nothing there, and can make git slow or fail. A repository with a split
   index is not read. The empty git folder is safe as long as a thread
   cannot write cow's host data folder, where cow's records of clones
-  already are. Checked on git 2.54 only; the end-to-end checks in a
-  browser were not rerun for this entry's code by its author.
+  already are. Checked on git 2.54 only. The end-to-end checks for
+  workspaces, the default sections, report checking and asks were run on
+  this code before release, on an installed copy.
 
 ## 0.2.30
 

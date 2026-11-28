@@ -2718,8 +2718,14 @@ So, plainly:
     anything that drives your own browser, with your profile, to the page.
   - *bb's sandbox.* The reset file, cow's storage and the log are protected
     only by a sandboxed thread not being able to write under bb's data
-    directory. A thread in bb's full-access mode is not sandboxed: it can
-    create the reset file and be the next to enrol, or rewrite the storage.
+    directory, and cow's host data folder (records of clones, the empty git
+    folder) only by its not being able to write there. That holds only
+    where the provider's sandbox keeps a thread out: so for the one provider
+    cow is tested on, and known not to be so for a provider that approves
+    its own commands, where a thread wrote and deleted a file in cow's host
+    data folder without you being asked. There, and in bb's full-access
+    mode, a thread is limited only by what it chooses to do: it can create
+    the reset file and be the next to enrol, or rewrite the storage.
     Your page would then say it is not enrolled, and the log would hold a
     reset you did not make, or be missing.
   - *First use.* Whatever opens a cow with no key first is enrolled. Enrol

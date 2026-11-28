@@ -865,11 +865,19 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   cow would not know. So could anything that drives your own browser, with
   your profile, to the page.
 - **Everything else rests on bb's sandbox.** The reset file, cow's storage
-  and the log are protected only by a sandboxed thread not being able to
-  write under bb's data directory. A thread in bb's full-access mode is not
-  sandboxed: it can create the reset file and be the next page enrolled, or
-  rewrite the storage, the approved workspace files in it included, whose
-  commands cow then runs.
+  (capabilities, asks and the log in it) and cow's host data folder (its
+  records of clones and held clones, the outputs of workspace commands and
+  the empty git folder) are protected only by a thread not being able to
+  write there. That holds only where the provider's sandbox keeps a thread
+  out of them. It is so for the one provider cow is tested on, and is known
+  not to be so for at least one other configuration: in a check made after
+  0.2.31, a thread on a provider that approves its own commands wrote and
+  deleted a file in cow's host data folder, and you were asked nothing. On
+  such a provider, and in bb's full-access mode, a thread is limited only
+  by what it chooses to do: it can create the reset file and be the next
+  page enrolled, rewrite the storage (capabilities and the approved
+  workspace files whose commands cow runs included), or change cow's
+  records of clones and its empty git folder.
 - **First use.** Whatever opens a cow that has no key enrolled is enrolled.
   Open cow yourself before you let agents run. If something else got there
   first, your page says in red that the key held is not its own; to take it
@@ -909,10 +917,13 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
     cow checks that the folder holds exactly a `HEAD`, a `config` and an
     empty `refs` with the expected bytes, none of them a link; when it is
     missing or differs it is removed and made again, and when it cannot be
-    made no detached git runs and cow says so. This rests on a thread not
-    being able to write cow's host data folder, as cow's records of clones
-    and held clones already do; that is bb's to keep, and cow has not
-    checked it under every provider's sandbox. git then reads no configuration file
+    made no detached git runs and cow says so. Like cow's records of clones
+    and held clones, this holds only where the provider's sandbox keeps a
+    thread out of cow's host data folder: so for the one provider cow is
+    tested on, and known not to be so for at least one other configuration,
+    a provider that approves its own commands (see "Everything else rests
+    on bb's sandbox"). There, a thread that rewrites that folder can undo
+    this, and is limited only by what it chooses to do. git then reads no configuration file
     of the folder, of yours or of the system, so no filter, diff program,
     textconv program or merge driver is configured under any name. Ten
     settings that only say how files are compared or ignored are read from
@@ -945,10 +956,10 @@ signed, method by method" in [docs/reference.md](docs/reference.md).
   What is not covered: a thread that can write its git folder can point it
   at another folder (`core.worktree`, or the `.git` file), and cow then
   reads that folder's files for the diff, as before; it starts nothing
-  there. A thread can also make git slow or make it fail. And the earlier
-  statement that a thread could not write `.git/config` was checked under
-  one provider's sandbox only; nothing here rests on any sandbox refusing
-  that write.
+  there. A thread can also make git slow or make it fail. Nothing here
+  rests on any sandbox refusing a write to `.git/config`; the empty git
+  folder rests on the sandbox keeping a thread out of cow's host data
+  folder, which does not hold on every provider (above).
 - **An approved workspace command is as safe as what it runs.** cow runs
   only the text you approved, but `npm run sync` or `./sync.sh` runs
   whatever that script holds when it runs.
